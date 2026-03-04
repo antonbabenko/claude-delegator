@@ -4,6 +4,11 @@
       "type": "stdio",
       "command": "codex",
       "args": ["-m", "gpt-5.3-codex", "mcp-server"]
+    },
+    "gemini": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/gemini/index.js"]
     }
   }
 }
