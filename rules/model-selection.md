@@ -104,12 +104,34 @@ Every expert can operate in two modes:
 
 ## Codex Parameters Reference
 
+### `mcp__codex__codex` (Start Session)
+
 | Parameter | Values | Notes |
 |-----------|--------|-------|
-| `sandbox` | `read-only`, `workspace-write` | Set based on task, not expert |
-| `approval-policy` | `on-request`, `on-failure` | Advisory uses on-request, implementation uses on-failure |
+| `prompt` | string | **Required.** The delegation prompt (use 7-section format) |
+| `developer-instructions` | string | Expert prompt injection (from `prompts/*.md`) |
+| `sandbox` | `read-only`, `workspace-write`, `danger-full-access` | Controls file access. Default from `~/.codex/config.toml` |
+| `approval-policy` | `untrusted`, `on-failure`, `on-request`, `never` | Controls shell command approval. Default from config |
+| `model` | e.g. `gpt-5.3-codex` | Override the default model |
+| `config` | key-value object | Override `config.toml` settings per-call |
 | `cwd` | path | Working directory for the task |
-| `developer-instructions` | string | Expert prompt injection |
+| `base-instructions` | string | Override default system instructions |
+| `compact-prompt` | string | Prompt used when compacting conversation |
+| `profile` | string | Configuration profile from config.toml |
+
+### `mcp__codex__codex-reply` (Continue Session)
+
+| Parameter | Values | Notes |
+|-----------|--------|-------|
+| `threadId` | string | **Required.** Thread ID from previous `codex` call |
+| `prompt` | string | **Required.** Follow-up instruction |
+
+### Response Format (both tools)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `threadId` | string | Session ID for multi-turn follow-ups |
+| `content` | string | The expert's text response |
 
 ## When NOT to Delegate
 

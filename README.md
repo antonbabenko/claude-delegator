@@ -91,6 +91,19 @@ Claude: "Based on the analysis, I found 3 issues..."
 - Claude reads your request → picks the right expert → delegates via MCP
 - Responses are synthesized, not passed through raw
 - Experts can retry up to 3 times before escalating
+- Multi-turn conversations preserve context via `threadId` for chained tasks
+
+### Multi-Turn Conversations
+
+For chained implementation steps, the expert preserves context across turns:
+
+```
+Turn 1: mcp__codex__codex → returns threadId
+Turn 2: mcp__codex__codex-reply(threadId) → expert remembers turn 1
+Turn 3: mcp__codex__codex-reply(threadId) → expert remembers turns 1-2
+```
+
+Use single-shot (`codex` only) for advisory tasks. Use multi-turn for implementation chains and retries.
 
 ---
 
@@ -107,20 +120,29 @@ Every expert supports two modes based on the task:
 
 Claude automatically selects the mode based on your request.
 
+### Configuration Defaults
+
+Set global defaults in `~/.codex/config.toml` instead of passing parameters on every call:
+
+```toml
+sandbox_mode = "workspace-write"
+approval_policy = "on-failure"
+```
+
+Per-call parameters override these defaults. See [Codex CLI docs](https://github.com/openai/codex) for all config options.
+
 ### Manual MCP Setup
 
-If `/setup` doesn't work, manually add to `~/.claude/settings.json`:
+If `/setup` doesn't work, register the MCP server manually:
 
-```json
-{
-  "mcpServers": {
-    "codex": {
-      "type": "stdio",
-      "command": "codex",
-      "args": ["-m", "gpt-5.2-codex", "mcp-server"]
-    }
-  }
-}
+```bash
+claude mcp add --transport stdio --scope user codex -- codex -m gpt-5.3-codex mcp-server
+```
+
+Verify with:
+
+```bash
+claude mcp list
 ```
 
 ### Customizing Expert Prompts
@@ -157,7 +179,7 @@ Edit these to customize expert behavior for your workflow.
 |-------|----------|
 | MCP server not found | Restart Claude Code after setup |
 | Codex not authenticated | Run `codex login` |
-| Tool not appearing | Check `~/.claude/settings.json` has codex entry |
+| Tool not appearing | Run `claude mcp list` and verify codex is registered |
 | Expert not triggered | Try explicit: "Ask GPT to review this architecture" |
 
 ---

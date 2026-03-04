@@ -20,7 +20,9 @@ If cancelled, stop here.
 
 ## Remove MCP Configuration
 
-Read `~/.claude/settings.json`, delete `mcpServers.codex` entry, write back.
+```bash
+claude mcp remove --scope user codex
+```
 
 ## Remove Installed Rules
 

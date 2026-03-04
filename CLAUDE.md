@@ -25,7 +25,7 @@ No build step, no dependencies. Uses Codex CLI's native MCP server.
 
 ### Orchestration Flow
 
-Claude acts as orchestrator—delegates to specialized GPT experts based on task type. Delegation is **stateless**: each `mcp__codex__codex` call is independent (no memory between calls).
+Claude acts as orchestrator—delegates to specialized GPT experts based on task type. Supports both **single-shot** (independent calls) and **multi-turn** (context preserved via `threadId` with `codex-reply`).
 
 ```
 User Request → Claude Code → [Match trigger → Select expert]
@@ -53,9 +53,10 @@ Every delegation prompt must include: TASK, EXPECTED OUTCOME, CONTEXT, CONSTRAIN
 
 ### Retry Handling
 
-Since each call is stateless, retries must include full history:
-- Attempt 1 fails → new call with original task + error details
+Retries use multi-turn (`codex-reply` with `threadId`) so the expert remembers previous attempts:
+- Attempt 1 fails → `codex-reply` with error details (context preserved)
 - Up to 3 attempts → then escalate to user
+- Fallback: new `codex` call with full history if multi-turn unavailable
 
 ### Component Relationships
 
@@ -83,7 +84,7 @@ Every expert can operate in **advisory** (`sandbox: read-only`) or **implementat
 ## Key Design Decisions
 
 1. **Native MCP only** - Codex has `codex mcp-server`, no wrapper needed
-2. **Stateless calls** - Each delegation includes full context (Codex MCP doesn't expose session IDs to Claude Code)
+2. **Single-shot + multi-turn** - Single-shot for advisory (full context per call), multi-turn via `threadId`/`codex-reply` for chained implementation and retries
 3. **Dual mode** - Any expert can advise or implement based on task
 4. **Synthesize, don't passthrough** - Claude interprets GPT output, applies judgment
 5. **Proactive triggers** - Claude checks for delegation triggers on every message
