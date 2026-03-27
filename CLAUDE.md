@@ -41,15 +41,16 @@ User Request → Claude Code → [Match trigger → Select expert & provider]
 
 ### How Delegation Works
 
-1. **Match trigger** - Check `rules/triggers.md` for semantic patterns
+1. **Match trigger** - Check `rules/delegation.md` for semantic patterns
 2. **Read expert prompt** - Load from `prompts/[expert].md`
-3. **Build 7-section prompt** - Use format from `rules/delegation-format.md`
-4. **Call provider tool** - `mcp__codex__codex` or `mcp__gemini__gemini`
-5. **Synthesize response** - Never show raw output; interpret and verify
+3. **Build 7-section prompt** - Use format from `rules/delegation.md`
+4. **Select provider & model** - Use `rules/providers.md` for routing
+5. **Call provider tool** - `mcp__codex__codex` or `mcp__gemini__gemini`
+6. **Synthesize response** - Never show raw output; interpret and verify
 
 ### The 7-Section Delegation Format
 
-Every delegation prompt must include: TASK, EXPECTED OUTCOME, CONTEXT, CONSTRAINTS, MUST DO, MUST NOT DO, OUTPUT FORMAT. See `rules/delegation-format.md` for templates.
+Every delegation prompt must include: TASK, EXPECTED OUTCOME, CONTEXT, CONSTRAINTS, MUST DO, MUST NOT DO, OUTPUT FORMAT. See `rules/delegation.md` for the template.
 
 ### Retry Handling
 

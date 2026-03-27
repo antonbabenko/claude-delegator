@@ -65,7 +65,10 @@ This registers the MCP servers at user scope (available across all projects).
 ## Step 3: Install Orchestration Rules
 
 ```bash
-mkdir -p ~/.claude/rules/delegator && cp ${CLAUDE_PLUGIN_ROOT}/rules/*.md ~/.claude/rules/delegator/
+# Clean up legacy rule files from previous versions, then install current rules
+mkdir -p ~/.claude/rules/delegator
+rm -f ~/.claude/rules/delegator/orchestration.md ~/.claude/rules/delegator/triggers.md ~/.claude/rules/delegator/delegation-format.md ~/.claude/rules/delegator/model-selection.md
+cp ${CLAUDE_PLUGIN_ROOT}/rules/*.md ~/.claude/rules/delegator/
 ```
 
 ## Step 4: Verify Installation
