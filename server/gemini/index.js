@@ -7,7 +7,7 @@
  * Speaks JSON-RPC 2.0 over stdio.
  */
 
-const { spawn, execSync } = require("node:child_process");
+const { spawn } = require("node:child_process");
 
 const DEFAULT_MODEL = "gemini-2.5-flash";
 const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes
@@ -347,10 +347,15 @@ process.stdin.on("data", async (chunk) => {
   }
 });
 
-// Startup Check
-try {
-  execSync("gemini --version", { stdio: "ignore" });
-} catch (e) {
-  console.error("Gemini CLI not found. Please install it first.");
+// Startup check — non-blocking, fails fast without stalling the event loop
+const check = spawn("gemini", ["--version"], { stdio: "ignore" });
+check.on("error", () => {
+  process.stderr.write("Gemini CLI not found. Install with: npm install -g @google/gemini-cli\n");
   process.exit(1);
-}
+});
+check.on("close", (code) => {
+  if (code !== 0) {
+    process.stderr.write("Gemini CLI check failed. Ensure 'gemini' is on your PATH.\n");
+    process.exit(1);
+  }
+});
