@@ -249,7 +249,11 @@ const handlers = {
         }
 
         geminiArgs.push("-m", args.model || DEFAULT_MODEL);
-        if (args.sandbox === "workspace-write") geminiArgs.push("-s");
+        if (args.sandbox === "workspace-write") {
+          geminiArgs.push("-s", "--approval-mode", "yolo");
+        } else {
+          geminiArgs.push("--approval-mode", "plan");
+        }
         let prompt = args.prompt;
         if (args["developer-instructions"]) prompt = `${args["developer-instructions"]}\n\n${prompt}`;
         geminiArgs.push("-p", prompt);
@@ -269,7 +273,11 @@ const handlers = {
         }
 
         geminiArgs.push("--resume", threadId);
-        if (args.sandbox === "workspace-write") geminiArgs.push("-s");
+        if (args.sandbox === "workspace-write") {
+          geminiArgs.push("-s", "--approval-mode", "yolo");
+        } else {
+          geminiArgs.push("--approval-mode", "plan");
+        }
         geminiArgs.push("-p", args.prompt);
       } else {
         if (shouldRespond) sendError(id, -32601, `Tool not found: ${name}`);
