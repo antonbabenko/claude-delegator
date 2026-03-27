@@ -165,7 +165,7 @@ const handlers = {
     sendResponse(id, {
       protocolVersion: "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "claude-delegator-gemini", version: "1.2.1" }
+      serverInfo: { name: "claude-delegator-gemini", version: "1.3.0" }
     });
   },
 
