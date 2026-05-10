@@ -116,7 +116,12 @@ const handlers = {
               "developer-instructions": { type: "string", description: "Expert system instructions" },
               sandbox: { type: "string", enum: ["read-only", "workspace-write"], default: "read-only" },
               cwd: { type: "string", description: "Current working directory" },
-              model: { type: "string", default: DEFAULT_MODEL }
+              model: { type: "string", default: DEFAULT_MODEL },
+              "include-directories": {
+                type: "array",
+                items: { type: "string" },
+                description: "Additional directories to include in the workspace alongside cwd. Equivalent to --include-directories on the Gemini CLI."
+              }
             },
             required: ["prompt"]
           }
@@ -130,7 +135,12 @@ const handlers = {
               threadId: { type: "string", description: "Session ID returned by a previous gemini call" },
               prompt: { type: "string", description: "Follow-up prompt" },
               sandbox: { type: "string", enum: ["read-only", "workspace-write"], default: "read-only" },
-              cwd: { type: "string" }
+              cwd: { type: "string" },
+              "include-directories": {
+                type: "array",
+                items: { type: "string" },
+                description: "Additional directories to include in the workspace alongside cwd. Equivalent to --include-directories on the Gemini CLI."
+              }
             },
             required: ["threadId", "prompt"]
           }
@@ -162,6 +172,18 @@ const handlers = {
       if (shouldRespond) sendError(id, -32602, "Invalid params: 'cwd' must be a non-empty string when provided");
       return;
     }
+    if (args["include-directories"] !== undefined) {
+      if (!Array.isArray(args["include-directories"]) || args["include-directories"].length === 0) {
+        if (shouldRespond) sendError(id, -32602, "Invalid params: 'include-directories' must be a non-empty array of strings when provided");
+        return;
+      }
+      for (const dir of args["include-directories"]) {
+        if (!isNonEmptyString(dir)) {
+          if (shouldRespond) sendError(id, -32602, "Invalid params: each entry in 'include-directories' must be a non-empty string");
+          return;
+        }
+      }
+    }
 
     try {
       const geminiArgs = [];
@@ -180,6 +202,9 @@ const handlers = {
         }
 
         geminiArgs.push("-m", args.model || DEFAULT_MODEL);
+        if (args["include-directories"]) {
+          geminiArgs.push("--include-directories", args["include-directories"].join(","));
+        }
         if (args.sandbox === "workspace-write") geminiArgs.push("-s");
         let prompt = args.prompt;
         if (args["developer-instructions"]) prompt = `${args["developer-instructions"]}\n\n${prompt}`;
@@ -200,6 +225,9 @@ const handlers = {
         }
 
         geminiArgs.push("--resume", threadId);
+        if (args["include-directories"]) {
+          geminiArgs.push("--include-directories", args["include-directories"].join(","));
+        }
         if (args.sandbox === "workspace-write") geminiArgs.push("-s");
         geminiArgs.push("-p", args.prompt);
       } else {
