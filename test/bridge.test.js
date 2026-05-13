@@ -130,3 +130,44 @@ test("B5: parse failures surface errorKind 'parse' with retryable false", async 
   assert.equal(r.result.errorKind, "parse");
   assert.equal(r.result.retryable, false);
 });
+
+test("B6: GEMINI_DEFAULT_MODEL env overrides the default model", async () => {
+  const child = startBridge({
+    fakeBin: "fake-gemini.sh",
+    env: { GEMINI_DEFAULT_MODEL: "auto-gemini-3" },
+  });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "hi" } },
+  });
+  setTimeout(() => child.stdin.end(), 800);
+  await responsesP;
+
+  const invocations = readArgv(child.argvLog);
+  const argv = invocations[0];
+  const mIdx = argv.indexOf("-m");
+  assert.notEqual(mIdx, -1, "argv contains -m");
+  assert.equal(argv[mIdx + 1], "auto-gemini-3", "model is auto-gemini-3");
+});
+
+test("B6: unset env falls back to gemini-2.5-flash", async () => {
+  const child = startBridge({
+    fakeBin: "fake-gemini.sh",
+    env: { GEMINI_DEFAULT_MODEL: "" },
+  });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "hi" } },
+  });
+  setTimeout(() => child.stdin.end(), 800);
+  await responsesP;
+
+  const invocations = readArgv(child.argvLog);
+  const argv = invocations[0];
+  const mIdx = argv.indexOf("-m");
+  assert.equal(argv[mIdx + 1], "gemini-2.5-flash");
+});

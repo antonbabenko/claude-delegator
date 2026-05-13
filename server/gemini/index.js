@@ -9,7 +9,7 @@
 
 const { spawn, execSync } = require("node:child_process");
 
-const DEFAULT_MODEL = "gemini-2.5-flash";
+const DEFAULT_MODEL = process.env.GEMINI_DEFAULT_MODEL || "gemini-2.5-flash";
 const DEFAULT_TIMEOUT_MS = 120_000; // 2 minutes
 const VALID_SANDBOX_VALUES = new Set(["read-only", "workspace-write"]);
 
