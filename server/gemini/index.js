@@ -162,7 +162,8 @@ const handlers = {
                 items: { type: "string" },
                 description: "Additional directories to include in the workspace alongside cwd. Equivalent to --include-directories on the Gemini CLI."
               },
-              timeout: { type: "number", description: "Bridge-side timeout in ms before SIGTERM. 1..600000. Default 120000.", default: DEFAULT_TIMEOUT_MS }
+              timeout: { type: "number", description: "Bridge-side timeout in ms before SIGTERM. 1..600000. Default 120000.", default: DEFAULT_TIMEOUT_MS },
+              "skip-trust": { type: "boolean", description: "Pass --skip-trust to bypass the Gemini CLI's trusted-directory check. Read-only sandbox is still gated separately.", default: false }
             },
             required: ["prompt"]
           }
@@ -182,7 +183,8 @@ const handlers = {
                 items: { type: "string" },
                 description: "Additional directories to include in the workspace alongside cwd. Equivalent to --include-directories on the Gemini CLI."
               },
-              timeout: { type: "number", description: "Bridge-side timeout in ms before SIGTERM. 1..600000. Default 120000.", default: DEFAULT_TIMEOUT_MS }
+              timeout: { type: "number", description: "Bridge-side timeout in ms before SIGTERM. 1..600000. Default 120000.", default: DEFAULT_TIMEOUT_MS },
+              "skip-trust": { type: "boolean", description: "Pass --skip-trust to bypass the Gemini CLI's trusted-directory check. Read-only sandbox is still gated separately.", default: false }
             },
             required: ["threadId", "prompt"]
           }
@@ -220,6 +222,10 @@ const handlers = {
         return;
       }
     }
+    if (args["skip-trust"] !== undefined && typeof args["skip-trust"] !== "boolean") {
+      if (shouldRespond) sendError(id, -32602, "Invalid params: 'skip-trust' must be a boolean when provided");
+      return;
+    }
     if (args["include-directories"] !== undefined) {
       if (!Array.isArray(args["include-directories"]) || args["include-directories"].length === 0) {
         if (shouldRespond) sendError(id, -32602, "Invalid params: 'include-directories' must be a non-empty array of strings when provided");
@@ -253,6 +259,7 @@ const handlers = {
         if (args["include-directories"]) {
           geminiArgs.push("--include-directories", args["include-directories"].join(","));
         }
+        if (args["skip-trust"] === true) geminiArgs.push("--skip-trust");
         if (args.sandbox === "workspace-write") geminiArgs.push("-s");
         let prompt = args.prompt;
         if (args["developer-instructions"]) prompt = `${args["developer-instructions"]}\n\n${prompt}`;
@@ -276,6 +283,7 @@ const handlers = {
         if (args["include-directories"]) {
           geminiArgs.push("--include-directories", args["include-directories"].join(","));
         }
+        if (args["skip-trust"] === true) geminiArgs.push("--skip-trust");
         if (args.sandbox === "workspace-write") geminiArgs.push("-s");
         geminiArgs.push("-p", args.prompt);
       } else {

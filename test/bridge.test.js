@@ -1,7 +1,7 @@
 "use strict";
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { startBridge, send, collectResponses } = require("./_helpers.js");
+const { startBridge, send, collectResponses, readArgv } = require("./_helpers.js");
 
 test("B1: timeout kills slow gemini and surfaces structured error", async () => {
   const child = startBridge({ fakeBin: "fake-gemini-slow.sh" });
@@ -25,4 +25,51 @@ test("B1: timeout kills slow gemini and surfaces structured error", async () => 
   assert.equal(callRes.result.errorKind, "timeout", "errorKind");
   assert.equal(callRes.result.retryable, true, "retryable");
   assert.ok(elapsed < 4500, "bridge returned within 4.5s, got " + elapsed + "ms");
+});
+
+test("B2: skip-trust true pushes --skip-trust into argv", async () => {
+  const child = startBridge({ fakeBin: "fake-gemini.sh" });
+  const responsesP = collectResponses(child);
+
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "hi", "skip-trust": true } },
+  });
+  setTimeout(() => child.stdin.end(), 800);
+  await responsesP;
+
+  const invocations = readArgv(child.argvLog);
+  assert.ok(invocations.length >= 1, "at least one gemini invocation captured");
+  assert.ok(invocations[0].includes("--skip-trust"), "argv contains --skip-trust");
+});
+
+test("B2: skip-trust omitted does not push --skip-trust", async () => {
+  const child = startBridge({ fakeBin: "fake-gemini.sh" });
+  const responsesP = collectResponses(child);
+
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "hi" } },
+  });
+  setTimeout(() => child.stdin.end(), 800);
+  await responsesP;
+
+  const invocations = readArgv(child.argvLog);
+  assert.ok(!invocations[0].includes("--skip-trust"), "argv does not contain --skip-trust");
+});
+
+test("B2: skip-trust non-boolean returns -32602", async () => {
+  const child = startBridge({ fakeBin: "fake-gemini.sh" });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "hi", "skip-trust": "yes" } },
+  });
+  setTimeout(() => child.stdin.end(), 800);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.equal(r.error && r.error.code, -32602);
 });
