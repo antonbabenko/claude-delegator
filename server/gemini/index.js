@@ -10,6 +10,7 @@
 const { spawn, execSync } = require("node:child_process");
 
 const DEFAULT_MODEL = "gemini-2.5-flash";
+const DEFAULT_TIMEOUT_MS = 120_000; // 2 minutes
 const VALID_SANDBOX_VALUES = new Set(["read-only", "workspace-write"]);
 
 // --- MCP Protocol Helpers ---
@@ -44,14 +45,44 @@ function isNonEmptyString(value) {
 
 // --- Gemini CLI Wrapper ---
 
-async function runGemini(args, cwd) {
+async function runGemini(args, cwd, timeoutMs) {
   return new Promise((resolve, reject) => {
+    const t = (typeof timeoutMs === "number" && timeoutMs > 0) ? timeoutMs : DEFAULT_TIMEOUT_MS;
+    let killed = false;
+    let settled = false;
+    let graceTimer = null;
     // Force JSON output for reliable parsing
     const geminiArgs = [...args, "-o", "json"];
     const geminiProcess = spawn("gemini", geminiArgs, {
       env: process.env,
       shell: false,
       cwd: cwd || process.cwd() // Ensure we run in the requested directory
+    });
+    const killTimer = setTimeout(() => {
+      killed = true;
+      try { geminiProcess.kill("SIGTERM"); } catch (_) {}
+      graceTimer = setTimeout(() => {
+        try { geminiProcess.kill("SIGKILL"); } catch (_) {}
+      }, 1_000);
+    }, t);
+    function clearTimers() { clearTimeout(killTimer); if (graceTimer) clearTimeout(graceTimer); }
+    geminiProcess.on("close", clearTimers);
+    geminiProcess.on("error", clearTimers);
+
+    // exit fires when the process itself exits even if child pipes are still open.
+    // Use it to surface the timeout error early without waiting for pipe drain.
+    // Destroy the child streams so orphaned grandchildren (e.g. sleep) holding
+    // the pipe fds open do not keep our event loop alive.
+    geminiProcess.on("exit", () => {
+      if (killed && !settled) {
+        settled = true;
+        clearTimers();
+        try { geminiProcess.stdout.destroy(); } catch (_) {}
+        try { geminiProcess.stderr.destroy(); } catch (_) {}
+        const err = new Error("Gemini timed out after " + Math.round(t / 1000) + "s");
+        err.code = "timeout";
+        reject(err);
+      }
     });
     
     let stdout = "";
@@ -69,6 +100,13 @@ async function runGemini(args, cwd) {
     geminiProcess.stderr.on("data", (data) => { stderr += data.toString(); });
 
     geminiProcess.on("close", (code) => {
+      if (settled) return; // already resolved/rejected via exit event
+      settled = true;
+      if (killed) {
+        const err = new Error("Gemini timed out after " + Math.round(t / 1000) + "s");
+        err.code = "timeout";
+        return reject(err);
+      }
       if (code !== 0 && !stdout) {
         return reject(new Error(stderr.trim() || `Gemini exited with code ${code}`));
       }
@@ -77,7 +115,7 @@ async function runGemini(args, cwd) {
         // Extract JSON block (ignoring potential terminal noise)
         const jsonMatch = stdout.match(/\{[\s\S]*\}/);
         if (!jsonMatch) throw new Error("No JSON response found");
-        
+
         const data = JSON.parse(jsonMatch[0]);
         resolve({
           response: data.response || "(No output)",
@@ -121,7 +159,8 @@ const handlers = {
                 type: "array",
                 items: { type: "string" },
                 description: "Additional directories to include in the workspace alongside cwd. Equivalent to --include-directories on the Gemini CLI."
-              }
+              },
+              timeout: { type: "number", description: "Bridge-side timeout in ms before SIGTERM. 1..600000. Default 120000.", default: DEFAULT_TIMEOUT_MS }
             },
             required: ["prompt"]
           }
@@ -140,7 +179,8 @@ const handlers = {
                 type: "array",
                 items: { type: "string" },
                 description: "Additional directories to include in the workspace alongside cwd. Equivalent to --include-directories on the Gemini CLI."
-              }
+              },
+              timeout: { type: "number", description: "Bridge-side timeout in ms before SIGTERM. 1..600000. Default 120000.", default: DEFAULT_TIMEOUT_MS }
             },
             required: ["threadId", "prompt"]
           }
@@ -171,6 +211,12 @@ const handlers = {
     if (args.cwd !== undefined && !isNonEmptyString(args.cwd)) {
       if (shouldRespond) sendError(id, -32602, "Invalid params: 'cwd' must be a non-empty string when provided");
       return;
+    }
+    if (args.timeout !== undefined) {
+      if (typeof args.timeout !== "number" || !Number.isFinite(args.timeout) || args.timeout <= 0 || args.timeout > 600_000) {
+        if (shouldRespond) sendError(id, -32602, "Invalid params: 'timeout' must be a number > 0 and <= 600000 milliseconds");
+        return;
+      }
     }
     if (args["include-directories"] !== undefined) {
       if (!Array.isArray(args["include-directories"]) || args["include-directories"].length === 0) {
@@ -235,7 +281,8 @@ const handlers = {
         return;
       }
 
-      const { response, threadId } = await runGemini(geminiArgs, args.cwd);
+      const timeoutMs = (typeof args.timeout === "number" && args.timeout > 0) ? args.timeout : DEFAULT_TIMEOUT_MS;
+      const { response, threadId } = await runGemini(geminiArgs, args.cwd, timeoutMs);
       
       // Return metadata (threadId) at the top level for orchestration rules,
       // and standard content array for the UI.
@@ -246,10 +293,15 @@ const handlers = {
         });
       }
     } catch (e) {
+      const errMsg = (e && e.message) || String(e);
+      const errorKind = (e && e.code === "timeout") ? "timeout" : "unknown";
+      const retryable = errorKind === "timeout";
       if (shouldRespond) {
         sendResponse(id, {
-          content: [{ type: "text", text: `Error: ${e.message}` }],
-          isError: true
+          content: [{ type: "text", text: `Error: ${errMsg}` }],
+          isError: true,
+          errorKind,
+          retryable,
         });
       }
     }
