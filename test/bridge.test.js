@@ -73,3 +73,33 @@ test("B2: skip-trust non-boolean returns -32602", async () => {
   const r = responses.find((x) => x.id === 2);
   assert.equal(r.error && r.error.code, -32602);
 });
+
+// Pure-function unit tests for the parser helper. Bridge is required as a module - see Step 3.5 for the guards that make this safe.
+test("B4: lastJSONObject returns the trailing valid object", () => {
+  const { lastJSONObject } = require("../server/gemini/index.js");
+  const s = 'warning: {"foo": 1}\n{"response":"ok","session_id":"x"}\n';
+  assert.equal(lastJSONObject(s), '{"response":"ok","session_id":"x"}');
+});
+
+test("B4: lastJSONObject handles brace inside JSON string", () => {
+  const { lastJSONObject } = require("../server/gemini/index.js");
+  const s = '{"response":"} text","session_id":"y"}\ntrailing junk';
+  assert.equal(lastJSONObject(s), '{"response":"} text","session_id":"y"}');
+});
+
+test("B4: lastJSONObject returns the outer object, not inner", () => {
+  const { lastJSONObject } = require("../server/gemini/index.js");
+  const s = '{"outer":{"inner":1}}';
+  assert.equal(lastJSONObject(s), '{"outer":{"inner":1}}');
+});
+
+test("B4: lastJSONObject tolerates noisy preamble", () => {
+  const { lastJSONObject } = require("../server/gemini/index.js");
+  const s = 'junk \\ unmatched } "quoted" prefix\n{"response":"ok","session_id":"z"}\n';
+  assert.equal(lastJSONObject(s), '{"response":"ok","session_id":"z"}');
+});
+
+test("B4: lastJSONObject returns null on no object", () => {
+  const { lastJSONObject } = require("../server/gemini/index.js");
+  assert.equal(lastJSONObject("no json here"), null);
+});

@@ -2,7 +2,7 @@
 
 /**
  * Claude Delegator - Gemini MCP Bridge
- * 
+ *
  * A zero-dependency MCP server that wraps the Gemini CLI.
  * Speaks JSON-RPC 2.0 over stdio.
  */
@@ -45,6 +45,39 @@ function isNonEmptyString(value) {
 
 // --- Gemini CLI Wrapper ---
 
+function lastJSONObject(s) {
+  const spans = [];
+  let depth = 0, start = -1, inStr = false, escape = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (depth === 0) {
+      // Outside any candidate object: only `{` is meaningful. Reset string state.
+      inStr = false; escape = false;
+      if (c === "{") { depth = 1; start = i; }
+      continue;
+    }
+    // depth >= 1: track string + escape per JSON grammar
+    if (escape) { escape = false; continue; }
+    if (c === "\\") { escape = true; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (c === "{") { depth++; }
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) {
+        spans.push([start, i]);
+        start = -1;
+      } else if (depth < 0) {
+        // Defensive: floor at 0, abandon the candidate.
+        depth = 0; start = -1;
+      }
+    }
+  }
+  if (!spans.length) return null;
+  const [a, b] = spans[spans.length - 1];
+  return s.slice(a, b + 1);
+}
+
 async function runGemini(args, cwd, timeoutMs) {
   return new Promise((resolve, reject) => {
     const t = (typeof timeoutMs === "number" && timeoutMs > 0) ? timeoutMs : DEFAULT_TIMEOUT_MS;
@@ -84,7 +117,7 @@ async function runGemini(args, cwd, timeoutMs) {
         reject(err);
       }
     });
-    
+
     let stdout = "";
     let stderr = "";
 
@@ -114,17 +147,17 @@ async function runGemini(args, cwd, timeoutMs) {
       }
 
       try {
-        // Extract JSON block (ignoring potential terminal noise)
-        const jsonMatch = stdout.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) throw new Error("No JSON response found");
-
-        const data = JSON.parse(jsonMatch[0]);
+        const jsonStr = lastJSONObject(stdout);
+        if (!jsonStr) throw new Error("No JSON response found");
+        const data = JSON.parse(jsonStr);
         resolve({
           response: data.response || "(No output)",
           threadId: data.session_id || "unknown"
         });
       } catch (e) {
-        reject(new Error(`Parse error: ${e.message}\nRaw output was: ${stdout}`));
+        const err = new Error(`Parse error: ${e.message}\nRaw output was: ${stdout}`);
+        err.code = "parse";
+        reject(err);
       }
     });
   });
@@ -293,13 +326,13 @@ const handlers = {
 
       const timeoutMs = (typeof args.timeout === "number" && args.timeout > 0) ? args.timeout : DEFAULT_TIMEOUT_MS;
       const { response, threadId } = await runGemini(geminiArgs, args.cwd, timeoutMs);
-      
+
       // Return metadata (threadId) at the top level for orchestration rules,
       // and standard content array for the UI.
       if (shouldRespond) {
         sendResponse(id, {
           content: [{ type: "text", text: response }],
-          threadId: threadId 
+          threadId: threadId
         });
       }
     } catch (e) {
@@ -317,52 +350,60 @@ const handlers = {
     }
   },
 
-  "notifications/initialized": () => {} 
+  "notifications/initialized": () => {}
 };
 
 // --- Main Loop (Robust JSON-RPC stream handling) ---
 
 let buffer = "";
-process.stdin.on("data", async (chunk) => {
-  buffer += chunk.toString();
-  let lines = buffer.split("\n");
-  buffer = lines.pop(); // Keep partial line in buffer
 
-  for (const line of lines) {
-    if (!line.trim()) continue;
+if (require.main === module) {
+  process.stdin.on("data", async (chunk) => {
+    buffer += chunk.toString();
+    let lines = buffer.split("\n");
+    buffer = lines.pop(); // Keep partial line in buffer
 
-    let request;
-    try {
-      request = JSON.parse(line);
-    } catch (e) {
-      // Ignore parse errors from noise
-      continue;
+    for (const line of lines) {
+      if (!line.trim()) continue;
+
+      let request;
+      try {
+        request = JSON.parse(line);
+      } catch (e) {
+        // Ignore parse errors from noise
+        continue;
+      }
+
+      const shouldRespond = hasRequestId(request);
+      if (!isObject(request) || typeof request.method !== "string") {
+        if (shouldRespond) sendError(request.id, -32600, "Invalid Request");
+        continue;
+      }
+
+      const handler = handlers[request.method];
+      if (!handler) {
+        if (shouldRespond) sendError(request.id, -32601, `Method not found: ${request.method}`);
+        continue;
+      }
+
+      try {
+        await handler(request.id, request.params, shouldRespond);
+      } catch (e) {
+        if (shouldRespond) sendError(request.id, -32603, `Internal error: ${e.message}`);
+      }
     }
+  });
 
-    const shouldRespond = hasRequestId(request);
-    if (!isObject(request) || typeof request.method !== "string") {
-      if (shouldRespond) sendError(request.id, -32600, "Invalid Request");
-      continue;
-    }
-
-    const handler = handlers[request.method];
-    if (!handler) {
-      if (shouldRespond) sendError(request.id, -32601, `Method not found: ${request.method}`);
-      continue;
-    }
-
-    try {
-      await handler(request.id, request.params, shouldRespond);
-    } catch (e) {
-      if (shouldRespond) sendError(request.id, -32603, `Internal error: ${e.message}`);
-    }
+  // Startup Check
+  try {
+    execSync("gemini --version", { stdio: "ignore" });
+  } catch (e) {
+    console.error("Gemini CLI not found. Please install it first.");
+    process.exit(1);
   }
-});
+}
 
-// Startup Check
-try {
-  execSync("gemini --version", { stdio: "ignore" });
-} catch (e) {
-  console.error("Gemini CLI not found. Please install it first.");
-  process.exit(1);
+// Test-only exports
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.lastJSONObject = lastJSONObject;
 }
