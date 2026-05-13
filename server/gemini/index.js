@@ -89,6 +89,8 @@ async function runGemini(args, cwd, timeoutMs) {
     let stderr = "";
 
     geminiProcess.on("error", (err) => {
+      if (settled) return;
+      settled = true;
       if (err.code === "ENOENT") {
         reject(new Error("Gemini CLI not found. Please install it with 'npm install -g @google/gemini-cli'."));
       } else {

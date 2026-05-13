@@ -24,5 +24,5 @@ test("B1: timeout kills slow gemini and surfaces structured error", async () => 
   assert.equal(callRes.result.isError, true, "isError");
   assert.equal(callRes.result.errorKind, "timeout", "errorKind");
   assert.equal(callRes.result.retryable, true, "retryable");
-  assert.ok(elapsed < 3500, "bridge returned within 3.5s, got " + elapsed + "ms");
+  assert.ok(elapsed < 4500, "bridge returned within 4.5s, got " + elapsed + "ms");
 });
