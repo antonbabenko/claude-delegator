@@ -103,3 +103,30 @@ test("B4: lastJSONObject returns null on no object", () => {
   const { lastJSONObject } = require("../server/gemini/index.js");
   assert.equal(lastJSONObject("no json here"), null);
 });
+
+test("B5: parse failures surface errorKind 'parse' with retryable false", async () => {
+  // Use an ad-hoc stub that emits non-JSON garbage.
+  const path = require("node:path");
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cdg-junk-"));
+  fs.writeFileSync(path.join(tmpDir, "gemini"), '#!/usr/bin/env bash\nif [ "$1" = "--version" ]; then echo "0.0.0-junk"; exit 0; fi\necho "no JSON anywhere here just plain text"\n', { mode: 0o755 });
+
+  const { spawn } = require("node:child_process");
+  const child = spawn(process.execPath, [require.resolve("../server/gemini/index.js")], {
+    env: { ...process.env, PATH: `${tmpDir}:${process.env.PATH}` },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "junk" } },
+  });
+  setTimeout(() => child.stdin.end(), 1000);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.equal(r.result.isError, true);
+  assert.equal(r.result.errorKind, "parse");
+  assert.equal(r.result.retryable, false);
+});

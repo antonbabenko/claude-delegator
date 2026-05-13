@@ -337,8 +337,14 @@ const handlers = {
       }
     } catch (e) {
       const errMsg = (e && e.message) || String(e);
-      const errorKind = (e && e.code === "timeout") ? "timeout" : "unknown";
-      const retryable = errorKind === "timeout";
+      const errCode = e && e.code;
+      let errorKind = "unknown", retryable = false;
+      if (errCode === "timeout") { errorKind = "timeout"; retryable = true; }
+      else if (errCode === "parse") { errorKind = "parse"; retryable = false; }
+      else if (errMsg.includes("trusted directory")) { errorKind = "trust"; retryable = false; }
+      else if (errMsg.includes("Gemini CLI not found")) { errorKind = "missing-cli"; retryable = false; }
+      else if (errMsg.includes("AbortError") || errMsg.includes("aborted")) { errorKind = "upstream-abort"; retryable = true; }
+
       if (shouldRespond) {
         sendResponse(id, {
           content: [{ type: "text", text: `Error: ${errMsg}` }],
