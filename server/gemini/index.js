@@ -7,9 +7,10 @@
  * Speaks JSON-RPC 2.0 over stdio.
  */
 
-const { spawn, execSync } = require("node:child_process");
+const { spawn } = require("node:child_process");
 
 const DEFAULT_MODEL = "gemini-2.5-flash";
+const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes
 const VALID_SANDBOX_VALUES = new Set(["read-only", "workspace-write"]);
 
 // --- MCP Protocol Helpers ---
@@ -44,48 +45,106 @@ function isNonEmptyString(value) {
 
 // --- Gemini CLI Wrapper ---
 
-async function runGemini(args, cwd) {
+/**
+ * Spawn Gemini CLI with stream-json output and parse NDJSON events.
+ *
+ * stream-json emits one JSON object per line:
+ *   {"type":"init",     "session_id":"...", "model":"..."}
+ *   {"type":"message",  "role":"user",      "content":"..."}
+ *   {"type":"message",  "role":"assistant",  "content":"...", "delta":true}  // streaming chunks
+ *   {"type":"result",   "status":"success",  "stats":{...}}
+ *
+ * This avoids buffering the entire response and gives us the session_id
+ * from the very first event.
+ */
+async function runGemini(args, cwd, timeoutMs) {
+  const timeout = timeoutMs || DEFAULT_TIMEOUT_MS;
+
   return new Promise((resolve, reject) => {
-    // Force JSON output for reliable parsing
-    const geminiArgs = [...args, "-o", "json"];
+    const geminiArgs = [...args, "-o", "stream-json"];
     const geminiProcess = spawn("gemini", geminiArgs, {
       env: process.env,
       shell: false,
-      cwd: cwd || process.cwd() // Ensure we run in the requested directory
+      cwd: cwd || process.cwd()
     });
-    
-    let stdout = "";
+
     let stderr = "";
+    let killed = false;
+    let threadId = "unknown";
+    let responseChunks = [];
+    let lineBuf = "";
+
+    const timer = setTimeout(() => {
+      killed = true;
+      geminiProcess.kill("SIGTERM");
+      setTimeout(() => {
+        try { geminiProcess.kill("SIGKILL"); } catch (_) {}
+      }, 5_000);
+    }, timeout);
 
     geminiProcess.on("error", (err) => {
+      clearTimeout(timer);
       if (err.code === "ENOENT") {
-        reject(new Error("Gemini CLI not found. Please install it with 'npm install -g @google/gemini-cli'."));
+        reject(new Error("Gemini CLI not found. Install with: npm install -g @google/gemini-cli"));
       } else {
         reject(err);
       }
     });
 
-    geminiProcess.stdout.on("data", (data) => { stdout += data.toString(); });
+    // Parse NDJSON lines as they arrive
+    geminiProcess.stdout.on("data", (chunk) => {
+      lineBuf += chunk.toString();
+      const lines = lineBuf.split("\n");
+      lineBuf = lines.pop(); // keep incomplete line
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line);
+          if (event.type === "init" && event.session_id) {
+            threadId = event.session_id;
+          } else if (event.type === "message" && event.role === "assistant") {
+            responseChunks.push(event.content || "");
+          }
+        } catch (_) {
+          // ignore non-JSON lines (keychain warnings, etc.)
+        }
+      }
+    });
+
     geminiProcess.stderr.on("data", (data) => { stderr += data.toString(); });
 
     geminiProcess.on("close", (code) => {
-      if (code !== 0 && !stdout) {
-        return reject(new Error(stderr.trim() || `Gemini exited with code ${code}`));
+      clearTimeout(timer);
+
+      if (killed) {
+        // Return partial response if we got any chunks before timeout
+        const partial = responseChunks.join("");
+        if (partial) {
+          return resolve({
+            response: partial + "\n\n[Truncated: timed out after " + Math.round(timeout / 1000) + "s]",
+            threadId
+          });
+        }
+        return reject(new Error(
+          `Gemini timed out after ${Math.round(timeout / 1000)}s. ` +
+          "Try a shorter prompt or a faster model (gemini-2.5-flash)."
+        ));
       }
 
-      try {
-        // Extract JSON block (ignoring potential terminal noise)
-        const jsonMatch = stdout.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) throw new Error("No JSON response found");
-        
-        const data = JSON.parse(jsonMatch[0]);
-        resolve({
-          response: data.response || "(No output)",
-          threadId: data.session_id || "unknown"
-        });
-      } catch (e) {
-        reject(new Error(`Parse error: ${e.message}\nRaw output was: ${stdout}`));
+      if (code !== 0 && responseChunks.length === 0) {
+        const msg = stderr.trim() || `Gemini exited with code ${code}`;
+        if (msg.includes("AbortError") || msg.includes("aborted")) {
+          return reject(new Error(
+            "Gemini API request was aborted (upstream timeout). " +
+            "Try a shorter prompt or check network connectivity."
+          ));
+        }
+        return reject(new Error(msg));
       }
+
+      const response = responseChunks.join("") || "(No output)";
+      resolve({ response, threadId });
     });
   });
 }
@@ -98,7 +157,7 @@ const handlers = {
     sendResponse(id, {
       protocolVersion: "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "claude-delegator-gemini", version: "1.2.1" }
+      serverInfo: { name: "claude-delegator-gemini", version: "1.3.0" }
     });
   },
 
@@ -121,7 +180,8 @@ const handlers = {
                 type: "array",
                 items: { type: "string" },
                 description: "Additional directories to include in the workspace alongside cwd. Equivalent to --include-directories on the Gemini CLI."
-              }
+              },
+              timeout: { type: "number", description: "Timeout in ms (default: 300000 = 5min)", default: DEFAULT_TIMEOUT_MS }
             },
             required: ["prompt"]
           }
@@ -140,7 +200,8 @@ const handlers = {
                 type: "array",
                 items: { type: "string" },
                 description: "Additional directories to include in the workspace alongside cwd. Equivalent to --include-directories on the Gemini CLI."
-              }
+              },
+              timeout: { type: "number", description: "Timeout in ms (default: 300000 = 5min)", default: DEFAULT_TIMEOUT_MS }
             },
             required: ["threadId", "prompt"]
           }
@@ -205,7 +266,11 @@ const handlers = {
         if (args["include-directories"]) {
           geminiArgs.push("--include-directories", args["include-directories"].join(","));
         }
-        if (args.sandbox === "workspace-write") geminiArgs.push("-s");
+        if (args.sandbox === "workspace-write") {
+          geminiArgs.push("-s", "--approval-mode", "yolo");
+        } else {
+          geminiArgs.push("--approval-mode", "plan");
+        }
         let prompt = args.prompt;
         if (args["developer-instructions"]) prompt = `${args["developer-instructions"]}\n\n${prompt}`;
         geminiArgs.push("-p", prompt);
@@ -228,14 +293,19 @@ const handlers = {
         if (args["include-directories"]) {
           geminiArgs.push("--include-directories", args["include-directories"].join(","));
         }
-        if (args.sandbox === "workspace-write") geminiArgs.push("-s");
+        if (args.sandbox === "workspace-write") {
+          geminiArgs.push("-s", "--approval-mode", "yolo");
+        } else {
+          geminiArgs.push("--approval-mode", "plan");
+        }
         geminiArgs.push("-p", args.prompt);
       } else {
         if (shouldRespond) sendError(id, -32601, `Tool not found: ${name}`);
         return;
       }
 
-      const { response, threadId } = await runGemini(geminiArgs, args.cwd);
+      const timeoutMs = (typeof args.timeout === "number" && args.timeout > 0) ? args.timeout : undefined;
+      const { response, threadId } = await runGemini(geminiArgs, args.cwd, timeoutMs);
       
       // Return metadata (threadId) at the top level for orchestration rules,
       // and standard content array for the UI.
@@ -247,9 +317,12 @@ const handlers = {
       }
     } catch (e) {
       if (shouldRespond) {
+        const msg = e.message || String(e);
+        const retryable = msg.includes("timed out") || msg.includes("aborted") || msg.includes("ECONNRESET");
         sendResponse(id, {
-          content: [{ type: "text", text: `Error: ${e.message}` }],
-          isError: true
+          content: [{ type: "text", text: `Error: ${msg}${retryable ? "\n\n[RETRYABLE] This error is transient — retry with a shorter prompt, faster model, or failover to the other provider." : ""}` }],
+          isError: true,
+          retryable
         });
       }
     }
@@ -297,10 +370,15 @@ process.stdin.on("data", async (chunk) => {
   }
 });
 
-// Startup Check
-try {
-  execSync("gemini --version", { stdio: "ignore" });
-} catch (e) {
-  console.error("Gemini CLI not found. Please install it first.");
+// Startup check — non-blocking, fails fast without stalling the event loop
+const check = spawn("gemini", ["--version"], { stdio: "ignore" });
+check.on("error", () => {
+  process.stderr.write("Gemini CLI not found. Install with: npm install -g @google/gemini-cli\n");
   process.exit(1);
-}
+});
+check.on("close", (code) => {
+  if (code !== 0) {
+    process.stderr.write("Gemini CLI check failed. Ensure 'gemini' is on your PATH.\n");
+    process.exit(1);
+  }
+});

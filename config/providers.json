@@ -9,7 +9,7 @@
       "mcp": {
         "type": "stdio",
         "command": "codex",
-        "args": ["-m", "gpt-5.3-codex", "mcp-server"]
+        "args": ["mcp-server"]
       },
       "experts": ["architect", "plan-reviewer", "scope-analyst", "code-reviewer", "security-analyst"],
       "strengths": ["architecture", "code-review", "security", "requirements-analysis", "plan-validation"],

@@ -46,8 +46,10 @@ Register your preferred provider(s) as MCP servers using Claude Code's native co
 ### Codex (GPT)
 ```bash
 # Idempotent: safe to rerun setup
+# Model is NOT hardcoded here — each call specifies its own model via the 'model' parameter.
+# This avoids needing to re-register the MCP server when switching models.
 claude mcp remove codex >/dev/null 2>&1 || true
-claude mcp add --transport stdio --scope user codex -- codex -m gpt-5.3-codex mcp-server
+claude mcp add --transport stdio --scope user codex -- codex mcp-server
 ```
 
 ### Gemini
@@ -65,7 +67,7 @@ This registers the MCP servers at user scope (available across all projects).
 ## Step 3: Install Orchestration Rules
 
 ```bash
-mkdir -p ~/.claude/rules/delegator && cp ${CLAUDE_PLUGIN_ROOT}/rules/*.md ~/.claude/rules/delegator/
+bash ${CLAUDE_PLUGIN_ROOT}/scripts/install-rules.sh
 ```
 
 ## Step 4: Verify Installation
@@ -79,9 +81,8 @@ gemini --version 2>&1 | head -1 || echo "Not installed"
 
 # Check 2: Codex MCP server
 CODEX_CONFIG=$(claude mcp get codex 2>/dev/null)
-if echo "$CODEX_CONFIG" | grep -q "codex"; then
-  MODEL=$(echo "$CODEX_CONFIG" | grep -oE 'gpt-[0-9]+\.[0-9]+-?[a-z]*' | head -1)
-  echo "Codex: OK (model: ${MODEL:-unknown})"
+if echo "$CODEX_CONFIG" | grep -q "mcp-server"; then
+  echo "Codex: OK"
 else
   echo "Codex: NOT CONFIGURED"
 fi
