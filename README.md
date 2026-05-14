@@ -200,6 +200,24 @@ You need at least one of the following providers configured:
 | Provider not authenticated | Codex: run `codex login`. Gemini: run `gemini` once to complete sign-in (or set `GOOGLE_API_KEY`) |
 | Tool not appearing | Run `claude mcp list` and verify registration |
 | Expert not triggered | Try explicit: "Ask GPT to review..." or "Ask Gemini to review..." |
+| Gemini blocked by trust check | The bridge returns `errorKind: "trust"` with `hint: "skip-trust"`. The orchestrator auto-retries the call once with `skip-trust: true` and prints a notice. To opt in up front, pass `"skip-trust": true` on the call. |
+
+### Untrusted directories
+
+The Gemini CLI refuses to run from a directory it has not been told to trust (entries live in `~/.gemini/trustedFolders.json`). When that happens the bridge surfaces a structured signal:
+
+```json
+{
+  "isError": true,
+  "errorKind": "trust",
+  "retryable": true,
+  "hint": "skip-trust"
+}
+```
+
+The orchestration rules (`rules/orchestration.md` -> "Trust Failure Recovery") instruct Claude to retry the same call once with `"skip-trust": true`, preserving `threadId` for `gemini-reply`. A second consecutive trust failure (when `skip-trust: true` was already set) escalates to the user instead of looping.
+
+Callers that already know they want to bypass the trust check can pass `"skip-trust": true` from the start.
 
 ---
 

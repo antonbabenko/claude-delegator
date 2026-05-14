@@ -171,3 +171,102 @@ test("B6: unset env falls back to gemini-2.5-flash", async () => {
   const mIdx = argv.indexOf("-m");
   assert.equal(argv[mIdx + 1], "gemini-2.5-flash");
 });
+
+// --- B7: trust-check classification (issue #2) ---
+
+test("B7a: gemini trust failure surfaces errorKind=trust, retryable=true, hint=skip-trust", async () => {
+  const child = startBridge({ fakeBin: "fake-gemini-trust.sh" });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "hi" } },
+  });
+  setTimeout(() => child.stdin.end(), 800);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.equal(r.result.isError, true);
+  assert.equal(r.result.errorKind, "trust");
+  assert.equal(r.result.retryable, true);
+  assert.equal(r.result.hint, "skip-trust");
+});
+
+test("B7f: gemini-reply trust failure classifies identically", async () => {
+  const child = startBridge({ fakeBin: "fake-gemini-trust.sh" });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini-reply", arguments: { threadId: "abc", prompt: "follow up" } },
+  });
+  setTimeout(() => child.stdin.end(), 800);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.equal(r.result.isError, true);
+  assert.equal(r.result.errorKind, "trust");
+  assert.equal(r.result.retryable, true);
+  assert.equal(r.result.hint, "skip-trust");
+});
+
+test("B7g: stderr trust error is not masked when stdout has noise", async () => {
+  const child = startBridge({ fakeBin: "fake-gemini-trust-with-stdout.sh" });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "hi" } },
+  });
+  setTimeout(() => child.stdin.end(), 800);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.equal(r.result.isError, true);
+  assert.equal(r.result.errorKind, "trust", "stderr trust text must win over stdout banner");
+  assert.equal(r.result.retryable, true);
+});
+
+// Pure-function classifier units (no spawn).
+test("B7b: classifyGeminiError matches 'trusted directory' case-insensitively", () => {
+  const { classifyGeminiError } = require("../server/gemini/index.js");
+  assert.deepEqual(
+    classifyGeminiError("Error: not a trusted directory", null),
+    { errorKind: "trust", retryable: true, hint: "skip-trust" }
+  );
+  assert.deepEqual(
+    classifyGeminiError("NOT A Trusted Directory", null),
+    { errorKind: "trust", retryable: true, hint: "skip-trust" }
+  );
+});
+
+test("B7c: classifyGeminiError matches 'trust check' wording", () => {
+  const { classifyGeminiError } = require("../server/gemini/index.js");
+  const r = classifyGeminiError("trust check failed for /tmp/x", null);
+  assert.equal(r.errorKind, "trust");
+  assert.equal(r.retryable, true);
+  assert.equal(r.hint, "skip-trust");
+});
+
+test("B7d: classifyGeminiError preserves timeout / parse / missing-cli / abort branches", () => {
+  const { classifyGeminiError } = require("../server/gemini/index.js");
+  assert.deepEqual(classifyGeminiError("anything", "timeout"), { errorKind: "timeout", retryable: true });
+  assert.deepEqual(classifyGeminiError("anything", "parse"),   { errorKind: "parse",   retryable: false });
+  const missing = classifyGeminiError("Gemini CLI not found. Please install it.", null);
+  assert.equal(missing.errorKind, "missing-cli");
+  assert.equal(missing.retryable, false);
+  const abort = classifyGeminiError("AbortError: signal aborted", null);
+  assert.equal(abort.errorKind, "upstream-abort");
+  assert.equal(abort.retryable, true);
+});
+
+test("B7e: classifyGeminiError falls back to unknown for unrelated text", () => {
+  const { classifyGeminiError } = require("../server/gemini/index.js");
+  const r = classifyGeminiError("network blip", null);
+  assert.equal(r.errorKind, "unknown");
+  assert.equal(r.retryable, false);
+  assert.equal(r.hint, undefined);
+});
+
+test("B7e: classifyGeminiError tolerates null/undefined errMsg", () => {
+  const { classifyGeminiError } = require("../server/gemini/index.js");
+  assert.equal(classifyGeminiError(null, null).errorKind, "unknown");
+  assert.equal(classifyGeminiError(undefined, null).errorKind, "unknown");
+});
