@@ -118,10 +118,13 @@ For example, for Architect: `Read ${CLAUDE_PLUGIN_ROOT}/prompts/architect.md`
 | Make changes, fix issues, implement | Implementation | `workspace-write` |
 
 ### Step 4: Notify User
-Always inform the user before delegating:
-```
-Delegating to [Expert Name]: [brief task summary]
-```
+
+Status line is owned by each command file (see ask-gpt.md, ask-gemini.md, ask-both.md, agree-both.md). Commands print exactly one line immediately before the MCP tool dispatch:
+
+- single-provider: `Codex working (typical 30-60s)...` or `Gemini working (typical 30-60s)...`
+- parallel: `Codex + Gemini working in parallel (typical 30-60s)...`
+
+This rule file no longer defines the wording. The command files are the source of truth.
 
 ### Step 5: Build Delegation Prompt
 Use the 7-section format from `rules/delegation-format.md`.
@@ -216,7 +219,7 @@ User: "What are the tradeoffs of Redis vs in-memory caching?"
 
 **Step 3**: Advisory mode (question, not implementation) → `read-only`
 
-**Step 4**: "Delegating to Architect: Analyze caching tradeoffs"
+**Step 4**: Print status line: `Gemini working (typical 30-60s)...` (or `Codex working (typical 30-60s)...` for GPT)
 
 **Step 5-6**:
 ```typescript
@@ -311,6 +314,6 @@ Trusted projects allow the expert full access within the sandbox policy.
 | Delegate trivial questions | Answer directly |
 | Show raw expert output | Synthesize and interpret |
 | Delegate without reading prompt file | ALWAYS read and inject expert prompt |
-| Skip user notification | ALWAYS notify before delegating |
+| Skip status line before MCP dispatch | ALWAYS print status line (see command files for wording) |
 | Retry without including error context | Include FULL history of what was tried |
 | Assume expert remembers across sessions | Use the appropriate `*-reply` tool for multi-turn; include full context for single-shot |
