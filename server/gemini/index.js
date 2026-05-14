@@ -43,6 +43,29 @@ function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+// --- Error Classification ---
+
+// Pure helper: given a runGemini rejection's message and code, produce the
+// structured error fields the orchestrator consumes. Exported for tests.
+function classifyGeminiError(errMsg, errCode) {
+  const msg = String(errMsg || "");
+  const lower = msg.toLowerCase();
+  if (errCode === "timeout") return { errorKind: "timeout", retryable: true };
+  if (errCode === "parse")   return { errorKind: "parse",   retryable: false };
+  if (
+    lower.includes("trusted directory") ||
+    lower.includes("trust check") ||
+    lower.includes("not a trusted folder")
+  ) {
+    return { errorKind: "trust", retryable: true, hint: "skip-trust" };
+  }
+  if (msg.includes("Gemini CLI not found")) return { errorKind: "missing-cli", retryable: false };
+  if (lower.includes("aborterror") || lower.includes("aborted")) {
+    return { errorKind: "upstream-abort", retryable: true };
+  }
+  return { errorKind: "unknown", retryable: false };
+}
+
 // --- Gemini CLI Wrapper ---
 
 function lastJSONObject(s) {
@@ -142,8 +165,13 @@ async function runGemini(args, cwd, timeoutMs) {
         err.code = "timeout";
         return reject(err);
       }
-      if (code !== 0 && !stdout) {
-        return reject(new Error(stderr.trim() || `Gemini exited with code ${code}`));
+      if (code !== 0) {
+        // Prefer stderr on failure so trust/auth errors are not masked by
+        // stdout banners (issue #2). Fall back to stdout/parse only when
+        // stderr is empty so legacy JSON-bearing failures still work.
+        const trimmedErr = stderr.trim();
+        if (trimmedErr) return reject(new Error(trimmedErr));
+        if (!stdout)    return reject(new Error(`Gemini exited with code ${code}`));
       }
 
       try {
@@ -171,7 +199,7 @@ const handlers = {
     sendResponse(id, {
       protocolVersion: "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "claude-delegator-gemini", version: "1.3.0" }
+      serverInfo: { name: "claude-delegator-gemini", version: "1.4.0" }
     });
   },
 
@@ -338,12 +366,7 @@ const handlers = {
     } catch (e) {
       const errMsg = (e && e.message) || String(e);
       const errCode = e && e.code;
-      let errorKind = "unknown", retryable = false;
-      if (errCode === "timeout") { errorKind = "timeout"; retryable = true; }
-      else if (errCode === "parse") { errorKind = "parse"; retryable = false; }
-      else if (errMsg.includes("trusted directory")) { errorKind = "trust"; retryable = false; }
-      else if (errMsg.includes("Gemini CLI not found")) { errorKind = "missing-cli"; retryable = false; }
-      else if (errMsg.includes("AbortError") || errMsg.includes("aborted")) { errorKind = "upstream-abort"; retryable = true; }
+      const { errorKind, retryable, hint } = classifyGeminiError(errMsg, errCode);
 
       if (shouldRespond) {
         sendResponse(id, {
@@ -351,6 +374,7 @@ const handlers = {
           isError: true,
           errorKind,
           retryable,
+          ...(hint ? { hint } : {}),
         });
       }
     }
@@ -412,4 +436,5 @@ if (require.main === module) {
 // Test-only exports
 if (typeof module !== "undefined" && module.exports) {
   module.exports.lastJSONObject = lastJSONObject;
+  module.exports.classifyGeminiError = classifyGeminiError;
 }

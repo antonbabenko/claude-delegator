@@ -146,8 +146,11 @@ Every expert can operate in two modes:
 | `prompt` | string | **Required.** The delegation prompt (use 7-section format) |
 | `developer-instructions` | string | Expert prompt injection (from `prompts/*.md`) |
 | `sandbox` | `read-only`, `workspace-write` | Controls file access. |
-| `model` | e.g. `gemini-2.5-pro` | Override the default model |
+| `model` | e.g. `gemini-2.5-pro`, `auto-gemini-3` | Override the default model |
 | `cwd` | path | Working directory for the task |
+| `include-directories` | string[] | Extra dirs to include alongside `cwd`. |
+| `timeout` | number (ms) | Bridge-side timeout. 1..600000. Default 120000. |
+| `skip-trust` | boolean | Pass `--skip-trust` to bypass the Gemini CLI trusted-directory check. Default `false`. Use to recover from `errorKind: "trust"` (see `orchestration.md` "Trust Failure Recovery"). |
 
 ### `mcp__gemini__gemini-reply` (Continue Session)
 
@@ -155,13 +158,29 @@ Every expert can operate in two modes:
 |-----------|--------|-------|
 | `threadId` | string | **Required.** Thread ID from previous `gemini` call |
 | `prompt` | string | **Required.** Follow-up instruction |
+| `sandbox` | `read-only`, `workspace-write` | Controls file access. |
+| `cwd` | path | Working directory for the task |
+| `include-directories` | string[] | Extra dirs to include alongside `cwd`. |
+| `timeout` | number (ms) | Bridge-side timeout. 1..600000. Default 120000. |
+| `skip-trust` | boolean | Pass `--skip-trust` to bypass the Gemini CLI trusted-directory check. Default `false`. |
 
 ### Response Format (both providers)
+
+Success:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `threadId` | string | Session ID for multi-turn follow-ups |
 | `content` | string | The expert's text response |
+
+Error (Gemini bridge only - bridge sets `isError: true` and adds these fields):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `isError` | boolean | `true` on bridge-side failure. |
+| `errorKind` | `timeout` \| `parse` \| `trust` \| `missing-cli` \| `upstream-abort` \| `unknown` | Machine-readable category. |
+| `retryable` | boolean | `true` means the orchestrator may retry; see `orchestration.md`. |
+| `hint` | `"skip-trust"` (when present) | Recovery action the orchestrator should apply on the next call. Only set today for `errorKind: "trust"`. |
 
 ## When NOT to Delegate
 
