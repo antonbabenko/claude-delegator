@@ -246,6 +246,21 @@ if (r1.isError && r1.errorKind === "trust") {
 }
 ```
 
+### Timeout Recovery (Gemini only)
+
+The Gemini bridge has a **soft** timeout. On expiry it keeps Gemini alive and
+recovers the disk-flushed answer (see README "Timeouts and recovery"). Two
+outcomes:
+
+- Success with `recovered: true` -> this is a **normal success**. Use `content`
+  and `threadId` as usual. No retry, no special handling. (The `recovered` flag
+  is informational only.)
+- `errorKind: "timeout"` -> recovery failed within the grace budget. Still
+  `retryable`. Retry as a fresh call; consider a larger `timeout` /
+  `recovery-grace` for known-deep prompts.
+
+Do not treat `recovered: true` as an error or re-issue the call.
+
 ---
 
 ## Example: Architecture Question

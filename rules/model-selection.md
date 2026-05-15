@@ -149,7 +149,8 @@ Every expert can operate in two modes:
 | `model` | e.g. `gemini-2.5-pro`, `auto-gemini-3` | Override the default model |
 | `cwd` | path | Working directory for the task |
 | `include-directories` | string[] | Extra dirs to include alongside `cwd`. |
-| `timeout` | number (ms) | Bridge-side timeout. 1..600000. Default 120000. |
+| `timeout` | number (ms) | Soft timeout. 1..600000. Default 300000. On expiry the bridge drains and recovers the disk-flushed answer. |
+| `recovery-grace` | number (ms) | Extra drain budget after the soft timeout. 0..600000. Default 120000. 0 disables drain. |
 | `skip-trust` | boolean | Pass `--skip-trust` to bypass the Gemini CLI trusted-directory check. Default `false`. Use to recover from `errorKind: "trust"` (see `orchestration.md` "Trust Failure Recovery"). |
 
 ### `mcp__gemini__gemini-reply` (Continue Session)
@@ -161,7 +162,8 @@ Every expert can operate in two modes:
 | `sandbox` | `read-only`, `workspace-write` | Controls file access. |
 | `cwd` | path | Working directory for the task |
 | `include-directories` | string[] | Extra dirs to include alongside `cwd`. |
-| `timeout` | number (ms) | Bridge-side timeout. 1..600000. Default 120000. |
+| `timeout` | number (ms) | Soft timeout. 1..600000. Default 300000. On expiry the bridge drains and recovers the disk-flushed answer. |
+| `recovery-grace` | number (ms) | Extra drain budget after the soft timeout. 0..600000. Default 120000. 0 disables drain. |
 | `skip-trust` | boolean | Pass `--skip-trust` to bypass the Gemini CLI trusted-directory check. Default `false`. |
 
 ### Response Format (both providers)
@@ -172,6 +174,7 @@ Success:
 |-------|------|-------------|
 | `threadId` | string | Session ID for multi-turn follow-ups |
 | `content` | string | The expert's text response |
+| `recovered` | boolean | Present and `true` when the answer was recovered from disk after a soft timeout (drain). Normal success - no special handling needed. |
 
 Error (Gemini bridge only - bridge sets `isError: true` and adds these fields):
 

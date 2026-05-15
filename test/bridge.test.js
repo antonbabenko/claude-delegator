@@ -11,7 +11,7 @@ test("B1: timeout kills slow gemini and surfaces structured error", async () => 
   send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
   send(child, {
     jsonrpc: "2.0", id: 2, method: "tools/call",
-    params: { name: "gemini", arguments: { prompt: "slow", timeout: 500 } },
+    params: { name: "gemini", arguments: { prompt: "slow", timeout: 500, "recovery-grace": 0 } },
   });
 
   // Close stdin shortly after sending; bridge should still complete via its timeout.
@@ -269,4 +269,134 @@ test("B7e: classifyGeminiError tolerates null/undefined errMsg", () => {
   const { classifyGeminiError } = require("../server/gemini/index.js");
   assert.equal(classifyGeminiError(null, null).errorKind, "unknown");
   assert.equal(classifyGeminiError(undefined, null).errorKind, "unknown");
+});
+
+// --- B8: timeout-recovery (read late-flushed answer from disk) ---
+
+const fs8 = require("node:fs");
+const os8 = require("node:os");
+const path8 = require("node:path");
+
+function tmpRoot() {
+  return fs8.mkdtempSync(path8.join(os8.tmpdir(), "cdg-gtmp-"));
+}
+
+test("B8a: soft timeout drains and recovers the disk-persisted answer", async () => {
+  const root = tmpRoot();
+  const child = startBridge({
+    fakeBin: "fake-gemini-timeout-recover.sh",
+    env: { GEMINI_TMP_ROOT: root, FAKE_GEMINI_SLEEP: "2" },
+  });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "deep", timeout: 800, "recovery-grace": 10000 } },
+  });
+  setTimeout(() => child.stdin.end(), 12000);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.ok(r, "got tools/call response");
+  assert.ok(!r.result.isError, "not an error: " + JSON.stringify(r.result));
+  assert.equal(r.result.recovered, true, "recovered flag");
+  assert.equal(r.result.content[0].text, "RECOVERED ANSWER OK");
+  assert.equal(r.result.threadId, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+});
+
+test("B8b: GEMINI_DISABLE_TIMEOUT_RECOVERY=1 keeps legacy timeout", async () => {
+  const root = tmpRoot();
+  const child = startBridge({
+    fakeBin: "fake-gemini-timeout-recover.sh",
+    env: { GEMINI_TMP_ROOT: root, FAKE_GEMINI_SLEEP: "2", GEMINI_DISABLE_TIMEOUT_RECOVERY: "1" },
+  });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "deep", timeout: 500, "recovery-grace": 10000 } },
+  });
+  setTimeout(() => child.stdin.end(), 5000);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.equal(r.result.isError, true);
+  assert.equal(r.result.errorKind, "timeout");
+  assert.equal(r.result.retryable, true);
+});
+
+test("B8c: no disk answer -> timeout after soft + grace", async () => {
+  const root = tmpRoot();
+  const child = startBridge({
+    fakeBin: "fake-gemini-timeout-recover.sh",
+    env: { GEMINI_TMP_ROOT: root, FAKE_GEMINI_SLEEP: "1", FAKE_GEMINI_NOWRITE: "1" },
+  });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "deep", timeout: 500, "recovery-grace": 3000 } },
+  });
+  setTimeout(() => child.stdin.end(), 6000);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.equal(r.result.isError, true);
+  assert.equal(r.result.errorKind, "timeout");
+});
+
+test("B8d: stale answer (timestamp before spawn-start) is not returned", async () => {
+  const root = tmpRoot();
+  const child = startBridge({
+    fakeBin: "fake-gemini-timeout-recover.sh",
+    env: { GEMINI_TMP_ROOT: root, FAKE_GEMINI_SLEEP: "1", FAKE_GEMINI_STALE: "1" },
+  });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "deep", timeout: 500, "recovery-grace": 3000 } },
+  });
+  setTimeout(() => child.stdin.end(), 6000);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.equal(r.result.isError, true);
+  assert.equal(r.result.errorKind, "timeout");
+  assert.ok(
+    !JSON.stringify(r.result).includes("RECOVERED ANSWER OK"),
+    "stale content must not be returned"
+  );
+});
+
+test("B8e: extractGeminiAnswer returns last gemini record + metadata threadId", () => {
+  const { extractGeminiAnswer } = require("../server/gemini/index.js");
+  const dir = tmpRoot();
+  const f = path8.join(dir, "session-x.jsonl");
+  const ts = new Date().toISOString();
+  fs8.writeFileSync(f, [
+    JSON.stringify({ sessionId: "sid-123", projectHash: "h", startTime: ts, lastUpdated: ts, kind: "main" }),
+    JSON.stringify({ id: "u1", timestamp: ts, type: "user", content: "q" }),
+    JSON.stringify({ id: "g1", timestamp: ts, type: "gemini", content: "first" }),
+    JSON.stringify({ id: "g2", timestamp: ts, type: "gemini", content: "FINAL" }),
+  ].join("\n") + "\n");
+  const got = extractGeminiAnswer(f, Date.now() - 60000);
+  assert.equal(got.content, "FINAL");
+  assert.equal(got.threadId, "sid-123");
+});
+
+test("B8e: extractGeminiAnswer applies the stale guard", () => {
+  const { extractGeminiAnswer } = require("../server/gemini/index.js");
+  const dir = tmpRoot();
+  const f = path8.join(dir, "session-y.jsonl");
+  fs8.writeFileSync(f,
+    JSON.stringify({ id: "g1", timestamp: "2000-01-01T00:00:00.000Z", type: "gemini", content: "OLD" }) + "\n");
+  assert.equal(extractGeminiAnswer(f, Date.now()), null);
+});
+
+test("B8f: resolveSlugDir matches by .project_root content", () => {
+  const { resolveSlugDir } = require("../server/gemini/index.js");
+  const root = tmpRoot();
+  const slug = path8.join(root, "some-slug");
+  fs8.mkdirSync(path8.join(slug, "chats"), { recursive: true });
+  const cwd = fs8.mkdtempSync(path8.join(os8.tmpdir(), "cdg-cwd-"));
+  fs8.writeFileSync(path8.join(slug, ".project_root"), cwd);
+  assert.equal(resolveSlugDir(cwd, root), slug);
+  assert.equal(resolveSlugDir("/nonexistent/path/xyz", root), null);
 });

@@ -219,6 +219,32 @@ The orchestration rules (`rules/orchestration.md` -> "Trust Failure Recovery") i
 
 Callers that already know they want to bypass the trust check can pass `"skip-trust": true` from the start.
 
+### Timeouts and recovery
+
+`timeout` is a **soft** deadline (default 300000ms; Gemini 3 deep prompts run
+200-260s). The Gemini CLI ignores SIGTERM and persists its full answer to disk at
+`~/.gemini/tmp/<slug>/chats/session-*.jsonl` regardless. When the soft timeout
+fires the bridge does not fail immediately: it drains - keeps Gemini alive and
+polls that jsonl for a record newer than the call's start - for up to
+`recovery-grace` ms (default 120000, range 0..600000). If the answer appears it is
+returned as a normal success with a top-level `"recovered": true` flag and a
+stderr log line; `content` is unmodified so response parsers keep working. If the
+grace budget is exhausted with no answer, the call fails with the usual
+`errorKind: "timeout"` (still `retryable`).
+
+- `"recovery-grace": 0` disables the drain (immediate legacy timeout).
+- `GEMINI_DISABLE_TIMEOUT_RECOVERY=1` (env) forces full legacy behavior.
+- Total wall time is bounded by `timeout + recovery-grace`.
+
+Manual recovery (any session, even without this plugin): find the project slug
+under `~/.gemini/tmp/` (its `.project_root` file holds the absolute cwd), then in
+that slug's `chats/` open the newest `session-*.jsonl`; the last record with
+`"type":"gemini"` has the full answer in `.content`.
+
+Known limitation: heavy parallel calls from the same cwd (e.g. `agree-both`) can
+race on "newest session file". A spawn-start timestamp guard (2000ms skew
+tolerance) makes mis-attribution unlikely but not impossible.
+
 ---
 
 ## Development
