@@ -1,9 +1,9 @@
 # Claude Delegator
 
-GPT expert subagents for Claude Code. Five specialists that can analyze AND implement—architecture, security, code review, and more.
+GPT (Codex) and Gemini expert subagents for Claude Code. Five specialists that can analyze AND implement: architecture, plan review, scope, code review, security. Use either provider or both, single-shot or multi-turn, advisory or implementation.
 
-[![License](https://img.shields.io/github/license/jarrodwatts/claude-delegator?v=2)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/jarrodwatts/claude-delegator?v=2)](https://github.com/jarrodwatts/claude-delegator/stargazers)
+[![License](https://img.shields.io/github/license/antonbabenko/claude-delegator?v=2)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/antonbabenko/claude-delegator?v=2)](https://github.com/antonbabenko/claude-delegator/stargazers)
 
 ![Claude Delegator in action](claude-delegator.png)
 
@@ -33,7 +33,7 @@ Inside a Claude Code instance, run the following commands:
 /claude-delegator:setup
 ```
 
-Done! Claude now routes complex tasks to GPT experts automatically.
+Done! Claude now routes complex tasks to your GPT (Codex) and/or Gemini experts automatically.
 
 > **Note**: Requires [Codex CLI](https://github.com/openai/codex) or [Gemini CLI](https://github.com/google/gemini-cli). Setup guides you through installation.
 
@@ -52,15 +52,28 @@ Bundled with the plugin (available once installed):
 
 `/setup` can also install short aliases (`/ask-gpt`, `/ask-gemini`,
 `/ask-both`, `/consensus`) into `~/.claude/commands/` (opt-in; never
-overwrites an existing same-named command). `/uninstall` removes them.
+overwrites an existing same-named command). `/uninstall` removes an alias
+only if it is byte-identical to the bundled copy, so an unrelated same-named
+command you authored is left untouched.
 
 ---
 
 ## What is Claude Delegator?
 
-Claude gains a team of GPT and Gemini specialists via native MCP. Each expert has a distinct specialty and can advise OR implement.
+Claude gains a team of GPT and Gemini specialists via MCP: GPT through the Codex CLI's native MCP server, Gemini through the bundled Gemini MCP bridge. Each expert has a distinct specialty and can advise OR implement.
 
 **Note:** You can use either provider (GPT or Gemini), or both. The plugin will automatically detect which one is configured and route tasks accordingly.
+
+### Features
+
+- **Two providers, one interface** - GPT via the Codex CLI, Gemini via a bundled zero-dependency Node bridge. Mix them or run just one.
+- **Five domain experts** - Architect, Plan Reviewer, Scope Analyst, Code Reviewer, Security Analyst. Each has a dedicated system prompt in `prompts/`.
+- **Advisory or implementation** - every expert runs read-only for analysis or `workspace-write` to apply fixes. Mode is auto-selected from your request.
+- **Auto-routing** - Claude reads your message, picks the expert, and delegates. No manual selection needed; explicit "ask GPT/Gemini to..." also works.
+- **Multi-turn chaining** - the initial call returns a `threadId`; follow-up `*-reply` calls preserve full context for iterative implementation and retries.
+- **Synthesized output** - Claude interprets and applies judgment to expert results; raw provider text is never passed through verbatim.
+- **Gemini bridge resilience** - soft-timeout drain that recovers disk-flushed answers (`recovered: true`), structured trust-failure errors the orchestration retries with `skip-trust` (or sets preflight), and hardened JSON parsing. `GEMINI_DEFAULT_MODEL` env overrides the model.
+- **Bundled delegation commands** - `ask-gpt`, `ask-gemini`, `ask-both` (parallel + synthesized), and `consensus` (GPT + Gemini + Claude iterate to agreement) ship with the plugin.
 
 | What You Get | Why It Matters |
 |--------------|----------------|
@@ -82,11 +95,11 @@ Claude gains a team of GPT and Gemini specialists via native MCP. Each expert ha
 
 ### When Experts Help Most
 
-- **Architecture decisions** — "Should I use Redis or in-memory caching?"
-- **Stuck debugging** — After 2+ failed attempts, get a fresh perspective
-- **Pre-implementation** — Validate your plan before writing code
-- **Security concerns** — "Is this auth flow safe?"
-- **Code quality** — Get a second opinion on your implementation
+- **Architecture decisions** - "Should I use Redis or in-memory caching?"
+- **Stuck debugging** - After 2+ failed attempts, get a fresh perspective
+- **Pre-implementation** - Validate your plan before writing code
+- **Security concerns** - "Is this auth flow safe?"
+- **Code quality** - Get a second opinion on your implementation
 
 ### When NOT to Use Experts
 
@@ -118,7 +131,7 @@ Claude: "Based on the analysis, I found 3 issues..."
 - Each expert has a specialized system prompt (in `prompts/`)
 - Claude reads your request → picks the right expert → delegates via MCP (GPT or Gemini)
 - Responses are synthesized, not passed through raw
-- Experts can retry up to 3 times before escalating
+- Implementation retries up to 3 attempts total (1 initial + 2 `*-reply` retries), then escalates to you
 - Multi-turn conversations preserve context via `threadId` for chained tasks
 
 ### Multi-Turn Conversations
@@ -150,7 +163,7 @@ Claude automatically selects the mode based on your request.
 
 ### Configuration Defaults
 
-Set global defaults in `~/.codex/config.toml` instead of passing parameters on every call:
+**Codex (GPT):** set global defaults in `~/.codex/config.toml` instead of passing parameters on every call:
 
 ```toml
 sandbox_mode = "workspace-write"
@@ -158,6 +171,8 @@ approval_policy = "on-failure"
 ```
 
 Per-call parameters override these defaults. See [Codex CLI docs](https://github.com/openai/codex) for all config options.
+
+**Gemini:** the bridge defaults to `gemini-2.5-flash` (it does not read the Gemini CLI's `~/.gemini/settings.json`). Override per call with the `model` parameter, or globally with the `GEMINI_DEFAULT_MODEL` environment variable - set this if you want a different default model.
 
 ### Manual MCP Setup
 
@@ -207,15 +222,6 @@ You need at least one of the following providers configured:
 
 ---
 
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `/claude-delegator:setup` | Configure MCP server and install rules |
-| `/claude-delegator:uninstall` | Remove MCP config and rules |
-
----
-
 ## Troubleshooting
 
 | Issue | Solution |
@@ -232,12 +238,17 @@ The Gemini CLI refuses to run from a directory it has not been told to trust (en
 
 ```json
 {
+  "content": [{ "type": "text", "text": "Error: <message>" }],
   "isError": true,
   "errorKind": "trust",
   "retryable": true,
   "hint": "skip-trust"
 }
 ```
+
+`content` (the MCP text payload) is always present; `hint` is included only
+when set. Other failures use the same envelope with a different `errorKind`
+(e.g. `timeout`).
 
 The orchestration rules (`rules/orchestration.md` -> "Trust Failure Recovery") instruct Claude to retry the same call once with `"skip-trust": true`, preserving `threadId` for `gemini-reply`. A second consecutive trust failure (when `skip-trust: true` was already set) escalates to the user instead of looping.
 
@@ -258,23 +269,25 @@ grace budget is exhausted with no answer, the call fails with the usual
 
 - `"recovery-grace": 0` disables the drain (immediate legacy timeout).
 - `GEMINI_DISABLE_TIMEOUT_RECOVERY=1` (env) forces full legacy behavior.
-- Total wall time is bounded by `timeout + recovery-grace`.
+- The call resolves within `timeout + recovery-grace`. The Gemini child
+  process is then killed `SIGTERM`, with a `SIGKILL` ~1s later; that kill is
+  async cleanup and does not delay the response.
 
 Manual recovery (any session, even without this plugin): find the project slug
 under `~/.gemini/tmp/` (its `.project_root` file holds the absolute cwd), then in
 that slug's `chats/` open the newest `session-*.jsonl`; the last record with
 `"type":"gemini"` has the full answer in `.content`.
 
-Known limitation: heavy parallel calls from the same cwd (e.g. `consensus`) can
-race on "newest session file". A spawn-start timestamp guard (2000ms skew
-tolerance) makes mis-attribution unlikely but not impossible.
+Known limitation: heavy parallel calls from the same cwd (e.g. `ask-both`,
+`consensus`) can race on "newest session file". A spawn-start timestamp guard
+(2000ms skew tolerance) makes mis-attribution unlikely but not impossible.
 
 ---
 
 ## Development
 
 ```bash
-git clone https://github.com/jarrodwatts/claude-delegator
+git clone https://github.com/antonbabenko/claude-delegator
 cd claude-delegator
 
 # Test locally without reinstalling
@@ -293,10 +306,10 @@ Expert prompts adapted from [oh-my-opencode](https://github.com/code-yeongyu/oh-
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+MIT - see [LICENSE](LICENSE)
 
 ---
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=jarrodwatts/claude-delegator&type=Date&v=2)](https://star-history.com/#jarrodwatts/claude-delegator&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=antonbabenko/claude-delegator&type=Date&v=2)](https://star-history.com/#antonbabenko/claude-delegator&Date)
