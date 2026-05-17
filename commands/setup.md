@@ -72,7 +72,7 @@ mkdir -p ~/.claude/rules/delegator && cp ${CLAUDE_PLUGIN_ROOT}/rules/*.md ~/.cla
 
 The delegation commands ship with the plugin and are always available
 namespaced: `/claude-delegator:ask-gpt`, `:ask-gemini`, `:ask-both`,
-`:agree-both`.
+`:consensus`.
 
 Offer the short, unnamespaced aliases (`/ask-gpt` etc.) by copying them into
 `~/.claude/commands/`.
@@ -84,7 +84,7 @@ Use AskUserQuestion: "Also install short command names (/ask-gpt etc.) into
 with a notice so an unrelated command of the same name is left untouched):
 ```bash
 mkdir -p ~/.claude/commands
-for c in ask-gpt ask-gemini ask-both agree-both; do
+for c in ask-gpt ask-gemini ask-both consensus; do
   dest=~/.claude/commands/$c.md
   if [ -e "$dest" ]; then
     echo "skip $c: ~/.claude/commands/$c.md already exists (left untouched)"

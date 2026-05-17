@@ -48,10 +48,10 @@ Bundled with the plugin (available once installed):
 | `/claude-delegator:ask-gpt` | One-shot GPT (Codex) second opinion |
 | `/claude-delegator:ask-gemini` | One-shot Gemini second opinion |
 | `/claude-delegator:ask-both` | GPT + Gemini in parallel, synthesized |
-| `/claude-delegator:agree-both` | Iterate GPT + Gemini + Claude to consensus |
+| `/claude-delegator:consensus` | Iterate GPT + Gemini + Claude to consensus |
 
 `/setup` can also install short aliases (`/ask-gpt`, `/ask-gemini`,
-`/ask-both`, `/agree-both`) into `~/.claude/commands/` (opt-in; never
+`/ask-both`, `/consensus`) into `~/.claude/commands/` (opt-in; never
 overwrites an existing same-named command). `/uninstall` removes them.
 
 ---
@@ -265,7 +265,7 @@ under `~/.gemini/tmp/` (its `.project_root` file holds the absolute cwd), then i
 that slug's `chats/` open the newest `session-*.jsonl`; the last record with
 `"type":"gemini"` has the full answer in `.content`.
 
-Known limitation: heavy parallel calls from the same cwd (e.g. `agree-both`) can
+Known limitation: heavy parallel calls from the same cwd (e.g. `consensus`) can
 race on "newest session file". A spawn-start timestamp guard (2000ms skew
 tolerance) makes mis-attribution unlikely but not impossible.
 

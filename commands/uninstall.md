@@ -36,7 +36,7 @@ rm -rf ~/.claude/rules/delegator/
 Only the four aliases that `/setup` may have copied; the namespaced
 `claude-delegator:*` commands are removed by uninstalling the plugin itself.
 ```bash
-for c in ask-gpt ask-gemini ask-both agree-both; do
+for c in ask-gpt ask-gemini ask-both consensus; do
   rm -f ~/.claude/commands/$c.md
 done
 ```

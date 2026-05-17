@@ -1,11 +1,11 @@
 ---
-name: agree-both
+name: consensus
 description: Iteratively converge GPT + Gemini + Claude on a plan/design until all three agree. Max 5 rounds. Best for plan refinement.
 allowed-tools: mcp__codex__codex, mcp__gemini__gemini, Read, Bash
 timeout: 900000
 ---
 
-# Agree Both (consensus loop)
+# Consensus (GPT + Gemini + Claude convergence loop)
 
 Iterate up to 5 rounds. Each round refines the plan based on GPT + Gemini feedback. Stop when all three (Claude, GPT, Gemini) approve the current revision, or when 5 rounds are exhausted.
 
@@ -54,7 +54,7 @@ Plan, design, spec, or proposal to refine: $ARGUMENTS
    - `history` = empty list of `{round, plan_diff_summary, gpt_verdict, gemini_verdict, claude_decision}`
 5. Print:
    ```
-   /agree-both: starting consensus loop (max 5 rounds, expert=[Expert])
+   /consensus: starting consensus loop (max 5 rounds, expert=[Expert])
    ```
 
 ### Round loop (rounds 1..5)
@@ -127,7 +127,7 @@ For each round R:
 ### Final output
 
 ```
-## /agree-both result
+## /consensus result
 
 **Outcome**: CONVERGED in N rounds | UNRESOLVED after 5 rounds
 **Final plan**:
