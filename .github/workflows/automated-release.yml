@@ -88,15 +88,21 @@ jobs:
           TAG: ${{ steps.changelog.outputs.tag }}
         run: |
           set -euo pipefail
-          # Title drives the squash-merge commit subject so the loop guard
+          # Resolve only an OPEN PR for release/next. A leftover CLOSED PR from a
+          # failed prior release must not hijack edit/merge (it errors with
+          # "Pull request is closed"); create a fresh PR when none is open, and
+          # always act by PR number so a closed PR cannot be matched by branch
+          # name. Title drives the squash-merge subject so the loop guard
           # (Workflow A) skips it and Workflow B's trigger matches it.
-          if gh pr view release/next --json number >/dev/null 2>&1; then
-            gh pr edit release/next --title "chore(release): ${TAG}"
+          PR="$(gh pr list --head release/next --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$PR" ]; then
+            gh pr edit "$PR" --title "chore(release): ${TAG}"
           else
-            gh pr create \
+            PR="$(gh pr create \
               --base main \
               --head release/next \
               --title "chore(release): ${TAG}" \
-              --body "Automated release ${TAG}. Squash-merging publishes the tag and GitHub Release (tag-release.yml)."
+              --body "Automated release ${TAG}. Squash-merging publishes the tag and GitHub Release (tag-release.yml)." \
+              | grep -oE '[0-9]+$')"
           fi
-          gh pr merge release/next --auto --squash --delete-branch --subject "chore(release): ${TAG}"
+          gh pr merge "$PR" --auto --squash --delete-branch --subject "chore(release): ${TAG}"
