@@ -1,6 +1,6 @@
 # Claude Delegator
 
-GPT (Codex) and Gemini expert subagents for Claude Code. Five specialists that can analyze AND implement: architecture, plan review, scope, code review, security. Use either provider or both, single-shot or multi-turn, advisory or implementation.
+GPT (Codex), Gemini, and Grok (xAI) expert subagents for Claude Code. Five specialists that can analyze AND implement: architecture, plan review, scope, code review, security. Use any of the three providers, single-shot or multi-turn, advisory or implementation (Grok is advisory-only).
 
 [![License](https://img.shields.io/github/license/antonbabenko/claude-delegator?v=2)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/antonbabenko/claude-delegator?v=2)](https://github.com/antonbabenko/claude-delegator/stargazers)
@@ -9,10 +9,12 @@ GPT (Codex) and Gemini expert subagents for Claude Code. Five specialists that c
 
 > Maintained fork of [`jarrodwatts/claude-delegator`](https://github.com/jarrodwatts/claude-delegator)
 > (upstream currently inactive). Original work and MIT copyright by Jarrod
-> Watts; this fork adds backward-compatible changes only: Gemini bridge
-> timeout / trust-recovery / JSON-parsing robustness, a `GEMINI_DEFAULT_MODEL`
-> env override, and the bundled delegation commands below. Not an official
-> continuation of the upstream project.
+> Watts; this fork adds: a third provider (Grok via a bundled xAI bridge, with
+> file attachments + storage cleanup), Gemini bridge timeout / trust-recovery /
+> JSON-parsing robustness, `GEMINI_DEFAULT_MODEL` / `GROK_DEFAULT_MODEL` env
+> overrides, and the bundled delegation commands below (the former `ask-both` is
+> now `ask-all`, covering all three providers). Not an official continuation of
+> the upstream project.
 
 ## Install
 
@@ -33,9 +35,9 @@ Inside a Claude Code instance, run the following commands:
 /claude-delegator:setup
 ```
 
-Done! Claude now routes complex tasks to your GPT (Codex) and/or Gemini experts automatically.
+Done! Claude now routes complex tasks to your GPT (Codex), Gemini, and/or Grok experts automatically.
 
-> **Note**: Requires [Codex CLI](https://github.com/openai/codex) or [Gemini CLI](https://github.com/google/gemini-cli). Setup guides you through installation.
+> **Note**: Requires at least one provider - [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google/gemini-cli), or Grok (no CLI to install; just set `XAI_API_KEY`). Setup guides you through installation.
 
 ## Commands
 
@@ -120,8 +122,9 @@ You: "Is this authentication flow secure?"
 Claude: [Detects security question → selects Security Analyst]
                     ↓
         ┌───────────────────────────────┐
-        │  mcp__codex__codex            │
-        │  (or mcp__gemini__gemini)     │
+        │  mcp__codex__codex /          │
+        │  mcp__gemini__gemini /        │
+        │  mcp__grok__grok              │
         │  → Security Analyst prompt    │
         │  → Expert analyzes your code  │
         └───────────────────────────────┘
@@ -147,7 +150,7 @@ Turn 2: mcp__*__*-reply(threadId) → expert remembers turn 1
 Turn 3: mcp__*__*-reply(threadId) → expert remembers turns 1-2
 ```
 
-Use single-shot (`codex` or `gemini` only) for advisory tasks. Use multi-turn for implementation chains and retries.
+Use single-shot (`codex`, `gemini`, or `grok`) for advisory tasks. Use multi-turn for implementation chains and retries. (Grok is advisory-only.)
 
 ---
 
@@ -177,7 +180,9 @@ Per-call parameters override these defaults. See [Codex CLI docs](https://github
 
 **Gemini:** the bridge defaults to `gemini-2.5-flash` (it does not read the Gemini CLI's `~/.gemini/settings.json`). Override per call with the `model` parameter, or globally with the `GEMINI_DEFAULT_MODEL` environment variable - set this if you want a different default model.
 
-**Grok:** the bridge defaults to `grok-4.3`. Override per call with the `model` parameter, or globally with `GROK_DEFAULT_MODEL`. The endpoint defaults to `https://api.x.ai/v1`; override with `XAI_API_BASE`. Grok needs `XAI_API_KEY` in the bridge's environment and is advisory-only (no filesystem access).
+**Grok:** the bridge defaults to `grok-4.3`. Override per call with the `model` parameter, or globally with `GROK_DEFAULT_MODEL`. The endpoint defaults to `https://api.x.ai/v1`; override with `XAI_API_BASE`. Grok needs `XAI_API_KEY` in the bridge's environment and is advisory-only (it can read attached files, but cannot edit them).
+
+**Reasoning effort** is controllable: the bridge sends a `reasoning_effort` on every `/v1/responses` call, defaulting to **`xhigh`**. Override per call with the `reasoning_effort` parameter, or globally with the `GROK_REASONING_EFFORT` env var (for example `low`, `high`, `xhigh`); set it to `none` (or `off`) to omit the field entirely and let the model use its own default. Valid values depend on the chosen model - an unsupported value surfaces the xAI API error verbatim. Uploaded files auto-expire after `GROK_FILE_TTL_SECONDS` (default `604800` = 7 days, clamped 1h..30d); prune early with `/grok-files`.
 
 ### Manual MCP Setup
 

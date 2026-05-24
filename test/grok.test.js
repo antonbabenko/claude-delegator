@@ -396,6 +396,49 @@ test("G19: uploadFile refuses a path outside cwd (no exfiltration, fetch never c
   }
 });
 
+test("G20: resolveReasoningEffort defaults to xhigh and honors overrides", () => {
+  delete process.env.GROK_REASONING_EFFORT;
+  assert.equal(grok.resolveReasoningEffort(undefined), "xhigh");
+  assert.equal(grok.resolveReasoningEffort("low"), "low");
+  assert.equal(grok.resolveReasoningEffort("  high "), "high");
+  assert.equal(grok.resolveReasoningEffort("none"), null);
+  assert.equal(grok.resolveReasoningEffort("off"), null);
+  assert.equal(grok.resolveReasoningEffort(""), null);
+  process.env.GROK_REASONING_EFFORT = "medium";
+  try {
+    assert.equal(grok.resolveReasoningEffort(undefined), "medium");
+    assert.equal(grok.resolveReasoningEffort("high"), "high"); // per-call wins over env
+  } finally {
+    delete process.env.GROK_REASONING_EFFORT;
+  }
+});
+
+test("G21: reasoning_effort is sent (default xhigh), overridable, and omittable", async () => {
+  delete process.env.GROK_REASONING_EFFORT; // ensure the child inherits no override
+  const bodies = [];
+  const { server, base } = await startMock((req, res, body) => {
+    if (req.method === "POST" && req.url === "/v1/responses") {
+      bodies.push(JSON.parse(body));
+      return reply(res, 200, { output: [{ content: [{ type: "output_text", text: "ok" }] }] });
+    }
+    return reply(res, 404, { error: "unexpected" });
+  });
+  const child = startGrokBridge({ XAI_API_KEY: "test", XAI_API_BASE: base });
+  const rpc = rpcClient(child);
+  try {
+    await rpc.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    await rpc.request({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "grok", arguments: { prompt: "a" } } });
+    await rpc.request({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "grok", arguments: { prompt: "b", reasoning_effort: "low" } } });
+    await rpc.request({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "grok", arguments: { prompt: "c", reasoning_effort: "none" } } });
+    assert.equal(bodies[0].reasoning_effort, "xhigh");
+    assert.equal(bodies[1].reasoning_effort, "low");
+    assert.equal("reasoning_effort" in bodies[2], false);
+  } finally {
+    child.stdin.end();
+    server.close();
+  }
+});
+
 // --- files-admin (cleanup) unit tests ---
 
 const admin = require("../server/grok/files-admin.js");

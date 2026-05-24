@@ -14,6 +14,7 @@
  * Auth: XAI_API_KEY (env). Model: GROK_DEFAULT_MODEL (env) or grok-4.3.
  * Endpoint: XAI_API_BASE (env) or https://api.x.ai/v1.
  * File TTL: GROK_FILE_TTL_SECONDS (env) or 604800 (7 days).
+ * Reasoning effort: GROK_REASONING_EFFORT (env) or "xhigh"; per-call reasoning_effort overrides.
  */
 
 const crypto = require("node:crypto");
@@ -41,6 +42,18 @@ const MAX_FILE_BYTES = 48 * 1024 * 1024;
 // user's own xAI files. Flat (no slashes/colons) to avoid filename mangling.
 const FILE_PREFIX = "claude-delegator-";
 const UPLOAD_PURPOSE = "assistants";
+
+// Reasoning effort: per-call value wins, then GROK_REASONING_EFFORT, then the
+// default. "", "none", or "off" omit the field so the model uses its own default.
+const DEFAULT_REASONING_EFFORT = "xhigh";
+function resolveReasoningEffort(perCall) {
+  let raw = perCall;
+  if (raw === undefined || raw === null) raw = process.env.GROK_REASONING_EFFORT;
+  if (raw === undefined || raw === null) raw = DEFAULT_REASONING_EFFORT;
+  const v = String(raw).trim();
+  if (v === "" || v.toLowerCase() === "none" || v.toLowerCase() === "off") return null;
+  return v;
+}
 
 // In-memory session store: threadId -> turns[]. Lives for the MCP process
 // lifetime only; lost on restart (grok-reply then returns unknown-thread).
@@ -295,7 +308,7 @@ async function resolveFiles(files, opts) {
 
 // One /v1/responses call returning the assistant text. Errors carry `.code`
 // and/or `.status`. `fetchImpl` is injectable for tests.
-async function runGrok({ turns, model, timeoutMs, apiKey, apiBase, fetchImpl }) {
+async function runGrok({ turns, model, timeoutMs, apiKey, apiBase, fetchImpl, reasoningEffort }) {
   if (!isNonEmptyString(apiKey)) {
     const e = new Error("XAI_API_KEY is not set. Export it (export XAI_API_KEY=xai-...) or rerun /claude-delegator:setup.");
     e.code = "missing-auth";
@@ -310,6 +323,8 @@ async function runGrok({ turns, model, timeoutMs, apiKey, apiBase, fetchImpl }) 
 
   const base = (apiBase || DEFAULT_API_BASE).replace(/\/+$/, "");
   const url = `${base}/responses`;
+  const payload = { model: model || DEFAULT_MODEL, input: turnsToInput(turns), stream: false };
+  if (isNonEmptyString(reasoningEffort)) payload.reasoning_effort = reasoningEffort;
   const t = (typeof timeoutMs === "number" && timeoutMs > 0) ? timeoutMs : DEFAULT_TIMEOUT_MS;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), t);
@@ -322,7 +337,7 @@ async function runGrok({ turns, model, timeoutMs, apiKey, apiBase, fetchImpl }) 
         "Content-Type": "application/json",
         "Authorization": `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({ model: model || DEFAULT_MODEL, input: turnsToInput(turns), stream: false }),
+      body: JSON.stringify(payload),
       signal: controller.signal,
     });
   } catch (err) {
@@ -381,6 +396,7 @@ const GROK_PROPERTIES = {
   prompt: { type: "string", description: "The delegation prompt" },
   "developer-instructions": { type: "string", description: "Expert system instructions (sent as a system message)" },
   model: { type: "string", description: "xAI model id. Defaults to GROK_DEFAULT_MODEL or grok-4.3.", default: DEFAULT_MODEL },
+  reasoning_effort: { type: "string", description: "Reasoning effort (e.g. low, high, xhigh). Defaults to GROK_REASONING_EFFORT or xhigh. Use 'none' to omit the field.", default: DEFAULT_REASONING_EFFORT },
   timeout: { type: "number", description: "Soft timeout in ms. 1..600000. Default 180000.", default: DEFAULT_TIMEOUT_MS },
   files: FILES_SCHEMA,
   sandbox: { type: "string", enum: ["read-only", "workspace-write"], default: "read-only", description: "Accepted for call-shape parity with other providers; ignored (Grok cannot edit files)." },
@@ -430,6 +446,7 @@ const handlers = {
               prompt: { type: "string", description: "Follow-up prompt" },
               files: FILES_SCHEMA,
               model: { type: "string", default: DEFAULT_MODEL },
+              reasoning_effort: { type: "string", default: DEFAULT_REASONING_EFFORT, description: "Reasoning effort; defaults to GROK_REASONING_EFFORT or xhigh. Use 'none' to omit." },
               timeout: { type: "number", default: DEFAULT_TIMEOUT_MS },
               cwd: { type: "string", description: "Base directory for relative file path uploads" },
             },
@@ -465,6 +482,10 @@ const handlers = {
     }
     if (args.model !== undefined && !isNonEmptyString(args.model)) {
       if (shouldRespond) sendError(id, -32602, "Invalid params: 'model' must be a non-empty string when provided");
+      return;
+    }
+    if (args.reasoning_effort !== undefined && typeof args.reasoning_effort !== "string") {
+      if (shouldRespond) sendError(id, -32602, "Invalid params: 'reasoning_effort' must be a string when provided");
       return;
     }
     if (args.timeout !== undefined) {
@@ -536,6 +557,7 @@ const handlers = {
         turns,
         model: args.model,
         timeoutMs: args.timeout,
+        reasoningEffort: resolveReasoningEffort(args.reasoning_effort),
         apiKey: process.env.XAI_API_KEY,
         apiBase: DEFAULT_API_BASE,
       });
@@ -639,6 +661,7 @@ if (require.main === module) {
 // Test-only exports
 if (typeof module !== "undefined" && module.exports) {
   module.exports.classifyGrokError = classifyGrokError;
+  module.exports.resolveReasoningEffort = resolveReasoningEffort;
   module.exports.buildInitialTurns = buildInitialTurns;
   module.exports.turnsToInput = turnsToInput;
   module.exports.parseResponsesOutput = parseResponsesOutput;
