@@ -1,13 +1,13 @@
 ---
-name: ask-both
-description: Ask GPT and Gemini in parallel for independent second opinions, then synthesize and compare. Zero cross-contamination.
-allowed-tools: mcp__codex__codex, mcp__gemini__gemini, Read, Bash
-timeout: 300000
+name: ask-grok
+description: Get Grok (xAI) second opinion on a question or current work. Single-shot, advisory, no contamination.
+allowed-tools: mcp__grok__grok, Read, Bash
+timeout: 180000
 ---
 
-# Ask Both (GPT + Gemini)
+# Ask Grok
 
-Parallel dispatch to GPT (Codex) and Gemini for independent second opinions on the same question. Two fresh threads, neither sees the other's output. Final synthesis compares verdicts and flags disagreement.
+Single-shot delegation to Grok (xAI) via MCP for an independent second opinion. Fresh thread, no shared context with prior calls. Advisory only - the Grok bridge talks to the xAI HTTP API and has no filesystem access, so it cannot implement changes (unlike `/ask-gpt` and `/ask-gemini`, which can). Model defaults to `GROK_DEFAULT_MODEL` (or `grok-4.3`).
 
 ## Input
 
@@ -15,72 +15,47 @@ User question or topic: $ARGUMENTS
 
 ## Workflow
 
-1. **Identify expert** — match `$ARGUMENTS` against trigger patterns in `~/.claude/rules/delegator/triggers.md`. Use the **same expert role** for both providers so verdicts are comparable. Default to Architect if unclear.
+1. **Identify expert** — match `$ARGUMENTS` against trigger patterns in `~/.claude/rules/delegator/triggers.md`:
+   - Architecture / design / tradeoffs → Architect
+   - Plan validation → Plan Reviewer
+   - Requirements / scope → Scope Analyst
+   - Code review / find bugs → Code Reviewer
+   - Security / vulnerabilities → Security Analyst
+   - Default if unclear → Architect
 
 2. **Read expert prompt** via this resolution sequence:
    1. Glob `~/.claude/plugins/cache/*claude-delegator/claude-delegator/*/prompts/[expert].md`. Pick the match with the highest semver version segment (the segment immediately after `claude-delegator/`, parsed as semver - not lexical string compare).
    2. If no match, look up the inlined fallback under the heading `## Inlined fallback - [Expert]` in this command file (see end of this file).
    3. If neither found, abort with: `Error: claude-delegator plugin cache missing for expert "[Expert]". Run /plugin install claude-delegator or /reload-plugins.`
 
-   Same prompt injected into both providers.
-
-3. **Build 7-section delegation prompt** per `~/.claude/rules/delegator/delegation-format.md`. **Identical prompt** sent to both providers — no provider-specific framing. Include:
+3. **Build 7-section delegation prompt** per `~/.claude/rules/delegator/delegation-format.md`. Include:
    - Verbatim user question from `$ARGUMENTS`
-   - Relevant code snippets / file paths from current conversation context
+   - Relevant code snippets / file paths from current conversation context (Grok has no file access, so inline everything it needs)
    - Any specific constraints user has mentioned this session
 
-4. **Print status line**: `Codex + Gemini working in parallel (typical 30-60s)...`
-
-5. **Pre-flight cwd trust check**:
-   - Always use `process.cwd()` as the MCP `cwd` argument; NEVER switch folders.
-   - Detect B2 (skip-trust) support: glob `~/.claude/plugins/cache/*claude-delegator/claude-delegator/*/.claude-plugin/plugin.json`, parse the highest-semver match, treat `version >= "1.3.0"` (semver compare) as B2-supported. On parse error or no match: treat as B2 absent.
-   - Try reading `~/.gemini/trustedFolders.json`. On any error (ENOENT, EACCES, SyntaxError, value not an object): treat the trusted set as EMPTY and emit a one-line warning to stderr including the specific error message (for example `trustedFolders.json unreadable: ENOENT: no such file`).
-   - Build trusted-set = direct keys plus all descendants of keys whose value is `"TRUST_PARENT"`. Normalize paths first: resolve `~`, follow symlinks, strip trailing slashes (use `path.resolve` plus `fs.realpathSync` semantics).
-   - If `process.cwd()` (normalized) is in trusted-set: call as today.
-   - Else if B2 is supported: set `"skip-trust": true` on the call.
-   - Else: abort with: `Error: cwd "${process.cwd()}" not in trustedFolders.json; trust it via \`gemini\` once, or upgrade claude-delegator to 1.3.0+ for skip-trust support.`
-
-6. **Parallel dispatch** — fire both MCP calls in a **single message with two tool blocks** so they run concurrently:
+4. **Call Grok** — single-shot, advisory:
    ```
-   mcp__codex__codex({
-     prompt: "[identical 7-section prompt]",
-     "developer-instructions": "[expert prompt]",
-     sandbox: "read-only",
-     cwd: "[cwd]"
-   })
-
-   mcp__gemini__gemini({
-     prompt: "[identical 7-section prompt]",
-     "developer-instructions": "[expert prompt]",
-     sandbox: "read-only",
-     model: "auto-gemini-3",
-     cwd: "[cwd]"
+   mcp__grok__grok({
+     prompt: "[7-section delegation prompt]",
+     "developer-instructions": "[contents of expert prompt file]",
+     sandbox: "read-only"
    })
    ```
 
-7. **Synthesize comparison** — output structure:
-   ```
-   ## Verdict comparison
-
-   **GPT bottom line:** [1-2 sentences]
-   **Gemini bottom line:** [1-2 sentences]
-
-   **Agreement:** [where they converge]
-   **Disagreement:** [where they diverge — call out specifics]
-
-   **My assessment:** [which side is correct, or whether both miss something]
-   **Recommendation:** [what to actually do]
-   ```
+5. **Synthesize response** — never paste raw output. Extract:
+   - Bottom-line recommendation
+   - Key reasoning points
+   - Where Grok diverges from your prior analysis (if applicable)
+   - Your assessment of whether Grok is correct
 
 ## Rules
 
-- **Identical prompts** — both providers receive byte-identical input. No leading "GPT said..." in the Gemini prompt or vice versa.
-- **Single-shot only** — never reuse `threadId` from prior calls. Each invocation creates two fresh threads.
-- **Parallel, not sequential** — both MCP tool calls in one message. Sequential dispatch wastes wall time.
-- **Advisory by default** — `sandbox: "read-only"` for both unless user explicitly asks for implementation.
-- **Pin Gemini model** — always `model: "auto-gemini-3"`.
-- **Disagreement is signal** — when GPT and Gemini diverge, treat as a flag to dig deeper, not a tie to break by majority. Often both are partly wrong.
-- **Never paste raw output** — always synthesize.
+- **Single-shot only** — never reuse a `threadId` from a prior `/ask-grok` call. Each invocation is independent.
+- **Advisory only** — the Grok bridge has no filesystem access; there is no implementation mode. For file-editing delegation use `/ask-gpt` or `/ask-gemini`.
+- **No model pin in-command** — the bridge defaults to `GROK_DEFAULT_MODEL` (or `grok-4.3`). To change it, set `GROK_DEFAULT_MODEL` in the MCP server's environment rather than hardcoding a (drift-prone) id here.
+- **No contamination** — do not include prior GPT or Gemini opinions in the Grok prompt. Each expert reasons independently.
+- **Auth required** — Grok needs `XAI_API_KEY`. If the call returns `errorKind: "missing-auth"`, tell the user to `export XAI_API_KEY=xai-...` (or rerun `/claude-delegator:setup`) and restart Claude Code.
+- **Print status line** immediately before the MCP dispatch: `Grok working (typical 30-60s)...`
 
 <!-- DO NOT DELETE: required fallback if plugin cache missing. See C1 in implementation plan. -->
 
