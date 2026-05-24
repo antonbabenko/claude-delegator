@@ -8,7 +8,7 @@ Contributions welcome. This document covers how to contribute effectively.
 
 ```bash
 # Clone the repo
-git clone https://github.com/jarrodwatts/claude-delegator
+git clone https://github.com/antonbabenko/claude-delegator
 cd claude-delegator
 
 # Install plugin in Claude Code
