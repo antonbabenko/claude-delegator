@@ -81,6 +81,27 @@ Examples:
 
 ---
 
+## Release Process
+
+Releases are automated from [Conventional Commits](https://www.conventionalcommits.org/).
+You never bump versions by hand.
+
+1. Merge a PR to `main`.
+2. The release workflow reads the commits since the last release and computes the next
+   version (`feat:` -> minor, `fix:` -> patch, `feat!:` / `BREAKING CHANGE:` -> major).
+3. It opens a `chore(release): vX.Y.Z` PR that updates `version.json`, `CHANGELOG.md`, and
+   the synced manifests, then auto-merges it once the `validate` check passes.
+4. On merge, a second workflow tags `vX.Y.Z` and publishes the GitHub Release.
+5. The `antonbabenko/agent-plugins` marketplace then re-pins `claude-delegator` to the new
+   release (immediately if its dispatch token is set, otherwise within a day via cron).
+
+`version.json` is the single source of truth. `.claude-plugin/plugin.json`,
+`.claude-plugin/marketplace.json`, and `package.json` are kept in sync by CI
+(`.github/release/pre-commit.js`). Do not edit those version fields by hand - the `validate`
+check fails if they drift.
+
+---
+
 ## Adding a New Provider
 
 1. **Check native MCP support** - If the CLI has `mcp-server` like Codex, no wrapper needed
