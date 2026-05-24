@@ -9,7 +9,7 @@ Before delegating, check which MCP tools are available in the current environmen
 1. **If multiple are available**:
    - Use **Gemini** for tasks requiring large context or multimodal analysis.
    - Use **GPT (Codex)** when the user explicitly asks for "GPT" or "Codex".
-   - Use **Grok (xAI)** when the user explicitly asks for "Grok". Grok is advisory-only (HTTP API, no filesystem access), so never route file-editing / implementation tasks to it.
+   - Use **Grok (xAI)** when the user explicitly asks for "Grok". Grok is advisory-only (it cannot edit files), so never route file-editing / implementation tasks to it. It CAN read attached files (PDF/code/docs) via `files:[{path|file_id|file_url}]` on the `mcp__grok__grok` call.
    - Default to **Gemini** for general reasoning.
 2. **If only one is available**: Use the available provider regardless of the task type (but Grok cannot implement file changes - only advise).
 3. **If none are available**: Do not delegate; inform the user that they need to run `/claude-delegator:setup`.

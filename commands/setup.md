@@ -87,6 +87,11 @@ fi
 
 This registers the MCP servers at user scope (available across all projects).
 
+**Grok file TTL (optional):** files Grok uploads default to a 7-day `expires_after` so they
+self-delete. To change it, also pass `--env GROK_FILE_TTL_SECONDS=<seconds>` (1h..30d, i.e.
+3600..2592000) on the `grok` registration, or export it in Claude Code's launch environment.
+Prune bridge-owned files early any time with `/grok-files prune --older-than <age>`.
+
 **Note:** To customise Codex behaviour, add CLI flags before `mcp-server`.
 - For Codex: `-p nosandbox`
 
@@ -112,7 +117,7 @@ Use AskUserQuestion: "Also install short command names (/ask-gpt etc.) into
 with a notice so an unrelated command of the same name is left untouched):
 ```bash
 mkdir -p ~/.claude/commands
-for c in ask-gpt ask-gemini ask-grok ask-all consensus; do
+for c in ask-gpt ask-gemini ask-grok ask-all consensus grok-files; do
   dest=~/.claude/commands/$c.md
   if [ -e "$dest" ]; then
     echo "skip $c: ~/.claude/commands/$c.md already exists (left untouched)"

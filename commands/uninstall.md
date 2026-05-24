@@ -40,7 +40,7 @@ Ownership-aware: a copied alias is removed only if it is byte-identical to the
 plugin's bundled command (so an unrelated user-authored same-named command,
 which `/setup` would have skipped rather than overwritten, is left untouched).
 ```bash
-for c in ask-gpt ask-gemini ask-grok ask-all consensus; do
+for c in ask-gpt ask-gemini ask-grok ask-all consensus grok-files; do
   dest=~/.claude/commands/$c.md
   src="${CLAUDE_PLUGIN_ROOT}/commands/$c.md"
   if [ ! -e "$dest" ]; then

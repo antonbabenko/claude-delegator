@@ -3,18 +3,22 @@
 /**
  * Claude Delegator - Grok (xAI) MCP Bridge
  *
- * A zero-dependency MCP server that calls the xAI OpenAI-compatible Chat
- * Completions API. Speaks JSON-RPC 2.0 over stdio.
+ * A zero-dependency MCP server that calls the xAI **Responses API**
+ * (`POST /v1/responses`). Speaks JSON-RPC 2.0 over stdio.
  *
- * Unlike the Gemini bridge (which wraps a one-shot CLI and recovers answers
- * from disk), this bridge owns the conversation state directly, so multi-turn
- * (grok-reply) is an in-memory threadId -> messages map.
+ * The Responses endpoint (not chat/completions) is required to attach uploaded
+ * files (`{type:"input_file", file_id}`). The bridge owns conversation state
+ * directly, so multi-turn (grok-reply) is an in-memory threadId -> turns map and
+ * we resend the full `input` each turn (no reliance on previous_response_id).
  *
  * Auth: XAI_API_KEY (env). Model: GROK_DEFAULT_MODEL (env) or grok-4.3.
  * Endpoint: XAI_API_BASE (env) or https://api.x.ai/v1.
+ * File TTL: GROK_FILE_TTL_SECONDS (env) or 604800 (7 days).
  */
 
 const crypto = require("node:crypto");
+const path = require("node:path");
+const { stat, readFile } = require("node:fs/promises");
 
 const DEFAULT_MODEL = process.env.GROK_DEFAULT_MODEL || "grok-4.3";
 const DEFAULT_API_BASE = process.env.XAI_API_BASE || "https://api.x.ai/v1";
@@ -22,7 +26,23 @@ const DEFAULT_TIMEOUT_MS = 180_000; // 3 minutes
 const MAX_MS = 600_000;
 const VALID_SANDBOX_VALUES = new Set(["read-only", "workspace-write"]);
 
-// In-memory session store: threadId -> messages[]. Lives for the MCP process
+// xAI accepts expires_after between 1 hour and 30 days. Default 7 days.
+const FILE_TTL_MIN = 3600;
+const FILE_TTL_MAX = 2_592_000;
+function resolveFileTtl() {
+  const raw = Number(process.env.GROK_FILE_TTL_SECONDS);
+  const v = Number.isFinite(raw) && raw > 0 ? raw : 604_800;
+  return Math.min(FILE_TTL_MAX, Math.max(FILE_TTL_MIN, Math.round(v)));
+}
+const FILE_TTL_SECONDS = resolveFileTtl();
+// Stay safely under the documented ~50 MB upload cap.
+const MAX_FILE_BYTES = 48 * 1024 * 1024;
+// Filename prefix marks bridge-owned uploads so cleanup never touches the
+// user's own xAI files. Flat (no slashes/colons) to avoid filename mangling.
+const FILE_PREFIX = "claude-delegator-";
+const UPLOAD_PURPOSE = "assistants";
+
+// In-memory session store: threadId -> turns[]. Lives for the MCP process
 // lifetime only; lost on restart (grok-reply then returns unknown-thread).
 const sessions = new Map();
 
@@ -34,19 +54,11 @@ const sessions = new Map();
 // --- MCP Protocol Helpers ---
 
 function sendResponse(id, result) {
-  process.stdout.write(JSON.stringify({
-    jsonrpc: "2.0",
-    id,
-    result
-  }) + "\n");
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
 }
 
 function sendError(id, code, message) {
-  process.stdout.write(JSON.stringify({
-    jsonrpc: "2.0",
-    id,
-    error: { code, message }
-  }) + "\n");
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }) + "\n");
 }
 
 function isObject(value) {
@@ -79,11 +91,14 @@ function logCall(cid, tool, outcome, ms) {
 // tests. `.code` is checked first (transport-level), then HTTP status.
 function classifyGrokError(status, errCode) {
   switch (errCode) {
-    case "missing-auth":   return { errorKind: "missing-auth",   retryable: false };
-    case "unknown-thread": return { errorKind: "unknown-thread", retryable: false };
-    case "timeout":        return { errorKind: "timeout",        retryable: true };
-    case "network":        return { errorKind: "network",        retryable: true };
-    case "parse":          return { errorKind: "parse",          retryable: false };
+    case "missing-auth":    return { errorKind: "missing-auth",    retryable: false };
+    case "unknown-thread":  return { errorKind: "unknown-thread",  retryable: false };
+    case "timeout":         return { errorKind: "timeout",         retryable: true };
+    case "network":         return { errorKind: "network",         retryable: true };
+    case "parse":           return { errorKind: "parse",           retryable: false };
+    case "file-too-large":  return { errorKind: "file-too-large",  retryable: false };
+    case "file-read":       return { errorKind: "file-read",       retryable: false };
+    case "file-upload":     return { errorKind: "file-upload",     retryable: true };
   }
   const s = Number(status);
   if (s === 401 || s === 403) return { errorKind: "auth", retryable: false };
@@ -94,40 +109,193 @@ function classifyGrokError(status, errCode) {
 
 // --- Pure helpers (exported for tests) ---
 
-// Build the OpenAI-style messages array. developer-instructions become a
-// leading system message; the prompt is the user turn.
-function buildMessages(developerInstructions, prompt) {
-  const messages = [];
+// A "turn" is { role, text, fileRefs? } where fileRefs is an array of
+// { file_id } | { file_url }. buildInitialTurns seeds a fresh conversation.
+function buildInitialTurns(developerInstructions, prompt, fileRefs) {
+  const turns = [];
   if (isNonEmptyString(developerInstructions)) {
-    messages.push({ role: "system", content: developerInstructions });
+    turns.push({ role: "system", text: developerInstructions });
   }
-  messages.push({ role: "user", content: prompt });
-  return messages;
+  turns.push({ role: "user", text: prompt, fileRefs: fileRefs || [] });
+  return turns;
 }
 
-// Extract the assistant text from a chat/completions response body. Throws a
-// `.code = "parse"` error on a malformed shape.
-function parseChatCompletion(data) {
+// Convert internal turns into the /v1/responses `input` array. User content uses
+// input_text + input_file parts; system stays text. Assistant turns replay the
+// server's own `output` items verbatim when we captured them (documented stateless
+// chaining - a server always accepts the shape it emitted); otherwise fall back to
+// a minimal text item.
+function turnsToInput(turns) {
+  const input = [];
+  for (const turn of turns) {
+    if (turn.role === "assistant") {
+      if (Array.isArray(turn.items) && turn.items.length) {
+        for (const item of turn.items) input.push(item);
+      } else {
+        input.push({ role: "assistant", content: [{ type: "output_text", text: turn.text }] });
+      }
+      continue;
+    }
+    if (turn.role === "system") {
+      input.push({ role: "system", content: [{ type: "input_text", text: turn.text }] });
+      continue;
+    }
+    const content = [{ type: "input_text", text: turn.text }];
+    for (const ref of turn.fileRefs || []) {
+      if (ref.file_id) content.push({ type: "input_file", file_id: ref.file_id });
+      else if (ref.file_url) content.push({ type: "input_file", file_url: ref.file_url });
+    }
+    input.push({ role: "user", content });
+  }
+  return input;
+}
+
+// Extract the assistant text from a /v1/responses body. Throws `.code="parse"`
+// on a malformed shape. Tolerates the convenience `output_text` field and the
+// nested output[].content[].text shape.
+function parseResponsesOutput(data) {
   const fail = (why) => {
     const e = new Error(`Parse error: ${why}`);
     e.code = "parse";
     return e;
   };
   if (!isObject(data)) throw fail("response was not a JSON object");
-  const choices = data.choices;
-  if (!Array.isArray(choices) || choices.length === 0) throw fail("no choices in response");
-  const message = choices[0] && choices[0].message;
-  const content = message && message.content;
-  if (typeof content !== "string") throw fail("choices[0].message.content missing");
-  return content;
+  if (isNonEmptyString(data.output_text)) return data.output_text;
+  const output = data.output;
+  if (!Array.isArray(output) || output.length === 0) throw fail("no output in response");
+  // Prefer the last message item that carries text content; concatenate all of its
+  // text parts (a message may interleave multiple text segments).
+  for (let i = output.length - 1; i >= 0; i--) {
+    const item = output[i];
+    const parts = item && item.content;
+    if (!Array.isArray(parts)) continue;
+    const texts = parts
+      .filter((p) => p && typeof p.text === "string" && (p.type === "output_text" || p.type === "text" || p.type === undefined))
+      .map((p) => p.text);
+    if (texts.length) return texts.join("");
+  }
+  throw fail("no text part found in output");
 }
 
-// --- xAI API Call ---
+// --- xAI Files API ---
 
-// Performs one chat/completions call and returns the assistant text. Errors
-// carry `.code` (transport: timeout/network/parse/missing-auth) and/or `.status`
-// (HTTP) so classifyGrokError can map them. `fetchImpl` is injectable for tests.
-async function runGrok({ messages, model, timeoutMs, apiKey, apiBase, fetchImpl }) {
+// Upload one local file and return its file object. Errors carry `.code`
+// (file-too-large/file-read/file-upload/missing-auth) and/or `.status`.
+// `fetchImpl` is injectable for tests.
+async function uploadFile({ filePath, filename, apiKey, apiBase, ttl, cwd, fetchImpl }) {
+  if (!isNonEmptyString(apiKey)) {
+    const e = new Error("XAI_API_KEY is not set; cannot upload files.");
+    e.code = "missing-auth";
+    throw e;
+  }
+  const f = fetchImpl || globalThis.fetch;
+  const base = (apiBase || DEFAULT_API_BASE).replace(/\/+$/, "");
+  // Containment: the resolved path must stay within the base dir. Blocks absolute
+  // paths and `../` escapes from exfiltrating arbitrary local files to xAI.
+  const root = path.resolve(cwd || process.cwd());
+  const resolved = path.resolve(root, filePath);
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+    const e = new Error(`File "${filePath}" resolves outside the working directory (${root}); refused.`);
+    e.code = "file-read";
+    throw e;
+  }
+
+  let info;
+  try {
+    info = await stat(resolved);
+  } catch (err) {
+    const e = new Error(`Cannot read file "${filePath}": ${(err && err.message) || err}`);
+    e.code = "file-read";
+    throw e;
+  }
+  if (!info.isFile()) {
+    const e = new Error(`Not a regular file: "${filePath}"`);
+    e.code = "file-read";
+    throw e;
+  }
+  if (info.size > MAX_FILE_BYTES) {
+    const e = new Error(`File "${filePath}" is ${info.size} bytes; exceeds the ${MAX_FILE_BYTES}-byte cap.`);
+    e.code = "file-too-large";
+    throw e;
+  }
+
+  let buf;
+  try {
+    buf = await readFile(resolved);
+  } catch (err) {
+    const e = new Error(`Cannot read file "${filePath}": ${(err && err.message) || err}`);
+    e.code = "file-read";
+    throw e;
+  }
+
+  const baseName = path.basename(filename || resolved);
+  const storedName = `${FILE_PREFIX}${Date.now()}-${baseName}`;
+  // Append scalar fields BEFORE the (potentially large, streamed) file part so a
+  // streaming multipart parser sees expires_after/purpose regardless of body size.
+  const form = new FormData();
+  form.append("expires_after", String(ttl != null ? ttl : FILE_TTL_SECONDS));
+  form.append("purpose", UPLOAD_PURPOSE);
+  form.append("file", new Blob([buf]), storedName);
+
+  let res;
+  try {
+    res = await f(`${base}/files`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${apiKey}` }, // no Content-Type: fetch sets the multipart boundary
+      body: form,
+    });
+  } catch (err) {
+    const e = new Error(`File upload network error: ${(err && err.message) || err}`);
+    e.code = "file-upload";
+    throw e;
+  }
+
+  let bodyText = "";
+  try { bodyText = await res.text(); } catch (_) { bodyText = ""; }
+  if (!res.ok) {
+    const e = new Error(`xAI file upload error ${res.status}: ${truncate(bodyText, 300)}`);
+    e.status = res.status;
+    if (res.status < 400 || res.status >= 500) e.code = "file-upload";
+    throw e;
+  }
+  try {
+    return JSON.parse(bodyText);
+  } catch (e2) {
+    const e = new Error(`File upload parse error: ${e2.message}`);
+    e.code = "parse";
+    throw e;
+  }
+}
+
+// Resolve a `files` param into { refs, ownedIds }. `path` entries are uploaded
+// (bridge-owned); `file_id`/`file_url` pass through untouched.
+async function resolveFiles(files, opts) {
+  const refs = [];
+  const ownedIds = [];
+  for (const entry of files || []) {
+    if (entry.file_id) {
+      refs.push({ file_id: entry.file_id });
+    } else if (entry.file_url) {
+      refs.push({ file_url: entry.file_url });
+    } else if (entry.path) {
+      const uploaded = await uploadFile({ filePath: entry.path, filename: entry.filename, ...opts });
+      if (!isNonEmptyString(uploaded && uploaded.id)) {
+        const e = new Error("File upload returned no file id");
+        e.code = "parse";
+        throw e;
+      }
+      refs.push({ file_id: uploaded.id });
+      ownedIds.push(uploaded.id);
+    }
+  }
+  return { refs, ownedIds };
+}
+
+// --- xAI Responses API Call ---
+
+// One /v1/responses call returning the assistant text. Errors carry `.code`
+// and/or `.status`. `fetchImpl` is injectable for tests.
+async function runGrok({ turns, model, timeoutMs, apiKey, apiBase, fetchImpl }) {
   if (!isNonEmptyString(apiKey)) {
     const e = new Error("XAI_API_KEY is not set. Export it (export XAI_API_KEY=xai-...) or rerun /claude-delegator:setup.");
     e.code = "missing-auth";
@@ -141,7 +309,7 @@ async function runGrok({ messages, model, timeoutMs, apiKey, apiBase, fetchImpl 
   }
 
   const base = (apiBase || DEFAULT_API_BASE).replace(/\/+$/, "");
-  const url = `${base}/chat/completions`;
+  const url = `${base}/responses`;
   const t = (typeof timeoutMs === "number" && timeoutMs > 0) ? timeoutMs : DEFAULT_TIMEOUT_MS;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), t);
@@ -154,7 +322,7 @@ async function runGrok({ messages, model, timeoutMs, apiKey, apiBase, fetchImpl 
         "Content-Type": "application/json",
         "Authorization": `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({ model: model || DEFAULT_MODEL, messages, stream: false }),
+      body: JSON.stringify({ model: model || DEFAULT_MODEL, input: turnsToInput(turns), stream: false }),
       signal: controller.signal,
     });
   } catch (err) {
@@ -188,19 +356,50 @@ async function runGrok({ messages, model, timeoutMs, apiKey, apiBase, fetchImpl 
     e.code = "parse";
     throw e;
   }
-  return parseChatCompletion(data);
+  const text = parseResponsesOutput(data);
+  // `output` is captured so grok-reply can replay the server's own items verbatim.
+  return { text, output: Array.isArray(data.output) ? data.output : null };
 }
 
 // --- Request Handlers ---
+
+const FILES_SCHEMA = {
+  type: "array",
+  description: "Optional files to attach. Each item has EXACTLY ONE of: path (local file the bridge uploads), file_id (an already-uploaded xAI file id), or file_url (a public URL). Optional filename overrides the stored upload name.",
+  items: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "Local file path; bridge uploads it (resolved against cwd)" },
+      file_id: { type: "string", description: "Existing xAI file id" },
+      file_url: { type: "string", description: "Public URL to a file" },
+      filename: { type: "string", description: "Override stored filename for a path upload" },
+    },
+  },
+};
 
 const GROK_PROPERTIES = {
   prompt: { type: "string", description: "The delegation prompt" },
   "developer-instructions": { type: "string", description: "Expert system instructions (sent as a system message)" },
   model: { type: "string", description: "xAI model id. Defaults to GROK_DEFAULT_MODEL or grok-4.3.", default: DEFAULT_MODEL },
   timeout: { type: "number", description: "Soft timeout in ms. 1..600000. Default 180000.", default: DEFAULT_TIMEOUT_MS },
-  sandbox: { type: "string", enum: ["read-only", "workspace-write"], default: "read-only", description: "Accepted for call-shape parity with other providers; ignored (the HTTP API has no filesystem access)." },
-  cwd: { type: "string", description: "Accepted for parity; ignored." },
+  files: FILES_SCHEMA,
+  sandbox: { type: "string", enum: ["read-only", "workspace-write"], default: "read-only", description: "Accepted for call-shape parity with other providers; ignored (Grok cannot edit files)." },
+  cwd: { type: "string", description: "Base directory for resolving relative file `path` uploads. Defaults to the server's cwd." },
 };
+
+// Validate a `files` param. Returns an error string, or null when valid/absent.
+function validateFiles(files) {
+  if (files === undefined) return null;
+  if (!Array.isArray(files)) return "'files' must be an array when provided";
+  for (const entry of files) {
+    if (!isObject(entry)) return "each 'files' entry must be an object";
+    const keys = ["path", "file_id", "file_url"].filter((k) => entry[k] !== undefined);
+    if (keys.length !== 1) return "each 'files' entry needs exactly one of path, file_id, or file_url";
+    if (!isNonEmptyString(entry[keys[0]])) return `'files' entry ${keys[0]} must be a non-empty string`;
+    if (entry.filename !== undefined && !isNonEmptyString(entry.filename)) return "'files' entry filename must be a non-empty string when provided";
+  }
+  return null;
+}
 
 const handlers = {
   "initialize": (id, _params, shouldRespond) => {
@@ -208,7 +407,7 @@ const handlers = {
     sendResponse(id, {
       protocolVersion: "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "claude-delegator-grok", version: "1.7.0" }
+      serverInfo: { name: "claude-delegator-grok", version: "1.8.0" }
     });
   },
 
@@ -218,12 +417,8 @@ const handlers = {
       tools: [
         {
           name: "grok",
-          description: "Start a new Grok (xAI) expert session. Advisory only (no filesystem access).",
-          inputSchema: {
-            type: "object",
-            properties: GROK_PROPERTIES,
-            required: ["prompt"]
-          }
+          description: "Start a new Grok (xAI) expert session. Advisory only (no filesystem editing). Supports attaching files.",
+          inputSchema: { type: "object", properties: GROK_PROPERTIES, required: ["prompt"] }
         },
         {
           name: "grok-reply",
@@ -233,8 +428,10 @@ const handlers = {
             properties: {
               threadId: { type: "string", description: "Session ID returned by a previous grok call" },
               prompt: { type: "string", description: "Follow-up prompt" },
+              files: FILES_SCHEMA,
               model: { type: "string", default: DEFAULT_MODEL },
-              timeout: { type: "number", default: DEFAULT_TIMEOUT_MS }
+              timeout: { type: "number", default: DEFAULT_TIMEOUT_MS },
+              cwd: { type: "string", description: "Base directory for relative file path uploads" },
             },
             required: ["threadId", "prompt"]
           }
@@ -276,12 +473,17 @@ const handlers = {
         return;
       }
     }
+    const filesErr = validateFiles(args.files);
+    if (filesErr) {
+      if (shouldRespond) sendError(id, -32602, `Invalid params: ${filesErr}`);
+      return;
+    }
     if (!isNonEmptyString(args.prompt)) {
       if (shouldRespond) sendError(id, -32602, "Invalid params: 'prompt' is required");
       return;
     }
 
-    let messages;
+    let priorTurns = null;
     let threadId;
 
     if (name === "grok") {
@@ -289,7 +491,6 @@ const handlers = {
         if (shouldRespond) sendError(id, -32602, "Invalid params: 'developer-instructions' must be a string when provided");
         return;
       }
-      messages = buildMessages(args["developer-instructions"], args.prompt);
       threadId = crypto.randomUUID();
     } else if (name === "grok-reply") {
       if (!isNonEmptyString(args.threadId)) {
@@ -297,9 +498,8 @@ const handlers = {
         return;
       }
       threadId = args.threadId.trim();
-      const prior = sessions.get(threadId);
-      if (!prior) {
-        // Structured error (not a JSON-RPC error) so the orchestrator can react.
+      priorTurns = sessions.get(threadId);
+      if (!priorTurns) {
         const { errorKind, retryable } = classifyGrokError(null, "unknown-thread");
         logCall((id != null) ? id : threadId, "grok-reply", errorKind, 0);
         if (shouldRespond) {
@@ -312,7 +512,6 @@ const handlers = {
         }
         return;
       }
-      messages = [...prior, { role: "user", content: args.prompt }];
     } else {
       if (shouldRespond) sendError(id, -32601, `Tool not found: ${name}`);
       return;
@@ -321,22 +520,34 @@ const handlers = {
     const startedAt = Date.now();
     let outcome = "ok";
     try {
-      const text = await runGrok({
-        messages,
+      // Upload/resolve any attached files first (so an upload failure short-circuits).
+      const { refs, ownedIds } = await resolveFiles(args.files, {
+        apiKey: process.env.XAI_API_KEY,
+        apiBase: DEFAULT_API_BASE,
+        ttl: FILE_TTL_SECONDS,
+        cwd: args.cwd,
+      });
+
+      const turns = priorTurns
+        ? [...priorTurns, { role: "user", text: args.prompt, fileRefs: refs }]
+        : buildInitialTurns(args["developer-instructions"], args.prompt, refs);
+
+      const { text, output } = await runGrok({
+        turns,
         model: args.model,
         timeoutMs: args.timeout,
         apiKey: process.env.XAI_API_KEY,
         apiBase: DEFAULT_API_BASE,
       });
 
-      // Persist the turn so grok-reply can continue this thread.
-      sessions.set(threadId, [...messages, { role: "assistant", content: text }]);
+      // Persist the turn so grok-reply can continue this thread. `items` holds the
+      // server's raw output for verbatim replay (falls back to `text` if absent).
+      sessions.set(threadId, [...turns, { role: "assistant", text, items: output || undefined }]);
 
       if (shouldRespond) {
-        sendResponse(id, {
-          content: [{ type: "text", text }],
-          threadId,
-        });
+        const result = { content: [{ type: "text", text }], threadId };
+        if (ownedIds.length) result.uploadedFileIds = ownedIds;
+        sendResponse(id, result);
       }
     } catch (e) {
       const errMsg = (e && e.message) || String(e);
@@ -394,52 +605,28 @@ async function processLine(line) {
   }
 }
 
-let buffer = "";
-
 if (require.main === module) {
-  // F2: after an uncaught throw / rejection the process is in an undefined state
-  // (Node guarantees no safe resumption). Log the stack, then exit non-zero in
-  // the write callback (so the line is not truncated) and let the MCP host
-  // restart the bridge. In-memory sessions are already ephemeral across restarts.
-  process.on("uncaughtException", (e) => {
-    process.stderr.write(`[grok] fatal-guard uncaughtException: ${e && e.stack ? e.stack : String((e && e.message) || e)}\n`, () => process.exit(1));
-  });
-  process.on("unhandledRejection", (e) => {
-    process.stderr.write(`[grok] fatal-guard unhandledRejection: ${e && e.stack ? e.stack : String((e && e.message) || e)}\n`, () => process.exit(1));
-  });
+  let buffer = "";
+  let chain = Promise.resolve();
 
-  // F2: a broken input pipe is terminal -- the bridge can no longer receive
-  // requests. Exit 1 after the stderr line flushes (exit from the write callback).
-  process.stdin.on("error", (e) => {
-    process.stderr.write(`[grok] stdin error (input pipe broken): ${String((e && e.message) || e)}\n`, () => process.exit(1));
-  });
+  // Serialize processing so responses are emitted in request order even when a
+  // chunk carries multiple messages.
+  const enqueue = (line) => { chain = chain.then(() => processLine(line)); };
 
-  process.stdin.on("data", async (chunk) => {
+  process.stdin.on("data", (chunk) => {
     buffer += chunk.toString();
     const lines = buffer.split("\n");
-    buffer = lines.pop(); // keep any partial trailing line
-    for (const line of lines) await processLine(line);
+    buffer = lines.pop();
+    for (const line of lines) enqueue(line);
   });
 
-  // F2: a clean EOF means the client is done. Flush a final line that arrived
-  // without a trailing newline, then let the event loop drain naturally -- any
-  // in-flight call finishes and flushes its stdout response, and the process
-  // exits 0 once no handles remain. No forced process.exit: that would truncate
-  // buffered stdout and could drop sibling lines from the same chunk.
-  let ended = false;
-  const onEnd = () => {
-    if (ended) return; // 'end' and 'close' can both fire; flush at most once
-    ended = true;
-    const tail = buffer;
-    buffer = "";
-    if (tail.trim()) processLine(tail);
-  };
-  process.stdin.on("end", onEnd);
-  process.stdin.on("close", onEnd);
+  process.stdin.on("end", () => {
+    if (buffer) { enqueue(buffer); buffer = ""; }
+  });
 
-  // Startup Check: the bridge needs global fetch (Node 18+). The API key is NOT
+  // Startup check: the bridge needs global fetch (Node 18+). The API key is NOT
   // required at startup so the initialize handshake and missing-auth error path
-  // both stay reachable; it is validated per-call in runGrok.
+  // both stay reachable; it is validated per-call.
   if (typeof globalThis.fetch !== "function") {
     console.error("Grok bridge requires Node 18+ (global fetch unavailable).");
     process.exit(1);
@@ -447,22 +634,18 @@ if (require.main === module) {
   if (!isNonEmptyString(process.env.XAI_API_KEY)) {
     console.error("[claude-delegator] warning: XAI_API_KEY is not set; grok calls will return errorKind:missing-auth until it is.");
   }
-
-  // Test-only seams (never triggered in normal operation). They exercise the F2
-  // process-level guards from a child process where the real signals are hard to
-  // synthesize deterministically.
-  if (process.env.GROK_TEST_EMIT_STDIN_ERROR === "1") {
-    process.nextTick(() => process.stdin.emit("error", new Error("pipe boom (test seam)")));
-  }
-  if (process.env.GROK_TEST_THROW_ASYNC === "1") {
-    setTimeout(() => { throw new Error("async boom (test seam)"); }, 30);
-  }
 }
 
 // Test-only exports
 if (typeof module !== "undefined" && module.exports) {
   module.exports.classifyGrokError = classifyGrokError;
-  module.exports.buildMessages = buildMessages;
-  module.exports.parseChatCompletion = parseChatCompletion;
+  module.exports.buildInitialTurns = buildInitialTurns;
+  module.exports.turnsToInput = turnsToInput;
+  module.exports.parseResponsesOutput = parseResponsesOutput;
   module.exports.runGrok = runGrok;
+  module.exports.uploadFile = uploadFile;
+  module.exports.resolveFiles = resolveFiles;
+  module.exports.validateFiles = validateFiles;
+  module.exports.FILE_PREFIX = FILE_PREFIX;
+  module.exports.FILE_TTL_SECONDS = FILE_TTL_SECONDS;
 }

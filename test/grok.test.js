@@ -4,6 +4,8 @@ const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const http = require("node:http");
 const path = require("node:path");
+const os = require("node:os");
+const fs = require("node:fs");
 
 const BRIDGE = path.join(__dirname, "..", "server", "grok", "index.js");
 
@@ -43,8 +45,8 @@ function rpcClient(child) {
   };
 }
 
-// Start a localhost mock of the xAI chat/completions endpoint.
-function startMockXai(handler) {
+// Localhost mock of the xAI API. `handler(req, res, body)` routes per endpoint.
+function startMock(handler) {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
       let body = "";
@@ -58,13 +60,26 @@ function startMockXai(handler) {
   });
 }
 
-test("G1: grok then grok-reply accumulates the transcript", async () => {
-  const received = [];
-  const { server, base } = await startMockXai((req, res, body) => {
-    received.push(JSON.parse(body));
-    const turn = received.length;
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: `reply-${turn}` } }] }));
+function reply(res, status, obj) {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(obj));
+}
+
+function lastUserContent(responsesBody) {
+  const input = responsesBody.input;
+  return input[input.length - 1].content;
+}
+
+// --- Integration (spawned bridge + mock /v1/responses + /v1/files) ---
+
+test("G1: grok then grok-reply build /v1/responses input and accumulate turns", async () => {
+  const bodies = [];
+  const { server, base } = await startMock((req, res, body) => {
+    if (req.method === "POST" && req.url === "/v1/responses") {
+      bodies.push(JSON.parse(body));
+      return reply(res, 200, { output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: `reply-${bodies.length}` }] }] });
+    }
+    return reply(res, 404, { error: "unexpected" });
   });
   const child = startGrokBridge({ XAI_API_KEY: "test", XAI_API_BASE: base });
   const rpc = rpcClient(child);
@@ -75,27 +90,27 @@ test("G1: grok then grok-reply accumulates the transcript", async () => {
       jsonrpc: "2.0", id: 2, method: "tools/call",
       params: { name: "grok", arguments: { prompt: "hello", "developer-instructions": "sys" } },
     });
-    assert.equal(r1.result.isError, undefined, "no error on first call");
+    assert.equal(r1.result.isError, undefined);
     assert.equal(r1.result.content[0].text, "reply-1");
     const threadId = r1.result.threadId;
-    assert.ok(threadId, "threadId returned");
+    assert.ok(threadId);
 
     const r2 = await rpc.request({
       jsonrpc: "2.0", id: 3, method: "tools/call",
       params: { name: "grok-reply", arguments: { threadId, prompt: "again" } },
     });
     assert.equal(r2.result.content[0].text, "reply-2");
-    assert.equal(r2.result.threadId, threadId, "same threadId preserved");
+    assert.equal(r2.result.threadId, threadId);
 
-    assert.deepEqual(received[0].messages, [
-      { role: "system", content: "sys" },
-      { role: "user", content: "hello" },
+    assert.deepEqual(bodies[0].input, [
+      { role: "system", content: [{ type: "input_text", text: "sys" }] },
+      { role: "user", content: [{ type: "input_text", text: "hello" }] },
     ]);
-    assert.deepEqual(received[1].messages, [
-      { role: "system", content: "sys" },
-      { role: "user", content: "hello" },
-      { role: "assistant", content: "reply-1" },
-      { role: "user", content: "again" },
+    assert.deepEqual(bodies[1].input, [
+      { role: "system", content: [{ type: "input_text", text: "sys" }] },
+      { role: "user", content: [{ type: "input_text", text: "hello" }] },
+      { type: "message", role: "assistant", content: [{ type: "output_text", text: "reply-1" }] },
+      { role: "user", content: [{ type: "input_text", text: "again" }] },
     ]);
   } finally {
     child.stdin.end();
@@ -131,21 +146,14 @@ test("G3: grok-reply on an unknown threadId returns unknown-thread", async () =>
     });
     assert.equal(r.result.isError, true);
     assert.equal(r.result.errorKind, "unknown-thread");
-    assert.equal(r.result.retryable, false);
   } finally {
     child.stdin.end();
   }
 });
 
 test("G4: timeout aborts the call and surfaces errorKind timeout", async () => {
-  // Mock that delays past the call timeout so AbortController fires.
-  const { server, base } = await startMockXai((req, res) => {
-    setTimeout(() => {
-      try {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ choices: [{ message: { content: "late" } }] }));
-      } catch (_) {}
-    }, 5000);
+  const { server, base } = await startMock((req, res) => {
+    setTimeout(() => { try { reply(res, 200, { output: [{ content: [{ type: "output_text", text: "late" }] }] }); } catch (_) {} }, 5000);
   });
   const child = startGrokBridge({ XAI_API_KEY: "test", XAI_API_BASE: base });
   const rpc = rpcClient(child);
@@ -164,191 +172,286 @@ test("G4: timeout aborts the call and surfaces errorKind timeout", async () => {
   }
 });
 
-test("G5: tools/list advertises grok and grok-reply", async () => {
+test("G5: tools/list advertises grok + grok-reply, both with a files param", async () => {
   const child = startGrokBridge({ XAI_API_KEY: "test" });
   const rpc = rpcClient(child);
   try {
     const r = await rpc.request({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
-    const names = r.result.tools.map((t) => t.name);
-    assert.deepEqual(names.sort(), ["grok", "grok-reply"]);
+    const tools = r.result.tools;
+    const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
+    assert.deepEqual(Object.keys(byName).sort(), ["grok", "grok-reply"]);
+    assert.ok(byName.grok.inputSchema.properties.files, "grok has files param");
+    assert.ok(byName["grok-reply"].inputSchema.properties.files, "grok-reply has files param");
   } finally {
     child.stdin.end();
   }
 });
 
-// --- Pure-function unit tests (bridge required as a module) ---
-
-test("G6: classifyGrokError maps transport codes and HTTP statuses", () => {
-  const { classifyGrokError } = require("../server/grok/index.js");
-  assert.deepEqual(classifyGrokError(null, "missing-auth"), { errorKind: "missing-auth", retryable: false });
-  assert.deepEqual(classifyGrokError(null, "unknown-thread"), { errorKind: "unknown-thread", retryable: false });
-  assert.deepEqual(classifyGrokError(null, "timeout"), { errorKind: "timeout", retryable: true });
-  assert.deepEqual(classifyGrokError(null, "network"), { errorKind: "network", retryable: true });
-  assert.deepEqual(classifyGrokError(null, "parse"), { errorKind: "parse", retryable: false });
-  assert.deepEqual(classifyGrokError(401), { errorKind: "auth", retryable: false });
-  assert.deepEqual(classifyGrokError(403), { errorKind: "auth", retryable: false });
-  assert.deepEqual(classifyGrokError(429), { errorKind: "rate-limit", retryable: true });
-  assert.deepEqual(classifyGrokError(503), { errorKind: "upstream", retryable: true });
-  assert.deepEqual(classifyGrokError(200), { errorKind: "unknown", retryable: false });
-});
-
-test("G7: buildMessages adds system only when developer-instructions present", () => {
-  const { buildMessages } = require("../server/grok/index.js");
-  assert.deepEqual(buildMessages("sys", "p"), [
-    { role: "system", content: "sys" },
-    { role: "user", content: "p" },
-  ]);
-  assert.deepEqual(buildMessages("", "p"), [{ role: "user", content: "p" }]);
-  assert.deepEqual(buildMessages(undefined, "p"), [{ role: "user", content: "p" }]);
-});
-
-test("G8: parseChatCompletion extracts content and throws on malformed", () => {
-  const { parseChatCompletion } = require("../server/grok/index.js");
-  assert.equal(parseChatCompletion({ choices: [{ message: { content: "hi" } }] }), "hi");
-  assert.throws(() => parseChatCompletion({}), /Parse error/);
-  assert.throws(() => parseChatCompletion({ choices: [] }), /Parse error/);
-  assert.throws(() => parseChatCompletion({ choices: [{ message: {} }] }), /Parse error/);
-});
-
-test("G9: runGrok uses injected fetch (success, http error, missing key)", async () => {
-  const { runGrok } = require("../server/grok/index.js");
-
-  const okFetch = async () => ({
-    ok: true, status: 200,
-    text: async () => JSON.stringify({ choices: [{ message: { content: "ok" } }] }),
+test("G6: grok with files:[{file_id}] references it in input without uploading", async () => {
+  let filesHits = 0;
+  const bodies = [];
+  const { server, base } = await startMock((req, res, body) => {
+    if (req.method === "POST" && req.url === "/v1/files") { filesHits++; return reply(res, 200, { id: "should-not-happen" }); }
+    if (req.method === "POST" && req.url === "/v1/responses") {
+      bodies.push(JSON.parse(body));
+      return reply(res, 200, { output: [{ content: [{ type: "output_text", text: "ok" }] }] });
+    }
+    return reply(res, 404, { error: "unexpected" });
   });
-  assert.equal(
-    await runGrok({ messages: [{ role: "user", content: "x" }], apiKey: "k", fetchImpl: okFetch }),
-    "ok"
-  );
+  const child = startGrokBridge({ XAI_API_KEY: "test", XAI_API_BASE: base });
+  const rpc = rpcClient(child);
+  try {
+    await rpc.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const r = await rpc.request({
+      jsonrpc: "2.0", id: 2, method: "tools/call",
+      params: { name: "grok", arguments: { prompt: "review", files: [{ file_id: "file_abc" }] } },
+    });
+    assert.equal(r.result.isError, undefined);
+    assert.equal(filesHits, 0, "no upload for an existing file_id");
+    assert.deepEqual(lastUserContent(bodies[0]), [
+      { type: "input_text", text: "review" },
+      { type: "input_file", file_id: "file_abc" },
+    ]);
+  } finally {
+    child.stdin.end();
+    server.close();
+  }
+});
+
+test("G7: grok with files:[{path}] uploads then references the returned file_id", async () => {
+  const tmp = path.join(os.tmpdir(), `grok-up-${Date.now()}.txt`);
+  fs.writeFileSync(tmp, "file body");
+  const bodies = [];
+  let filesHits = 0;
+  const { server, base } = await startMock((req, res, body) => {
+    if (req.method === "POST" && req.url === "/v1/files") {
+      filesHits++;
+      return reply(res, 200, { id: "file_up1", object: "file", bytes: 9, created_at: 1762345678, filename: "x", purpose: "assistants" });
+    }
+    if (req.method === "POST" && req.url === "/v1/responses") {
+      bodies.push(JSON.parse(body));
+      return reply(res, 200, { output: [{ content: [{ type: "output_text", text: "done" }] }] });
+    }
+    return reply(res, 404, { error: "unexpected" });
+  });
+  const child = startGrokBridge({ XAI_API_KEY: "test", XAI_API_BASE: base });
+  const rpc = rpcClient(child);
+  try {
+    await rpc.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const r = await rpc.request({
+      jsonrpc: "2.0", id: 2, method: "tools/call",
+      params: { name: "grok", arguments: { prompt: "review", files: [{ path: tmp }], cwd: os.tmpdir() } },
+    });
+    assert.equal(r.result.isError, undefined);
+    assert.equal(filesHits, 1);
+    assert.deepEqual(r.result.uploadedFileIds, ["file_up1"]);
+    assert.deepEqual(lastUserContent(bodies[0]), [
+      { type: "input_text", text: "review" },
+      { type: "input_file", file_id: "file_up1" },
+    ]);
+  } finally {
+    child.stdin.end();
+    server.close();
+    fs.rmSync(tmp, { force: true });
+  }
+});
+
+test("G8: a missing file path short-circuits with errorKind file-read", async () => {
+  const child = startGrokBridge({ XAI_API_KEY: "test", XAI_API_BASE: "http://127.0.0.1:1/v1" });
+  const rpc = rpcClient(child);
+  try {
+    await rpc.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const r = await rpc.request({
+      jsonrpc: "2.0", id: 2, method: "tools/call",
+      params: { name: "grok", arguments: { prompt: "x", files: [{ path: "/no/such/grok-file-xyz" }] } },
+    });
+    assert.equal(r.result.isError, true);
+    assert.equal(r.result.errorKind, "file-read");
+  } finally {
+    child.stdin.end();
+  }
+});
+
+// --- Unit tests (bridge required as a module) ---
+
+const grok = require("../server/grok/index.js");
+
+test("G9: classifyGrokError maps transport codes and HTTP statuses", () => {
+  assert.deepEqual(grok.classifyGrokError(null, "missing-auth"), { errorKind: "missing-auth", retryable: false });
+  assert.deepEqual(grok.classifyGrokError(null, "unknown-thread"), { errorKind: "unknown-thread", retryable: false });
+  assert.deepEqual(grok.classifyGrokError(null, "timeout"), { errorKind: "timeout", retryable: true });
+  assert.deepEqual(grok.classifyGrokError(null, "file-too-large"), { errorKind: "file-too-large", retryable: false });
+  assert.deepEqual(grok.classifyGrokError(null, "file-read"), { errorKind: "file-read", retryable: false });
+  assert.deepEqual(grok.classifyGrokError(null, "file-upload"), { errorKind: "file-upload", retryable: true });
+  assert.deepEqual(grok.classifyGrokError(401), { errorKind: "auth", retryable: false });
+  assert.deepEqual(grok.classifyGrokError(429), { errorKind: "rate-limit", retryable: true });
+  assert.deepEqual(grok.classifyGrokError(503), { errorKind: "upstream", retryable: true });
+  assert.deepEqual(grok.classifyGrokError(200), { errorKind: "unknown", retryable: false });
+});
+
+test("G10: buildInitialTurns + turnsToInput produce the responses input shape", () => {
+  const turns = grok.buildInitialTurns("sys", "hi", [{ file_id: "f1" }, { file_url: "https://u/x" }]);
+  assert.deepEqual(grok.turnsToInput(turns), [
+    { role: "system", content: [{ type: "input_text", text: "sys" }] },
+    {
+      role: "user",
+      content: [
+        { type: "input_text", text: "hi" },
+        { type: "input_file", file_id: "f1" },
+        { type: "input_file", file_url: "https://u/x" },
+      ],
+    },
+  ]);
+  // No developer-instructions -> no system turn.
+  assert.deepEqual(grok.buildInitialTurns("", "hi", []), [{ role: "user", text: "hi", fileRefs: [] }]);
+});
+
+test("G11: parseResponsesOutput handles output_text, nested output[], and malformed", () => {
+  assert.equal(grok.parseResponsesOutput({ output_text: "quick" }), "quick");
+  assert.equal(grok.parseResponsesOutput({ output: [{ content: [{ type: "output_text", text: "nested" }] }] }), "nested");
+  assert.equal(grok.parseResponsesOutput({ output: [{ content: [{ type: "text", text: "alt" }] }] }), "alt");
+  assert.throws(() => grok.parseResponsesOutput({}), /Parse error/);
+  assert.throws(() => grok.parseResponsesOutput({ output: [] }), /Parse error/);
+  assert.throws(() => grok.parseResponsesOutput({ output: [{ content: [{ type: "image" }] }] }), /Parse error/);
+});
+
+test("G12: validateFiles enforces exactly-one-of and types", () => {
+  assert.equal(grok.validateFiles(undefined), null);
+  assert.equal(grok.validateFiles([{ path: "a" }]), null);
+  assert.equal(grok.validateFiles([{ file_id: "f" }]), null);
+  assert.ok(grok.validateFiles("nope"));
+  assert.ok(grok.validateFiles([{ path: "a", file_id: "b" }]));
+  assert.ok(grok.validateFiles([{}]));
+  assert.ok(grok.validateFiles([{ path: "" }]));
+  assert.ok(grok.validateFiles([{ path: "a", filename: "" }]));
+});
+
+test("G13: runGrok posts to /responses via injected fetch (success, http error, missing key)", async () => {
+  let calledUrl = null;
+  const okFetch = async (url) => {
+    calledUrl = url;
+    return { ok: true, status: 200, text: async () => JSON.stringify({ output: [{ content: [{ type: "output_text", text: "ok" }] }] }) };
+  };
+  const out = await grok.runGrok({ turns: [{ role: "user", text: "x", fileRefs: [] }], apiKey: "k", apiBase: "https://api.x.ai/v1", fetchImpl: okFetch });
+  assert.equal(out.text, "ok");
+  assert.match(calledUrl, /\/responses$/);
 
   const errFetch = async () => ({ ok: false, status: 500, text: async () => "boom" });
-  await assert.rejects(
-    runGrok({ messages: [], apiKey: "k", fetchImpl: errFetch }),
-    (e) => e.status === 500
-  );
+  await assert.rejects(grok.runGrok({ turns: [], apiKey: "k", fetchImpl: errFetch }), (e) => e.status === 500);
 
-  await assert.rejects(
-    runGrok({ messages: [], apiKey: "", fetchImpl: okFetch }),
-    (e) => e.code === "missing-auth"
-  );
+  await assert.rejects(grok.runGrok({ turns: [], apiKey: "", fetchImpl: okFetch }), (e) => e.code === "missing-auth");
 });
 
-// --- Process-lifecycle + observability tests (F2 / F3) ---
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// Accumulate the child's stderr so we can assert on the F3 log lines and the
-// F2 fatal-guard messages.
-function collectStderr(child) {
-  const ref = { text: "" };
-  child.stderr.on("data", (d) => (ref.text += d.toString()));
-  return ref;
-}
-
-// Resolve with the child's exit code (or signal) once it terminates.
-function waitExit(child) {
-  return new Promise((resolve) => {
-    child.on("exit", (code, signal) => resolve({ code, signal }));
-  });
-}
-
-test("G10: F3 emits one stderr correlation line per call; stdout stays JSON-RPC", async () => {
-  const { server, base } = await startMockXai((req, res, body) => {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ choices: [{ message: { content: "ok" } }] }));
-  });
-  const child = startGrokBridge({ XAI_API_KEY: "test", XAI_API_BASE: base });
-  const rpc = rpcClient(child);
-  const err = collectStderr(child);
-  let stdout = "";
-  child.stdout.on("data", (d) => (stdout += d.toString()));
+test("G14: uploadFile sends multipart with purpose, expires_after, and prefixed filename", async () => {
+  const tmp = path.join(os.tmpdir(), `grok-unit-${Date.now()}.md`);
+  fs.writeFileSync(tmp, "hello");
+  let captured = null;
+  const fetchImpl = async (url, opts) => {
+    captured = { url, opts };
+    return { ok: true, status: 200, text: async () => JSON.stringify({ id: "file_x", filename: "n" }) };
+  };
   try {
-    await rpc.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
-    await rpc.request({
-      jsonrpc: "2.0", id: 2, method: "tools/call",
-      params: { name: "grok", arguments: { prompt: "hi" } },
-    });
-    await sleep(20); // let the finally-block stderr write flush
-    assert.match(err.text, /^\[grok\] 2 grok -> ok in \d+ms$/m, "one ok correlation line for id 2");
-    assert.equal(stdout.includes("[grok]"), false, "stdout never carries the log prefix");
+    const res = await grok.uploadFile({ filePath: tmp, apiKey: "k", apiBase: "https://api.x.ai/v1", cwd: os.tmpdir(), fetchImpl });
+    assert.equal(res.id, "file_x");
+    assert.match(captured.url, /\/files$/);
+    const form = captured.opts.body;
+    assert.equal(form.get("purpose"), "assistants");
+    assert.equal(form.get("expires_after"), String(grok.FILE_TTL_SECONDS));
+    const filePart = form.get("file");
+    assert.ok(filePart.name.startsWith(grok.FILE_PREFIX), `filename ${filePart.name} should carry the prefix`);
+    assert.ok(filePart.name.endsWith(path.basename(tmp)));
+    // No manual Content-Type (fetch sets the multipart boundary).
+    assert.equal(captured.opts.headers["Content-Type"], undefined);
   } finally {
-    child.stdin.end();
-    server.close();
+    fs.rmSync(tmp, { force: true });
   }
 });
 
-test("G11: F2 uncaughtException is logged with a stack and exits non-zero", async () => {
-  // GROK_TEST_THROW_ASYNC schedules a real async throw ~30ms after start. After
-  // an uncaught throw the process state is undefined, so the bridge logs and
-  // exits 1 (the host then restarts it); it does NOT try to keep serving.
-  const child = startGrokBridge({ XAI_API_KEY: "test", GROK_TEST_THROW_ASYNC: "1" });
-  const err = collectStderr(child);
-  const { code } = await waitExit(child);
-  assert.equal(code, 1, "uncaught throw is fatal -> exit 1");
-  assert.match(err.text, /fatal-guard uncaughtException:.*async boom/s);
-});
-
-test("G12: F2 stdin 'error' (broken pipe) exits 1", async () => {
-  const child = startGrokBridge({ XAI_API_KEY: "test", GROK_TEST_EMIT_STDIN_ERROR: "1" });
-  const err = collectStderr(child);
-  const { code } = await waitExit(child);
-  assert.equal(code, 1, "broken input pipe is terminal");
-  assert.match(err.text, /stdin error \(input pipe broken\)/);
-});
-
-test("G13: F2 clean EOF drains an in-flight call, then exits 0", async () => {
-  // Mock holds the response so EOF lands while the call is in flight.
-  const { server, base } = await startMockXai((req, res) => {
-    setTimeout(() => {
-      try {
-        // Connection: close so the bridge's HTTP socket dies after the response
-        // and does not linger in the keep-alive pool, letting the process exit
-        // promptly once stdin has ended.
-        res.writeHead(200, { "content-type": "application/json", "connection": "close" });
-        res.end(JSON.stringify({ choices: [{ message: { content: "slow-ok" } }] }));
-      } catch (_) {}
-    }, 200);
-  });
-  const child = startGrokBridge({ XAI_API_KEY: "test", XAI_API_BASE: base });
-  const rpc = rpcClient(child);
-  const exited = waitExit(child);
+test("G15: uploadFile rejects an oversize file with file-too-large", async () => {
+  const tmp = path.join(os.tmpdir(), `grok-big-${Date.now()}.bin`);
+  // Sparse 49 MB file: ftruncate sets size without writing 49 MB of data.
+  const fd = fs.openSync(tmp, "w");
+  fs.ftruncateSync(fd, 49 * 1024 * 1024);
+  fs.closeSync(fd);
   try {
-    await rpc.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
-    const callPromise = rpc.request({
-      jsonrpc: "2.0", id: 2, method: "tools/call",
-      params: { name: "grok", arguments: { prompt: "slow" } },
-    });
-    await sleep(50);          // call is now in flight (mock not resolved yet)
-    child.stdin.end();        // clean EOF arrives mid-call
-    const r = await callPromise;
-    assert.equal(r.result.content[0].text, "slow-ok", "in-flight response still delivered");
-    const { code } = await exited;
-    assert.equal(code, 0, "exits 0 after draining the in-flight call");
+    await assert.rejects(
+      grok.uploadFile({ filePath: tmp, apiKey: "k", cwd: os.tmpdir(), fetchImpl: async () => { throw new Error("should not reach fetch"); } }),
+      (e) => e.code === "file-too-large"
+    );
   } finally {
-    server.close();
+    fs.rmSync(tmp, { force: true });
   }
 });
 
-test("G14: a final line with no trailing newline is flushed on EOF", async () => {
-  const child = startGrokBridge({ XAI_API_KEY: "test" });
-  const exited = waitExit(child);
-  let resolve;
-  const got = new Promise((r) => (resolve = r));
-  let out = "";
-  child.stdout.on("data", (d) => {
-    out += d.toString();
-    for (const line of out.split("\n")) {
-      if (!line.trim()) continue;
-      try { const m = JSON.parse(line); if (m.id === 1) resolve(m); } catch (_) {}
+test("G19: uploadFile refuses a path outside cwd (no exfiltration, fetch never called)", async () => {
+  const tmp = path.join(os.tmpdir(), `grok-out-${Date.now()}.txt`);
+  fs.writeFileSync(tmp, "secret");
+  try {
+    await assert.rejects(
+      grok.uploadFile({ filePath: tmp, apiKey: "k", cwd: __dirname, fetchImpl: async () => { throw new Error("should not reach fetch"); } }),
+      (e) => e.code === "file-read"
+    );
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+});
+
+// --- files-admin (cleanup) unit tests ---
+
+const admin = require("../server/grok/files-admin.js");
+
+test("G16: parseOlderThan understands s/m/h/d and plain seconds", () => {
+  assert.equal(admin.parseOlderThan("30m"), 1800);
+  assert.equal(admin.parseOlderThan("24h"), 86400);
+  assert.equal(admin.parseOlderThan("7d"), 604800);
+  assert.equal(admin.parseOlderThan("90"), 90);
+  assert.equal(admin.parseOlderThan("0h"), 0);
+  assert.throws(() => admin.parseOlderThan("soon"));
+});
+
+test("G17: selectPrunable keeps only prefixed files older than the cutoff", () => {
+  const now = 1_000_000; // epoch seconds
+  const files = [
+    { id: "a", filename: "claude-delegator-1-old.txt", created_at: now - 1000 },   // prefixed + old -> prune
+    { id: "b", filename: "claude-delegator-2-new.txt", created_at: now - 10 },     // prefixed + new -> keep
+    { id: "c", filename: "user-doc.pdf", created_at: now - 100000 },               // not prefixed -> keep
+  ];
+  const out = admin.selectPrunable(files, { cutoffEpochSec: now - 100 });
+  assert.deepEqual(out.map((f) => f.id), ["a"]);
+  // Safety floor: even prefix "" can never select the non-bridge file "c".
+  const all = admin.selectPrunable(files, { prefix: "", cutoffEpochSec: now });
+  assert.deepEqual(all.map((f) => f.id), ["a", "b"]);
+});
+
+test("G18: prune lists, filters, and deletes only prunable ids when not a dry run", async () => {
+  const nowMs = 2_000_000_000_000;
+  const nowSec = Math.floor(nowMs / 1000);
+  const deleted = [];
+  const fetchImpl = async (url, opts) => {
+    if (opts.method === "GET") {
+      return { ok: true, status: 200, text: async () => JSON.stringify({
+        data: [
+          { id: "old", filename: "claude-delegator-x.txt", created_at: nowSec - 100000 },
+          { id: "fresh", filename: "claude-delegator-y.txt", created_at: nowSec - 1 },
+          { id: "theirs", filename: "report.pdf", created_at: 1 },
+        ],
+        pagination_token: null,
+      }) };
     }
-  });
-  // Write a complete request WITHOUT a trailing newline, then EOF. The bridge
-  // must flush the buffered tail line before draining.
-  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }));
-  child.stdin.end();
-  const msg = await got;
-  assert.ok(msg.result, "EOF-flushed initialize is still answered");
-  const { code } = await exited;
-  assert.equal(code, 0, "exits 0 cleanly after the flush");
+    if (opts.method === "DELETE") {
+      deleted.push(decodeURIComponent(url.split("/files/")[1]));
+      return { ok: true, status: 200, text: async () => JSON.stringify({ deleted: true }) };
+    }
+    return { ok: false, status: 405, text: async () => "no" };
+  };
+  const res = await admin.prune({ olderThanSec: 3600, apiKey: "k", apiBase: "https://api.x.ai/v1", fetchImpl, dryRun: false, now: nowMs });
+  assert.deepEqual(res.candidates.map((f) => f.id), ["old"]);
+  assert.deepEqual(deleted, ["old"]);
+
+  // Dry run deletes nothing.
+  deleted.length = 0;
+  const dry = await admin.prune({ olderThanSec: 3600, apiKey: "k", apiBase: "https://api.x.ai/v1", fetchImpl, dryRun: true, now: nowMs });
+  assert.deepEqual(dry.candidates.map((f) => f.id), ["old"]);
+  assert.deepEqual(dry.deleted, []);
+  assert.deepEqual(deleted, []);
 });

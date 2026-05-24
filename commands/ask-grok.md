@@ -38,9 +38,15 @@ User question or topic: $ARGUMENTS
    mcp__grok__grok({
      prompt: "[7-section delegation prompt]",
      "developer-instructions": "[contents of expert prompt file]",
-     sandbox: "read-only"
+     sandbox: "read-only",
+     files: [{ path: "relative/or/abs/path" }]   // OPTIONAL - omit when no files
    })
    ```
+   **Files (optional):** when the user wants Grok to read a local file, pass it in `files`
+   as `[{ path }]` - the bridge uploads it to the xAI Files API and references it. You may
+   also pass `{ file_id }` (already uploaded) or `{ file_url }` (public URL). Uploaded files
+   are tagged and auto-expire (default 7 days, `GROK_FILE_TTL_SECONDS`); prune early with
+   `/grok-files`.
 
 5. **Synthesize response** — never paste raw output. Extract:
    - Bottom-line recommendation
@@ -51,7 +57,8 @@ User question or topic: $ARGUMENTS
 ## Rules
 
 - **Single-shot only** — never reuse a `threadId` from a prior `/ask-grok` call. Each invocation is independent.
-- **Advisory only** — the Grok bridge has no filesystem access; there is no implementation mode. For file-editing delegation use `/ask-gpt` or `/ask-gemini`.
+- **Advisory only** — the Grok bridge cannot edit files; there is no implementation mode. For file-editing delegation use `/ask-gpt` or `/ask-gemini`. (It can READ attached files via `files`.)
+- **Files** — `files:[{path|file_id|file_url}]` attaches documents (PDF, code, md, csv, json, txt; <= 48 MB) to the query. On `errorKind: "file-read"` / `"file-too-large"`, tell the user which file failed.
 - **No model pin in-command** — the bridge defaults to `GROK_DEFAULT_MODEL` (or `grok-4.3`). To change it, set `GROK_DEFAULT_MODEL` in the MCP server's environment rather than hardcoding a (drift-prone) id here.
 - **No contamination** — do not include prior GPT or Gemini opinions in the Grok prompt. Each expert reasons independently.
 - **Auth required** — Grok needs `XAI_API_KEY`. If the call returns `errorKind: "missing-auth"`, tell the user to `export XAI_API_KEY=xai-...` (or rerun `/claude-delegator:setup`) and restart Claude Code.

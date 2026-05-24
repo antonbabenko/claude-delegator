@@ -47,12 +47,13 @@ Bundled with the plugin (available once installed):
 | `/claude-delegator:uninstall` | Remove MCP config, rules, and aliases |
 | `/claude-delegator:ask-gpt` | One-shot GPT (Codex) second opinion |
 | `/claude-delegator:ask-gemini` | One-shot Gemini second opinion |
-| `/claude-delegator:ask-grok` | One-shot Grok (xAI) second opinion (advisory-only) |
+| `/claude-delegator:ask-grok` | One-shot Grok (xAI) second opinion (advisory-only; can read attached files) |
 | `/claude-delegator:ask-all` | GPT + Gemini + Grok in parallel, synthesized |
 | `/claude-delegator:consensus` | Iterate GPT + Gemini + Grok + Claude to consensus |
+| `/claude-delegator:grok-files` | List or prune Grok-uploaded files (storage cleanup) |
 
 `/setup` can also install short aliases (`/ask-gpt`, `/ask-gemini`,
-`/ask-grok`, `/ask-all`, `/consensus`) into `~/.claude/commands/` (opt-in; never
+`/ask-grok`, `/ask-all`, `/consensus`, `/grok-files`) into `~/.claude/commands/` (opt-in; never
 overwrites an existing same-named command). `/uninstall` removes an alias
 only if it is byte-identical to the bundled copy, so an unrelated same-named
 command you authored is left untouched.
@@ -74,7 +75,7 @@ Claude gains a team of GPT, Gemini, and Grok specialists via MCP: GPT through th
 - **Multi-turn chaining** - the initial call returns a `threadId`; follow-up `*-reply` calls preserve full context for iterative implementation and retries.
 - **Synthesized output** - Claude interprets and applies judgment to expert results; raw provider text is never passed through verbatim.
 - **Gemini bridge resilience** - soft-timeout drain that recovers disk-flushed answers (`recovered: true`), structured trust-failure errors the orchestration retries with `skip-trust` (or sets preflight), and hardened JSON parsing. `GEMINI_DEFAULT_MODEL` env overrides the model.
-- **Grok bridge** - bundled zero-dependency Node bridge over the xAI OpenAI-compatible API. Advisory-only (no file access). Needs `XAI_API_KEY`; `GROK_DEFAULT_MODEL` (default `grok-4.3`) and `XAI_API_BASE` env vars override the model and endpoint.
+- **Grok bridge** - bundled zero-dependency Node bridge over the xAI **Responses API** (`/v1/responses`). Advisory-only (it cannot edit files) but it **can read attached files** - pass `files:[{path|file_id|file_url}]` and the bridge uploads to the xAI Files API and references them. Uploads are tagged `claude-delegator-*` and carry `expires_after` (default 7 days, `GROK_FILE_TTL_SECONDS`); prune early with `/grok-files`. Needs `XAI_API_KEY`; `GROK_DEFAULT_MODEL` (default `grok-4.3`) and `XAI_API_BASE` also override model/endpoint.
 - **Bundled delegation commands** - `ask-gpt`, `ask-gemini`, `ask-grok`, `ask-all` (parallel + synthesized), and `consensus` (GPT + Gemini + Grok + Claude iterate to agreement) ship with the plugin.
 
 | What You Get | Why It Matters |

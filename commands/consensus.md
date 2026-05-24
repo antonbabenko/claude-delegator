@@ -98,9 +98,13 @@ For each round R:
    mcp__grok__grok({
      prompt: "[identical 7-section prompt for round R]",
      "developer-instructions": "[expert prompt]",
-     sandbox: "read-only"
+     sandbox: "read-only",
+     files: [{ path: "<file>" }]   // OPTIONAL - only when files are attached to the round
    })
    ```
+   **Files (optional):** if the plan under review references attached files, pass them to
+   Grok via `files:[{path}]` each round; GPT and Gemini read the named paths from their
+   trusted `cwd`.
 
 4. **Stream short status as each return arrives**. Do not wait until all are back to print anything. Examples:
    ```

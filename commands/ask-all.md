@@ -60,7 +60,8 @@ User question or topic: $ARGUMENTS
    mcp__grok__grok({
      prompt: "[identical 7-section prompt]",
      "developer-instructions": "[expert prompt]",
-     sandbox: "read-only"
+     sandbox: "read-only",
+     files: [{ path: "<file>" }]   // OPTIONAL - only when the user attached files
    })
    ```
    **Provider failure does not kill the command** (mirrors `consensus.md`): for ANY of the three providers, if the call returns `result.isError` or an MCP/transport error, do not abort. Render that provider's section as:
@@ -76,6 +77,14 @@ User question or topic: $ARGUMENTS
 
    No second opinion could be obtained. Re-run after resolving the above (often: missing key, rate-limit, or restart Claude Code).
    ```
+
+   **Files (optional):** when the user attaches local files, keep the prompt text identical
+   across all three providers but deliver the file per provider: pass `files:[{path}]` to
+   **Grok** (the bridge uploads + references it); for **GPT** and **Gemini**, name the file
+   path in the shared prompt so they read it directly from `cwd` (optionally add its
+   directory to the Gemini call's `include-directories`). A Grok `file-read` /
+   `file-too-large` / `missing-auth` only degrades Grok's section (UNAVAILABLE) - the others
+   still answer.
 
 7. **Synthesize comparison** — output structure:
    ```
