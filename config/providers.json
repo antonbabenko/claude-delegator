@@ -34,7 +34,7 @@
       "name": "Grok (xAI)",
       "description": "xAI Grok models via bundled MCP bridge over the xAI HTTP API - advisory expert subagents",
       "cli": null,
-      "api": "https://api.x.ai/v1/chat/completions",
+      "api": "https://api.x.ai/v1/responses",
       "auth": "export XAI_API_KEY=xai-...",
       "mcp": {
         "type": "stdio",
