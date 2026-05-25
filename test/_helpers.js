@@ -8,14 +8,14 @@ const REPO_ROOT = path.resolve(__dirname, "..");
 const BRIDGE = path.join(REPO_ROOT, "server/gemini/index.js");
 const FIXTURES = path.join(__dirname, "fixtures");
 
-function startBridge({ env = {}, fakeBin = "fake-gemini.sh" } = {}) {
+function startBridge({ env = {}, fakeBin = "fake-agy.sh" } = {}) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cdg-bin-"));
-  // Bridge spawns "gemini"; symlink the chosen fixture under that name.
-  fs.symlinkSync(path.join(FIXTURES, fakeBin), path.join(tmpDir, "gemini"));
+  // Bridge spawns the binary named by AGY_BIN; point it straight at the fixture.
+  const agyBin = path.join(FIXTURES, fakeBin);
   const child = spawn(process.execPath, [BRIDGE], {
     env: {
       ...process.env,
-      PATH: `${tmpDir}:${process.env.PATH}`,
+      AGY_BIN: agyBin,
       CDG_ARGV_LOG: path.join(tmpDir, "argv.log"),
       ...env,
     },

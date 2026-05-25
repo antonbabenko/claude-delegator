@@ -25,7 +25,7 @@ delegates to a provider over MCP. Each provider reaches Claude Code differently:
 
 - **Codex (GPT)** - the Codex CLI ships a native MCP server (`codex mcp-server`).
 - **Gemini** - a bundled zero-dependency Node bridge (`server/gemini/index.js`)
-  wraps the Gemini CLI.
+  wraps the Antigravity CLI (`agy`).
 - **Grok (xAI)** - a bundled zero-dependency Node bridge (`server/grok/index.js`)
   talks to the xAI Responses API (`/v1/responses`) over HTTP. Advisory-only: it
   cannot edit files, but it can read attached files.
@@ -36,19 +36,38 @@ Responses are synthesized by Claude, never passed through verbatim.
 
 ### Gemini bridge
 
-The bridge wraps the Gemini CLI and adds three reliability behaviors:
+The bridge wraps the Antigravity CLI (`agy`) in print mode (`agy -p`) and adds two
+reliability behaviors:
 
-- **Soft-timeout drain** - on timeout it keeps Gemini alive and recovers the
-  disk-flushed answer instead of failing. See
-  [Gemini timeout recovery](#gemini-timeout-recovery).
-- **Trust-failure signal** - when the CLI refuses an untrusted directory, the
-  bridge returns a structured `errorKind: "trust"` envelope the orchestrator
-  retries with `skip-trust`. See [Gemini trust recovery](#gemini-trust-recovery).
-- **Hardened JSON parsing** - tolerant of the CLI's mixed stdout.
+- **Soft-timeout drain** - on timeout it keeps `agy` alive, keeps buffering its
+  streamed stdout, and returns the answer if `agy` completes cleanly within the
+  grace budget. See [Gemini timeout recovery](#gemini-timeout-recovery).
+- **Plain-stdout answer with an `Error:` sentinel** - `agy -p` prints the answer as
+  plain UTF-8 text on stdout and exits 0; there is no `-o json` mode. The bridge
+  treats stdout as the answer unless it matches `/^\s*Error:/` (agy reports
+  failures as `Error: <message>` on stdout, still at exit 0), in which case it
+  classifies the failure into an error envelope.
 
-The bridge default model is `gemini-2.5-flash` (it does not read the Gemini CLI's
-`~/.gemini/settings.json`). Override per call with the `model` parameter or globally
-with `GEMINI_DEFAULT_MODEL`.
+Flag mapping the bridge applies to `agy`:
+
+| Bridge input | `agy` flag |
+|--------------|------------|
+| `sandbox: read-only` (advisory) | `--sandbox` |
+| `sandbox: workspace-write` | `--dangerously-skip-permissions` (best-effort) |
+| `include-directories: [...]` | repeated `--add-dir <dir>` |
+| `gemini-reply` (multi-turn) | `--conversation <id>` |
+| always | `--print-timeout <duration>` and `-p <prompt>` |
+
+There is no `-m`/`--model` flag and no `-o json`. The model is read from
+`~/.gemini/settings.json` (`model.name`, default `auto-gemini-3`); the MCP `model`
+parameter is advisory only. The bridge default model is `auto-gemini-3`; override the
+default with `GEMINI_DEFAULT_MODEL`, or point at a different `agy` binary with
+`AGY_BIN`. `agy` print mode does not enforce folder trust, so `skip-trust` is a no-op
+(see [Gemini trust recovery](#gemini-trust-recovery)).
+
+`agy` print-mode writes go to a scratch dir, so Gemini-via-agy is advisory-effective:
+it can read context to advise but cannot mutate the real workspace, even under
+`workspace-write`.
 
 ### Grok bridge
 
@@ -68,8 +87,10 @@ This is the single source of truth for the bridge environment variables.
 
 | Variable | Provider | Default | Purpose |
 |----------|----------|---------|---------|
-| `GEMINI_DEFAULT_MODEL` | Gemini | `gemini-2.5-flash` | Default model when the call sets none |
+| `GEMINI_DEFAULT_MODEL` | Gemini | `auto-gemini-3` | Default model when the call sets none |
 | `GEMINI_DISABLE_TIMEOUT_RECOVERY` | Gemini | unset | `1` forces legacy timeout (no drain) |
+| `AGY_BIN` | Gemini | `agy` | Override the path to the `agy` binary |
+| `AGY_LAST_CONVERSATIONS` | Gemini | `~/.gemini/antigravity-cli/cache/last_conversations.json` | Override the conversation-id map file (mainly for tests) |
 | `XAI_API_KEY` | Grok | unset (required) | xAI API key; missing key returns `missing-auth` |
 | `GROK_DEFAULT_MODEL` | Grok | `grok-4.3` | Default model when the call sets none |
 | `XAI_API_BASE` | Grok | `https://api.x.ai/v1` | API endpoint override |
@@ -94,10 +115,13 @@ claude mcp remove gemini >/dev/null 2>&1 || true
 claude mcp add --transport stdio --scope user gemini -- node ${CLAUDE_PLUGIN_ROOT}/server/gemini/index.js
 
 # Grok (xAI) - API-based, advisory-only. Needs XAI_API_KEY.
-# --env persists the key in ~/.claude.json (plaintext); omit it if you prefer to
-# export XAI_API_KEY in Claude Code's launch environment instead.
+# Default registers WITHOUT --env, so the key is NOT written to ~/.claude.json;
+# export XAI_API_KEY in Claude Code's launch environment (e.g. your shell profile).
 claude mcp remove grok >/dev/null 2>&1 || true
-claude mcp add --transport stdio --scope user grok --env XAI_API_KEY="$XAI_API_KEY" -- node ${CLAUDE_PLUGIN_ROOT}/server/grok/index.js
+claude mcp add --transport stdio --scope user grok -- node ${CLAUDE_PLUGIN_ROOT}/server/grok/index.js
+# Alternative (persists the key in ~/.claude.json in plaintext): append
+#   --env XAI_API_KEY="$XAI_API_KEY"
+# before the `-- node ...` part of the command above.
 ```
 
 Verify:
@@ -127,9 +151,11 @@ earlier attempts.
 
 ## Gemini trust recovery
 
-The Gemini CLI refuses to run from a directory it has not been told to trust
-(entries live in `~/.gemini/trustedFolders.json`). When that happens the bridge
-returns a structured signal:
+`agy` print mode does not enforce trusted folders: it runs from any directory,
+trusted or not, without prompting. There is therefore nothing to recover from, and
+the `skip-trust` parameter is a no-op (accepted for backward compatibility,
+ignored). The `errorKind: "trust"` envelope below remains defined for compatibility
+but should not fire in practice:
 
 ```json
 {
@@ -145,36 +171,25 @@ returns a structured signal:
 set. Other failures use the same envelope with a different `errorKind` (for
 example `timeout`).
 
-The orchestration rules (`rules/orchestration.md`, "Trust Failure Recovery")
-instruct Claude to retry the same call once with `"skip-trust": true`, preserving
-`threadId` for `gemini-reply`. A second consecutive trust failure (when
-`skip-trust: true` was already set) escalates to you instead of looping. Callers
-that already know they want to bypass the check can pass `"skip-trust": true` from
-the start.
-
 ## Gemini timeout recovery
 
 `timeout` is a soft deadline (default 300000ms; Gemini 3 deep prompts run
-200-260s). The Gemini CLI ignores SIGTERM and persists its full answer to disk at
-`~/.gemini/tmp/<slug>/chats/session-*.jsonl` regardless. When the soft timeout
-fires, the bridge does not fail immediately: it drains - keeps Gemini alive and
-polls that jsonl for a record newer than the call's start - for up to
-`recovery-grace` ms (default 120000, range 0..600000). If the answer appears it is
-returned as a normal success with a top-level `"recovered": true` flag and a stderr
-log line; `content` is unmodified so response parsers keep working. If the grace
-budget is exhausted with no answer, the call fails with `errorKind: "timeout"`
-(still `retryable`).
+200-260s). `agy -p` streams its answer to stdout incrementally, so the bridge
+recovers by draining that stream rather than scraping disk. When the soft timeout
+fires, the bridge does not fail immediately: it keeps `agy` alive and keeps
+buffering its streamed stdout for up to `recovery-grace` ms (default 120000, range
+0..600000). If `agy` completes cleanly within the grace budget (exit 0, no `Error:`
+sentinel on stdout), the buffered output is returned as a normal success with a
+top-level `"recovered": true` flag and a stderr log line; `content` is the full
+answer so response parsers keep working. If `agy` is still running when the grace
+budget is exhausted, the call fails with `errorKind: "timeout"` (still
+`retryable`).
 
 - `"recovery-grace": 0` disables the drain (immediate legacy timeout).
 - `GEMINI_DISABLE_TIMEOUT_RECOVERY=1` (env) forces full legacy behavior.
-- The call resolves within `timeout + recovery-grace`. The Gemini child process is
+- The call resolves within `timeout + recovery-grace`. The `agy` child process is
   then killed `SIGTERM`, with a `SIGKILL` about 1s later; that kill is async
   cleanup and does not delay the response.
-
-Manual recovery (any session, even without this plugin): find the project slug under
-`~/.gemini/tmp/` (its `.project_root` file holds the absolute cwd), then in that
-slug's `chats/` open the newest `session-*.jsonl`; the last record with
-`"type":"gemini"` has the full answer in `.content`.
 
 ## Grok files and cleanup
 
@@ -197,7 +212,11 @@ to invoke or not invoke. Edit these to change expert behavior for your workflow.
 
 ## Known limitations
 
-- Heavy parallel calls from the same cwd (for example `/ask-all`, `/consensus`) can
-  race on "newest session file" during Gemini timeout recovery. A spawn-start
-  timestamp guard (2000ms skew tolerance) makes mis-attribution unlikely but not
-  impossible.
+- `agy` print mode writes to a scratch dir, so the Gemini expert is
+  advisory-effective: it cannot mutate the real workspace even under
+  `workspace-write`. Route implementation work to Codex (GPT).
+- `agy` resolves a conversation id per cwd (in
+  `~/.gemini/antigravity-cli/cache/last_conversations.json`). Heavy parallel calls
+  from the same cwd (for example `/ask-all`, `/consensus`) share that single
+  per-cwd slot, so a `gemini-reply` could attach to a sibling run's conversation.
+  This mirrors `agy`'s own per-cwd model.

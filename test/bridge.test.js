@@ -1,313 +1,219 @@
 "use strict";
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { startBridge, send, collectResponses, readArgv } = require("./_helpers.js");
 
-test("B1: timeout kills slow gemini and surfaces structured error", async () => {
-  const child = startBridge({ fakeBin: "fake-gemini-slow.sh" });
+// --- argv mapping ---
+
+test("A1: default call -> argv has --sandbox, -p, --print-timeout; not -m/-o", async () => {
+  const child = startBridge({ fakeBin: "fake-agy.sh" });
   const responsesP = collectResponses(child);
-  const t0 = Date.now();
-
-  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
-  send(child, {
-    jsonrpc: "2.0", id: 2, method: "tools/call",
-    params: { name: "gemini", arguments: { prompt: "slow", timeout: 500, "recovery-grace": 0 } },
-  });
-
-  // Close stdin shortly after sending; bridge should still complete via its timeout.
-  setTimeout(() => child.stdin.end(), 3000);
-  const responses = await responsesP;
-  const elapsed = Date.now() - t0;
-
-  const callRes = responses.find((r) => r.id === 2);
-  assert.ok(callRes, "got a tools/call response");
-  assert.equal(callRes.result.isError, true, "isError");
-  assert.equal(callRes.result.errorKind, "timeout", "errorKind");
-  assert.equal(callRes.result.retryable, true, "retryable");
-  assert.ok(elapsed < 4500, "bridge returned within 4.5s, got " + elapsed + "ms");
-});
-
-test("B2: skip-trust true pushes --skip-trust into argv", async () => {
-  const child = startBridge({ fakeBin: "fake-gemini.sh" });
-  const responsesP = collectResponses(child);
-
-  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
-  send(child, {
-    jsonrpc: "2.0", id: 2, method: "tools/call",
-    params: { name: "gemini", arguments: { prompt: "hi", "skip-trust": true } },
-  });
-  setTimeout(() => child.stdin.end(), 800);
-  await responsesP;
-
-  const invocations = readArgv(child.argvLog);
-  assert.ok(invocations.length >= 1, "at least one gemini invocation captured");
-  assert.ok(invocations[0].includes("--skip-trust"), "argv contains --skip-trust");
-});
-
-test("B2: skip-trust omitted does not push --skip-trust", async () => {
-  const child = startBridge({ fakeBin: "fake-gemini.sh" });
-  const responsesP = collectResponses(child);
-
   send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
   send(child, {
     jsonrpc: "2.0", id: 2, method: "tools/call",
     params: { name: "gemini", arguments: { prompt: "hi" } },
   });
-  setTimeout(() => child.stdin.end(), 800);
+  setTimeout(() => child.stdin.end(), 1000);
   await responsesP;
 
-  const invocations = readArgv(child.argvLog);
-  assert.ok(!invocations[0].includes("--skip-trust"), "argv does not contain --skip-trust");
+  const argv = readArgv(child.argvLog)[0];
+  assert.ok(argv, "captured an agy invocation");
+  assert.ok(argv.includes("--sandbox"), "read-only default maps to --sandbox");
+  assert.ok(argv.includes("-p"), "argv contains -p");
+  assert.ok(argv.includes("--print-timeout"), "argv contains --print-timeout");
+  assert.ok(!argv.includes("-m"), "argv does NOT contain -m");
+  assert.ok(!argv.includes("-o"), "argv does NOT contain -o");
+  assert.ok(!argv.includes("--dangerously-skip-permissions"), "no skip-perms on read-only");
 });
 
-test("B2: skip-trust non-boolean returns -32602", async () => {
-  const child = startBridge({ fakeBin: "fake-gemini.sh" });
+test("A2: workspace-write -> --dangerously-skip-permissions (no --sandbox)", async () => {
+  const child = startBridge({ fakeBin: "fake-agy.sh" });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "hi", sandbox: "workspace-write" } },
+  });
+  setTimeout(() => child.stdin.end(), 1000);
+  await responsesP;
+
+  const argv = readArgv(child.argvLog)[0];
+  assert.ok(argv.includes("--dangerously-skip-permissions"), "workspace-write maps to --dangerously-skip-permissions");
+  assert.ok(!argv.includes("--sandbox"), "workspace-write does NOT add --sandbox");
+});
+
+test("A3: include-directories -> repeated --add-dir", async () => {
+  const child = startBridge({ fakeBin: "fake-agy.sh" });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "hi", "include-directories": ["/a", "/b"] } },
+  });
+  setTimeout(() => child.stdin.end(), 1000);
+  await responsesP;
+
+  const argv = readArgv(child.argvLog)[0];
+  const addDirCount = argv.filter((a) => a === "--add-dir").length;
+  assert.equal(addDirCount, 2, "two --add-dir flags");
+  assert.ok(argv.includes("/a"), "first dir present");
+  assert.ok(argv.includes("/b"), "second dir present");
+  assert.ok(!argv.includes("--include-directories"), "no legacy --include-directories flag");
+});
+
+test("A4: skip-trust true -> accepted, NO extra flag emitted", async () => {
+  const child = startBridge({ fakeBin: "fake-agy.sh" });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "hi", "skip-trust": true } },
+  });
+  setTimeout(() => child.stdin.end(), 1000);
+  const responses = await responsesP;
+
+  const r = responses.find((x) => x.id === 2);
+  assert.ok(!r.error, "skip-trust:true is accepted (no -32602)");
+  const argv = readArgv(child.argvLog)[0];
+  assert.ok(!argv.includes("--skip-trust"), "no --skip-trust flag (agy has none)");
+});
+
+test("A4: skip-trust non-boolean -> -32602", async () => {
+  const child = startBridge({ fakeBin: "fake-agy.sh" });
   const responsesP = collectResponses(child);
   send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
   send(child, {
     jsonrpc: "2.0", id: 2, method: "tools/call",
     params: { name: "gemini", arguments: { prompt: "hi", "skip-trust": "yes" } },
   });
-  setTimeout(() => child.stdin.end(), 800);
+  setTimeout(() => child.stdin.end(), 1000);
   const responses = await responsesP;
   const r = responses.find((x) => x.id === 2);
   assert.equal(r.error && r.error.code, -32602);
 });
 
-// Pure-function unit tests for the parser helper. Bridge is required as a module - see Step 3.5 for the guards that make this safe.
-test("B4: lastJSONObject returns the trailing valid object", () => {
-  const { lastJSONObject } = require("../server/gemini/index.js");
-  const s = 'warning: {"foo": 1}\n{"response":"ok","session_id":"x"}\n';
-  assert.equal(lastJSONObject(s), '{"response":"ok","session_id":"x"}');
-});
-
-test("B4: lastJSONObject handles brace inside JSON string", () => {
-  const { lastJSONObject } = require("../server/gemini/index.js");
-  const s = '{"response":"} text","session_id":"y"}\ntrailing junk';
-  assert.equal(lastJSONObject(s), '{"response":"} text","session_id":"y"}');
-});
-
-test("B4: lastJSONObject returns the outer object, not inner", () => {
-  const { lastJSONObject } = require("../server/gemini/index.js");
-  const s = '{"outer":{"inner":1}}';
-  assert.equal(lastJSONObject(s), '{"outer":{"inner":1}}');
-});
-
-test("B4: lastJSONObject tolerates noisy preamble", () => {
-  const { lastJSONObject } = require("../server/gemini/index.js");
-  const s = 'junk \\ unmatched } "quoted" prefix\n{"response":"ok","session_id":"z"}\n';
-  assert.equal(lastJSONObject(s), '{"response":"ok","session_id":"z"}');
-});
-
-test("B4: lastJSONObject returns null on no object", () => {
-  const { lastJSONObject } = require("../server/gemini/index.js");
-  assert.equal(lastJSONObject("no json here"), null);
-});
-
-test("B5: parse failures surface errorKind 'parse' with retryable false", async () => {
-  // Use an ad-hoc stub that emits non-JSON garbage.
-  const path = require("node:path");
-  const fs = require("node:fs");
-  const os = require("node:os");
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cdg-junk-"));
-  fs.writeFileSync(path.join(tmpDir, "gemini"), '#!/usr/bin/env bash\nif [ "$1" = "--version" ]; then echo "0.0.0-junk"; exit 0; fi\necho "no JSON anywhere here just plain text"\n', { mode: 0o755 });
-
-  const { spawn } = require("node:child_process");
-  const child = spawn(process.execPath, [require.resolve("../server/gemini/index.js")], {
-    env: { ...process.env, PATH: `${tmpDir}:${process.env.PATH}` },
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  const responsesP = collectResponses(child);
-  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
-  send(child, {
-    jsonrpc: "2.0", id: 2, method: "tools/call",
-    params: { name: "gemini", arguments: { prompt: "junk" } },
-  });
-  setTimeout(() => child.stdin.end(), 1000);
-  const responses = await responsesP;
-  const r = responses.find((x) => x.id === 2);
-  assert.equal(r.result.isError, true);
-  assert.equal(r.result.errorKind, "parse");
-  assert.equal(r.result.retryable, false);
-});
-
-test("B6: GEMINI_DEFAULT_MODEL env overrides the default model", async () => {
-  const child = startBridge({
-    fakeBin: "fake-gemini.sh",
-    env: { GEMINI_DEFAULT_MODEL: "auto-gemini-3" },
-  });
-  const responsesP = collectResponses(child);
-  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
-  send(child, {
-    jsonrpc: "2.0", id: 2, method: "tools/call",
-    params: { name: "gemini", arguments: { prompt: "hi" } },
-  });
-  setTimeout(() => child.stdin.end(), 800);
-  await responsesP;
-
-  const invocations = readArgv(child.argvLog);
-  const argv = invocations[0];
-  const mIdx = argv.indexOf("-m");
-  assert.notEqual(mIdx, -1, "argv contains -m");
-  assert.equal(argv[mIdx + 1], "auto-gemini-3", "model is auto-gemini-3");
-});
-
-test("B6: unset env falls back to gemini-2.5-flash", async () => {
-  const child = startBridge({
-    fakeBin: "fake-gemini.sh",
-    env: { GEMINI_DEFAULT_MODEL: "" },
-  });
-  const responsesP = collectResponses(child);
-  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
-  send(child, {
-    jsonrpc: "2.0", id: 2, method: "tools/call",
-    params: { name: "gemini", arguments: { prompt: "hi" } },
-  });
-  setTimeout(() => child.stdin.end(), 800);
-  await responsesP;
-
-  const invocations = readArgv(child.argvLog);
-  const argv = invocations[0];
-  const mIdx = argv.indexOf("-m");
-  assert.equal(argv[mIdx + 1], "gemini-2.5-flash");
-});
-
-// --- B7: trust-check classification (issue #2) ---
-
-test("B7a: gemini trust failure surfaces errorKind=trust, retryable=true, hint=skip-trust", async () => {
-  const child = startBridge({ fakeBin: "fake-gemini-trust.sh" });
-  const responsesP = collectResponses(child);
-  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
-  send(child, {
-    jsonrpc: "2.0", id: 2, method: "tools/call",
-    params: { name: "gemini", arguments: { prompt: "hi" } },
-  });
-  setTimeout(() => child.stdin.end(), 800);
-  const responses = await responsesP;
-  const r = responses.find((x) => x.id === 2);
-  assert.equal(r.result.isError, true);
-  assert.equal(r.result.errorKind, "trust");
-  assert.equal(r.result.retryable, true);
-  assert.equal(r.result.hint, "skip-trust");
-});
-
-test("B7f: gemini-reply trust failure classifies identically", async () => {
-  const child = startBridge({ fakeBin: "fake-gemini-trust.sh" });
+test("A5: gemini-reply -> --conversation <threadId>", async () => {
+  const child = startBridge({ fakeBin: "fake-agy.sh" });
   const responsesP = collectResponses(child);
   send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
   send(child, {
     jsonrpc: "2.0", id: 2, method: "tools/call",
     params: { name: "gemini-reply", arguments: { threadId: "abc", prompt: "follow up" } },
   });
-  setTimeout(() => child.stdin.end(), 800);
-  const responses = await responsesP;
-  const r = responses.find((x) => x.id === 2);
-  assert.equal(r.result.isError, true);
-  assert.equal(r.result.errorKind, "trust");
-  assert.equal(r.result.retryable, true);
-  assert.equal(r.result.hint, "skip-trust");
+  setTimeout(() => child.stdin.end(), 1000);
+  await responsesP;
+
+  const argv = readArgv(child.argvLog)[0];
+  const idx = argv.indexOf("--conversation");
+  assert.notEqual(idx, -1, "argv contains --conversation");
+  assert.equal(argv[idx + 1], "abc", "conversation id follows the flag");
 });
 
-test("B7g: stderr trust error is not masked when stdout has noise", async () => {
-  const child = startBridge({ fakeBin: "fake-gemini-trust-with-stdout.sh" });
+// --- output handling ---
+
+test("O1: plain stdout -> content text + conversation-id threadId", async () => {
+  const convFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cdg-conv-")), "last_conversations.json");
+  const child = startBridge({
+    fakeBin: "fake-agy.sh",
+    env: { AGY_LAST_CONVERSATIONS: convFile },
+  });
   const responsesP = collectResponses(child);
   send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
   send(child, {
     jsonrpc: "2.0", id: 2, method: "tools/call",
     params: { name: "gemini", arguments: { prompt: "hi" } },
   });
-  setTimeout(() => child.stdin.end(), 800);
+  setTimeout(() => child.stdin.end(), 1500);
   const responses = await responsesP;
   const r = responses.find((x) => x.id === 2);
-  assert.equal(r.result.isError, true);
-  assert.equal(r.result.errorKind, "trust", "stderr trust text must win over stdout banner");
-  assert.equal(r.result.retryable, true);
+  assert.ok(r, "got tools/call response");
+  assert.ok(!r.result.isError, "not an error: " + JSON.stringify(r.result));
+  assert.equal(r.result.content[0].text, "FAKE AGY OK");
+  assert.equal(r.result.threadId, "11111111-2222-3333-4444-555555555555");
 });
 
-// Pure-function classifier units (no spawn).
-test("B7b: classifyGeminiError matches 'trusted directory' case-insensitively", () => {
-  const { classifyGeminiError } = require("../server/gemini/index.js");
-  assert.deepEqual(
-    classifyGeminiError("Error: not a trusted directory", null),
-    { errorKind: "trust", retryable: true, hint: "skip-trust" }
-  );
-  assert.deepEqual(
-    classifyGeminiError("NOT A Trusted Directory", null),
-    { errorKind: "trust", retryable: true, hint: "skip-trust" }
-  );
+test("O2: stdout Error: sentinel (exit 0) -> isError, errorKind timeout", async () => {
+  const child = startBridge({ fakeBin: "fake-agy-error.sh" });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "deep" } },
+  });
+  setTimeout(() => child.stdin.end(), 1500);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.equal(r.result.isError, true, "isError");
+  assert.equal(r.result.errorKind, "timeout", "stdout 'Error: timed out' -> timeout");
 });
 
-test("B7c: classifyGeminiError matches 'trust check' wording", () => {
-  const { classifyGeminiError } = require("../server/gemini/index.js");
-  const r = classifyGeminiError("trust check failed for /tmp/x", null);
-  assert.equal(r.errorKind, "trust");
-  assert.equal(r.retryable, true);
-  assert.equal(r.hint, "skip-trust");
+test("O3: stderr failure -> isError, stderr wins over stdout banner", async () => {
+  const child = startBridge({ fakeBin: "fake-agy-stderr-fail.sh" });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "hi" } },
+  });
+  setTimeout(() => child.stdin.end(), 1500);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.equal(r.result.isError, true, "isError");
+  // classifier sees the stderr text ("trust check failed") -> trust kind.
+  assert.equal(r.result.errorKind, "trust", "classified from stderr text");
+  const text = r.result.content[0].text;
+  assert.ok(text.includes("trust check failed"), "stderr text surfaced");
+  assert.ok(!text.includes("agy config banner"), "stdout banner not surfaced");
 });
 
-test("B7d: classifyGeminiError preserves timeout / parse / missing-cli / abort branches", () => {
-  const { classifyGeminiError } = require("../server/gemini/index.js");
-  assert.deepEqual(classifyGeminiError("anything", "timeout"), { errorKind: "timeout", retryable: true });
-  assert.deepEqual(classifyGeminiError("anything", "parse"),   { errorKind: "parse",   retryable: false });
-  const missing = classifyGeminiError("Gemini CLI not found. Please install it.", null);
-  assert.equal(missing.errorKind, "missing-cli");
-  assert.equal(missing.retryable, false);
-  const abort = classifyGeminiError("AbortError: signal aborted", null);
-  assert.equal(abort.errorKind, "upstream-abort");
-  assert.equal(abort.retryable, true);
-});
+// --- timeout-recovery (stdout drain) ---
 
-test("B7e: classifyGeminiError falls back to unknown for unrelated text", () => {
-  const { classifyGeminiError } = require("../server/gemini/index.js");
-  const r = classifyGeminiError("network blip", null);
-  assert.equal(r.errorKind, "unknown");
-  assert.equal(r.retryable, false);
-  assert.equal(r.hint, undefined);
-});
-
-test("B7e: classifyGeminiError tolerates null/undefined errMsg", () => {
-  const { classifyGeminiError } = require("../server/gemini/index.js");
-  assert.equal(classifyGeminiError(null, null).errorKind, "unknown");
-  assert.equal(classifyGeminiError(undefined, null).errorKind, "unknown");
-});
-
-// --- B8: timeout-recovery (read late-flushed answer from disk) ---
-
-const fs8 = require("node:fs");
-const os8 = require("node:os");
-const path8 = require("node:path");
-
-function tmpRoot() {
-  return fs8.mkdtempSync(path8.join(os8.tmpdir(), "cdg-gtmp-"));
-}
-
-test("B8a: soft timeout drains and recovers the disk-persisted answer", async () => {
-  const root = tmpRoot();
+test("R-A: drain completes -> recovered:true with final answer", async () => {
   const child = startBridge({
-    fakeBin: "fake-gemini-timeout-recover.sh",
-    env: { GEMINI_TMP_ROOT: root, FAKE_GEMINI_SLEEP: "2" },
+    fakeBin: "fake-agy-timeout-recover.sh",
+    env: { FAKE_AGY_SLEEP: "3" },
   });
   const responsesP = collectResponses(child);
   send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
   send(child, {
     jsonrpc: "2.0", id: 2, method: "tools/call",
-    params: { name: "gemini", arguments: { prompt: "deep", timeout: 800, "recovery-grace": 10000 } },
+    params: { name: "gemini", arguments: { prompt: "deep", timeout: 800, "recovery-grace": 6000 } },
   });
-  setTimeout(() => child.stdin.end(), 12000);
+  setTimeout(() => child.stdin.end(), 9000);
   const responses = await responsesP;
   const r = responses.find((x) => x.id === 2);
   assert.ok(r, "got tools/call response");
   assert.ok(!r.result.isError, "not an error: " + JSON.stringify(r.result));
   assert.equal(r.result.recovered, true, "recovered flag");
   assert.equal(r.result.content[0].text, "RECOVERED ANSWER OK");
-  assert.equal(r.result.threadId, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+});
+
+test("R-B: drain exceeds grace -> timeout, no recovered flag", async () => {
+  const child = startBridge({
+    fakeBin: "fake-agy-timeout-recover.sh",
+    env: { FAKE_AGY_SLEEP: "20" },
+  });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "deep", timeout: 500, "recovery-grace": 1500 } },
+  });
+  setTimeout(() => child.stdin.end(), 6000);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.equal(r.result.isError, true, "isError");
+  assert.equal(r.result.errorKind, "timeout", "errorKind timeout");
+  assert.ok(!JSON.stringify(r.result).includes("recovered"), "no recovered field in JSON");
 });
 
 test("B8b: GEMINI_DISABLE_TIMEOUT_RECOVERY=1 keeps legacy timeout", async () => {
-  const root = tmpRoot();
   const child = startBridge({
-    fakeBin: "fake-gemini-timeout-recover.sh",
-    env: { GEMINI_TMP_ROOT: root, FAKE_GEMINI_SLEEP: "2", GEMINI_DISABLE_TIMEOUT_RECOVERY: "1" },
+    fakeBin: "fake-agy-timeout-recover.sh",
+    env: { FAKE_AGY_SLEEP: "20", GEMINI_DISABLE_TIMEOUT_RECOVERY: "1" },
   });
   const responsesP = collectResponses(child);
   send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
@@ -323,80 +229,197 @@ test("B8b: GEMINI_DISABLE_TIMEOUT_RECOVERY=1 keeps legacy timeout", async () => 
   assert.equal(r.result.retryable, true);
 });
 
-test("B8c: no disk answer -> timeout after soft + grace", async () => {
-  const root = tmpRoot();
-  const child = startBridge({
-    fakeBin: "fake-gemini-timeout-recover.sh",
-    env: { GEMINI_TMP_ROOT: root, FAKE_GEMINI_SLEEP: "1", FAKE_GEMINI_NOWRITE: "1" },
+// Resolve as soon as the response for `id` arrives, so timing assertions measure
+// response latency rather than the long-running stdin server's close time.
+function awaitResponse(child, id) {
+  return new Promise((resolve) => {
+    let buf = "";
+    child.stdout.on("data", (d) => {
+      buf += d.toString();
+      const lines = buf.split("\n");
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try { const o = JSON.parse(line); if (o.id === id) resolve(o); } catch (_) {}
+      }
+    });
+    child.on("close", () => resolve(null));
   });
-  const responsesP = collectResponses(child);
+}
+
+test("R-C: grace=0 hard timeout kills agy via SIGTERM/SIGKILL (no wait-for-exit)", async () => {
+  const child = startBridge({ fakeBin: "fake-agy-slow.sh" });
+  const got2 = awaitResponse(child, 2);
+  const t0 = Date.now();
   send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
   send(child, {
     jsonrpc: "2.0", id: 2, method: "tools/call",
-    params: { name: "gemini", arguments: { prompt: "deep", timeout: 500, "recovery-grace": 3000 } },
+    params: { name: "gemini", arguments: { prompt: "slow", timeout: 500, "recovery-grace": 0 } },
   });
-  setTimeout(() => child.stdin.end(), 6000);
-  const responses = await responsesP;
-  const r = responses.find((x) => x.id === 2);
-  assert.equal(r.result.isError, true);
-  assert.equal(r.result.errorKind, "timeout");
+  const r = await got2;
+  const elapsed = Date.now() - t0;
+  child.stdin.end();
+  child.kill();
+
+  assert.ok(r, "got tools/call response");
+  assert.equal(r.result.isError, true, "isError");
+  assert.equal(r.result.errorKind, "timeout", "errorKind timeout");
+  assert.equal(r.result.retryable, true, "retryable");
+  // fake-agy-slow.sh sleeps 30s; the legacy kill path must return far sooner,
+  // proving SIGTERM/SIGKILL fired rather than waiting for the child to exit.
+  assert.ok(elapsed < 5000, "returned before the fixture's 30s sleep, got " + elapsed + "ms");
 });
 
-test("B8d: stale answer (timestamp before spawn-start) is not returned", async () => {
-  const root = tmpRoot();
+test("R-D: drain-window failure (stdout Error: during drain) -> timeout, not recovered", async () => {
   const child = startBridge({
-    fakeBin: "fake-gemini-timeout-recover.sh",
-    env: { GEMINI_TMP_ROOT: root, FAKE_GEMINI_SLEEP: "1", FAKE_GEMINI_STALE: "1" },
+    fakeBin: "fake-agy-slow-error.sh",
+    env: { FAKE_AGY_SLEEP: "3" },
   });
+  const got2 = awaitResponse(child, 2);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "deep", timeout: 500, "recovery-grace": 6000 } },
+  });
+  const r = await got2;
+  child.stdin.end();
+  child.kill();
+  assert.ok(r, "got tools/call response");
+  assert.equal(r.result.isError, true, "isError");
+  assert.equal(r.result.errorKind, "timeout", "drain-window failure classified as timeout");
+  const blob = JSON.stringify(r.result);
+  assert.ok(!blob.includes("recovered"), "no recovered field in JSON");
+  assert.ok(!blob.includes("partial answer so far"), "partial text not returned as a successful answer");
+});
+
+// --- reply guards ---
+
+test("G1: gemini-reply threadId 'unknown' -> -32602", async () => {
+  const child = startBridge({ fakeBin: "fake-agy.sh" });
   const responsesP = collectResponses(child);
   send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
   send(child, {
     jsonrpc: "2.0", id: 2, method: "tools/call",
-    params: { name: "gemini", arguments: { prompt: "deep", timeout: 500, "recovery-grace": 3000 } },
+    params: { name: "gemini-reply", arguments: { threadId: "unknown", prompt: "x" } },
   });
-  setTimeout(() => child.stdin.end(), 6000);
+  setTimeout(() => child.stdin.end(), 1000);
   const responses = await responsesP;
   const r = responses.find((x) => x.id === 2);
-  assert.equal(r.result.isError, true);
-  assert.equal(r.result.errorKind, "timeout");
-  assert.ok(
-    !JSON.stringify(r.result).includes("RECOVERED ANSWER OK"),
-    "stale content must not be returned"
+  assert.equal(r.error && r.error.code, -32602);
+});
+
+test("G2: gemini-reply threadId 'latest' -> -32602", async () => {
+  const child = startBridge({ fakeBin: "fake-agy.sh" });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini-reply", arguments: { threadId: "latest", prompt: "x" } },
+  });
+  setTimeout(() => child.stdin.end(), 1000);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.equal(r.error && r.error.code, -32602);
+});
+
+test("G3: gemini-reply threadId '' -> -32602", async () => {
+  const child = startBridge({ fakeBin: "fake-agy.sh" });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini-reply", arguments: { threadId: "   ", prompt: "x" } },
+  });
+  setTimeout(() => child.stdin.end(), 1000);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.equal(r.error && r.error.code, -32602);
+});
+
+// --- model param accepted but not passed to argv ---
+
+test("M1: model param accepted, never reaches argv", async () => {
+  const child = startBridge({ fakeBin: "fake-agy.sh" });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "hi", model: "auto-gemini-3" } },
+  });
+  setTimeout(() => child.stdin.end(), 1000);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.ok(!r.error, "model accepted");
+  const argv = readArgv(child.argvLog)[0];
+  assert.ok(!argv.includes("auto-gemini-3"), "model value not in argv");
+  assert.ok(!argv.includes("-m"), "no -m flag");
+});
+
+test("M1: model empty string -> -32602", async () => {
+  const child = startBridge({ fakeBin: "fake-agy.sh" });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "hi", model: "   " } },
+  });
+  setTimeout(() => child.stdin.end(), 1000);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.equal(r.error && r.error.code, -32602);
+});
+
+// --- pure classifier units (no spawn) ---
+
+test("C1: classifyGeminiError matches 'trusted'/'trust check' case-insensitively", () => {
+  const { classifyGeminiError } = require("../server/gemini/index.js");
+  assert.deepEqual(
+    classifyGeminiError("Error: not a trusted folder", null),
+    { errorKind: "trust", retryable: true, hint: "skip-trust" }
   );
+  const r = classifyGeminiError("trust check failed for /tmp/x", null);
+  assert.equal(r.errorKind, "trust");
+  assert.equal(r.hint, "skip-trust");
 });
 
-test("B8e: extractGeminiAnswer returns last gemini record + metadata threadId", () => {
-  const { extractGeminiAnswer } = require("../server/gemini/index.js");
-  const dir = tmpRoot();
-  const f = path8.join(dir, "session-x.jsonl");
-  const ts = new Date().toISOString();
-  fs8.writeFileSync(f, [
-    JSON.stringify({ sessionId: "sid-123", projectHash: "h", startTime: ts, lastUpdated: ts, kind: "main" }),
-    JSON.stringify({ id: "u1", timestamp: ts, type: "user", content: "q" }),
-    JSON.stringify({ id: "g1", timestamp: ts, type: "gemini", content: "first" }),
-    JSON.stringify({ id: "g2", timestamp: ts, type: "gemini", content: "FINAL" }),
-  ].join("\n") + "\n");
-  const got = extractGeminiAnswer(f, Date.now() - 60000);
-  assert.equal(got.content, "FINAL");
-  assert.equal(got.threadId, "sid-123");
+test("C2: classifyGeminiError preserves timeout / parse / missing-cli / abort", () => {
+  const { classifyGeminiError } = require("../server/gemini/index.js");
+  assert.deepEqual(classifyGeminiError("anything", "timeout"), { errorKind: "timeout", retryable: true });
+  assert.deepEqual(classifyGeminiError("anything", "parse"),   { errorKind: "parse",   retryable: false });
+  const missing = classifyGeminiError("Antigravity CLI (agy) not found", null);
+  assert.equal(missing.errorKind, "missing-cli");
+  assert.equal(missing.retryable, false);
+  const abort = classifyGeminiError("AbortError: signal aborted", null);
+  assert.equal(abort.errorKind, "upstream-abort");
+  assert.equal(abort.retryable, true);
 });
 
-test("B8e: extractGeminiAnswer applies the stale guard", () => {
-  const { extractGeminiAnswer } = require("../server/gemini/index.js");
-  const dir = tmpRoot();
-  const f = path8.join(dir, "session-y.jsonl");
-  fs8.writeFileSync(f,
-    JSON.stringify({ id: "g1", timestamp: "2000-01-01T00:00:00.000Z", type: "gemini", content: "OLD" }) + "\n");
-  assert.equal(extractGeminiAnswer(f, Date.now()), null);
+test("C3: classifyGeminiError falls back to unknown for unrelated text", () => {
+  const { classifyGeminiError } = require("../server/gemini/index.js");
+  const r = classifyGeminiError("network blip", null);
+  assert.equal(r.errorKind, "unknown");
+  assert.equal(r.retryable, false);
+  assert.equal(r.hint, undefined);
+  assert.equal(classifyGeminiError(null, null).errorKind, "unknown");
+  assert.equal(classifyGeminiError(undefined, null).errorKind, "unknown");
 });
 
-test("B8f: resolveSlugDir matches by .project_root content", () => {
-  const { resolveSlugDir } = require("../server/gemini/index.js");
-  const root = tmpRoot();
-  const slug = path8.join(root, "some-slug");
-  fs8.mkdirSync(path8.join(slug, "chats"), { recursive: true });
-  const cwd = fs8.mkdtempSync(path8.join(os8.tmpdir(), "cdg-cwd-"));
-  fs8.writeFileSync(path8.join(slug, ".project_root"), cwd);
-  assert.equal(resolveSlugDir(cwd, root), slug);
-  assert.equal(resolveSlugDir("/nonexistent/path/xyz", root), null);
+// --- resolveConversationId unit (exported) ---
+
+test("C4: resolveConversationId reads cwd->id map, returns null on miss", () => {
+  const { resolveConversationId } = require("../server/gemini/index.js");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cdg-rc-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cdg-rc-cwd-"));
+  const mapFile = path.join(dir, "last_conversations.json");
+  const real = fs.realpathSync(cwd);
+  fs.writeFileSync(mapFile, JSON.stringify({ [real]: "id-xyz" }));
+  const prev = process.env.AGY_LAST_CONVERSATIONS;
+  process.env.AGY_LAST_CONVERSATIONS = mapFile;
+  try {
+    assert.equal(resolveConversationId(cwd), "id-xyz");
+    assert.equal(resolveConversationId("/no/such/dir/anywhere"), null);
+  } finally {
+    if (prev === undefined) delete process.env.AGY_LAST_CONVERSATIONS;
+    else process.env.AGY_LAST_CONVERSATIONS = prev;
+  }
 });

@@ -7,7 +7,7 @@ GPT (Codex), Gemini, and Grok (xAI) experts serve as specialized consultants for
 Before delegating, check which MCP tools are available in the current environment:
 
 1. **If multiple are available**:
-   - Use **Gemini** for tasks requiring large context or multimodal analysis.
+   - Use **Gemini** (Gemini 3 via the Antigravity CLI, `agy`) for tasks requiring large context or multimodal analysis. Gemini-via-agy is **advisory-effective**: agy print-mode writes are sandboxed to a scratch dir, so it can read context to advise but cannot mutate the real workspace. Prefer it for analysis/review over file-editing (`workspace-write` is best-effort).
    - Use **GPT (Codex)** when the user explicitly asks for "GPT" or "Codex".
    - Use **Grok (xAI)** when the user explicitly asks for "Grok". Grok is advisory-only (it cannot edit files), so never route file-editing / implementation tasks to it. It CAN read attached files (PDF/code/docs) via `files:[{path|file_id|file_url}]` on the `mcp__grok__grok` call.
    - Default to **Gemini** for general reasoning.
@@ -146,13 +146,13 @@ Every expert can operate in two modes:
 |-----------|--------|-------|
 | `prompt` | string | **Required.** The delegation prompt (use 7-section format) |
 | `developer-instructions` | string | Expert prompt injection (from `prompts/*.md`) |
-| `sandbox` | `read-only`, `workspace-write` | Controls file access. |
-| `model` | e.g. `gemini-2.5-pro`, `auto-gemini-3` | Override the default model |
+| `sandbox` | `read-only`, `workspace-write` | Controls file access. `read-only` is advisory; `workspace-write` is best-effort (agy print-mode writes are sandboxed to a scratch dir). |
+| `model` | e.g. `auto-gemini-3`, `gemini-3-pro-preview` | Advisory only. agy reads the model from `~/.gemini/settings.json` (`model.name`) and has no per-call flag; the bridge defaults to `auto-gemini-3`. |
 | `cwd` | path | Working directory for the task |
-| `include-directories` | string[] | Extra dirs to include alongside `cwd`. |
-| `timeout` | number (ms) | Soft timeout. 1..600000. Default 300000. On expiry the bridge drains and recovers the disk-flushed answer. |
+| `include-directories` | string[] | Extra dirs to include alongside `cwd`. Maps to repeated `--add-dir`. |
+| `timeout` | number (ms) | Soft timeout. 1..600000. Default 300000. On expiry the bridge keeps agy alive and drains buffered stdout (stdout-drain). |
 | `recovery-grace` | number (ms) | Extra drain budget after the soft timeout. 0..600000. Default 120000. 0 disables drain. |
-| `skip-trust` | boolean | Pass `--skip-trust` to bypass the Gemini CLI trusted-directory check. Default `false`. Use to recover from `errorKind: "trust"` (see `orchestration.md` "Trust Failure Recovery"). |
+| `skip-trust` | boolean | No-op. agy print mode has no trusted-folder check, so the bridge ignores this param (accepted for back-compat). Default `false`. |
 
 ### `mcp__gemini__gemini-reply` (Continue Session)
 
@@ -160,12 +160,12 @@ Every expert can operate in two modes:
 |-----------|--------|-------|
 | `threadId` | string | **Required.** Thread ID from previous `gemini` call |
 | `prompt` | string | **Required.** Follow-up instruction |
-| `sandbox` | `read-only`, `workspace-write` | Controls file access. |
+| `sandbox` | `read-only`, `workspace-write` | Controls file access. `workspace-write` is best-effort (agy print-mode writes are scratch-sandboxed). |
 | `cwd` | path | Working directory for the task |
-| `include-directories` | string[] | Extra dirs to include alongside `cwd`. |
-| `timeout` | number (ms) | Soft timeout. 1..600000. Default 300000. On expiry the bridge drains and recovers the disk-flushed answer. |
+| `include-directories` | string[] | Extra dirs to include alongside `cwd`. Maps to repeated `--add-dir`. |
+| `timeout` | number (ms) | Soft timeout. 1..600000. Default 300000. On expiry the bridge keeps agy alive and drains buffered stdout (stdout-drain). |
 | `recovery-grace` | number (ms) | Extra drain budget after the soft timeout. 0..600000. Default 120000. 0 disables drain. |
-| `skip-trust` | boolean | Pass `--skip-trust` to bypass the Gemini CLI trusted-directory check. Default `false`. |
+| `skip-trust` | boolean | No-op. agy print mode has no trusted-folder check, so the bridge ignores this param (accepted for back-compat). Default `false`. |
 
 ### Response Format (both providers)
 

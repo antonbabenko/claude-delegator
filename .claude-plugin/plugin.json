@@ -9,5 +9,5 @@
   "homepage": "https://github.com/antonbabenko/claude-delegator",
   "repository": "https://github.com/antonbabenko/claude-delegator",
   "license": "MIT",
-  "keywords": ["delegation", "mcp", "codex", "gpt", "openai", "gemini", "google", "grok", "xai", "files", "experts", "subagents", "orchestration"]
+  "keywords": ["delegation", "mcp", "codex", "gpt", "openai", "gemini", "antigravity", "agy", "google", "grok", "xai", "files", "experts", "subagents", "orchestration"]
 }

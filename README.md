@@ -149,7 +149,7 @@ Every expert supports two modes, chosen automatically from your request:
 Common defaults:
 
 - Codex (GPT) reads `~/.codex/config.toml` for its sandbox and approval defaults.
-- Gemini defaults to `gemini-2.5-flash`; override with `GEMINI_DEFAULT_MODEL`.
+- Gemini (via the Antigravity CLI `agy`) defaults to `auto-gemini-3`. The model is read from `~/.gemini/settings.json` (`model.name`); there is no per-call model flag (the MCP `model` param is advisory). Override the bridge default with `GEMINI_DEFAULT_MODEL`, or point at a different `agy` binary with `AGY_BIN`.
 - Grok defaults to `grok-4.3` and needs `XAI_API_KEY`; override with `GROK_DEFAULT_MODEL`.
 
 For the full environment-variable reference and manual MCP setup, see [TECHNICAL.md](TECHNICAL.md#environment-variables).
@@ -170,9 +170,9 @@ You need at least one provider:
 | Provider not authenticated | Codex: `codex login`. Gemini: run `agy` once (or set `GOOGLE_API_KEY`). Grok: export `XAI_API_KEY` (else calls return `errorKind: missing-auth`) |
 | Tool not appearing | Run `claude mcp list` and verify registration |
 | Expert not triggered | Ask explicitly: "Ask GPT to review...", "Ask Gemini to review...", or "Ask Grok to review..." |
-| Gemini blocked by trust check | The orchestrator retries once with `skip-trust` and prints a notice. See [TECHNICAL.md](TECHNICAL.md#gemini-trust-recovery) |
+| Gemini writes don't land in the workspace | Expected: `agy` print mode writes to a scratch dir, so Gemini-via-agy is advisory-effective (great for analysis and review, but it cannot mutate the real workspace). Use Codex for implementation. |
 
-Deeper failure modes (untrusted directories, soft-timeout recovery) are documented in [TECHNICAL.md](TECHNICAL.md#gemini-trust-recovery).
+`agy` print mode does not enforce folder trust, so there is no trust prompt to clear. Soft-timeout recovery (stdout-drain) is documented in [TECHNICAL.md](TECHNICAL.md#gemini-timeout-recovery).
 
 ## Contributing
 

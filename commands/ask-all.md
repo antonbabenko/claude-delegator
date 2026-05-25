@@ -31,14 +31,7 @@ User question or topic: $ARGUMENTS
 
 4. **Print status line**: `Codex + Gemini + Grok working in parallel (typical 30-60s)...`
 
-5. **Pre-flight cwd trust check** (Gemini only — Grok and Codex have no trusted-directory concept):
-   - Always use `process.cwd()` as the MCP `cwd` argument; NEVER switch folders.
-   - Detect B2 (skip-trust) support: glob `~/.claude/plugins/cache/*claude-delegator/claude-delegator/*/.claude-plugin/plugin.json`, parse the highest-semver match, treat `version >= "1.3.0"` (semver compare) as B2-supported. On parse error or no match: treat as B2 absent.
-   - Try reading `~/.gemini/trustedFolders.json`. On any error (ENOENT, EACCES, SyntaxError, value not an object): treat the trusted set as EMPTY and emit a one-line warning to stderr including the specific error message (for example `trustedFolders.json unreadable: ENOENT: no such file`).
-   - Build trusted-set = direct keys plus all descendants of keys whose value is `"TRUST_PARENT"`. Normalize paths first: resolve `~`, follow symlinks, strip trailing slashes (use `path.resolve` plus `fs.realpathSync` semantics).
-   - If `process.cwd()` (normalized) is in trusted-set: call as today.
-   - Else if B2 is supported: set `"skip-trust": true` on the Gemini call.
-   - Else: abort with: `Error: cwd "${process.cwd()}" not in trustedFolders.json; trust it via \`gemini\` once, or upgrade claude-delegator to 1.3.0+ for skip-trust support.`
+5. **Set cwd** (Gemini path) — use `process.cwd()` as the MCP `cwd`; agy print mode needs no folder-trust pre-check. Grok and Codex have no trusted-directory concept either.
 
 6. **Parallel dispatch** — fire all three MCP calls in a **single message with three tool blocks** so they run concurrently:
    ```
@@ -68,7 +61,7 @@ User question or topic: $ARGUMENTS
    ```
    **<Provider> bottom line:** UNAVAILABLE (<errorKind|"error">: <message truncated to 200 chars>)
    ```
-   and continue the comparison with the surviving providers. Common cases: Grok `missing-auth` (no `XAI_API_KEY`), `rate-limit`, `timeout`, Gemini `trust`. Require **at least one** successful provider. If ALL THREE fail, skip the verdict comparison and emit exactly:
+   and continue the comparison with the surviving providers. Common cases: Grok `missing-auth` (no `XAI_API_KEY`), `rate-limit`, `timeout`, Gemini `timeout`. Require **at least one** successful provider. If ALL THREE fail, skip the verdict comparison and emit exactly:
    ```
    ## All providers unavailable
    - GPT: <errorKind|error>: <truncated msg>

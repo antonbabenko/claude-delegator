@@ -2,12 +2,12 @@
 name: ask-gemini
 description: Get Gemini second opinion on a question or current work. Single-shot, advisory, no contamination. Pinned to auto-gemini-3.
 allowed-tools: mcp__gemini__gemini, Read, Bash
-timeout: 180000
+timeout: 300000
 ---
 
 # Ask Gemini
 
-Single-shot delegation to Gemini via MCP for an independent second opinion. Fresh thread, no shared context with prior calls. Advisory mode by default (read-only sandbox). Model pinned to `auto-gemini-3` per `~/.claude/CLAUDE.md`.
+Single-shot delegation to Gemini (Gemini 3 via the Antigravity CLI, `agy`) via MCP for an independent second opinion. Fresh thread, no shared context with prior calls. Advisory mode by default (read-only sandbox). Model pinned to `auto-gemini-3` on the call per `~/.claude/CLAUDE.md`; agy ultimately reads the model from `~/.gemini/settings.json`.
 
 ## Input
 
@@ -33,14 +33,7 @@ User question or topic: $ARGUMENTS
    - Relevant code snippets / file paths from current conversation context
    - Any specific constraints user has mentioned this session
 
-4. **Pre-flight cwd trust check**:
-   - Always use `process.cwd()` as the MCP `cwd` argument; NEVER switch folders.
-   - Detect B2 (skip-trust) support: glob `~/.claude/plugins/cache/*claude-delegator/claude-delegator/*/.claude-plugin/plugin.json`, parse the highest-semver match, treat `version >= "1.3.0"` (semver compare) as B2-supported. On parse error or no match: treat as B2 absent.
-   - Try reading `~/.gemini/trustedFolders.json`. On any error (ENOENT, EACCES, SyntaxError, value not an object): treat the trusted set as EMPTY and emit a one-line warning to stderr including the specific error message (for example `trustedFolders.json unreadable: ENOENT: no such file`).
-   - Build trusted-set = direct keys plus all descendants of keys whose value is `"TRUST_PARENT"`. Normalize paths first: resolve `~`, follow symlinks, strip trailing slashes (use `path.resolve` plus `fs.realpathSync` semantics).
-   - If `process.cwd()` (normalized) is in trusted-set: call as today.
-   - Else if B2 is supported: set `"skip-trust": true` on the call.
-   - Else: abort with: `Error: cwd "${process.cwd()}" not in trustedFolders.json; trust it via \`gemini\` once, or upgrade claude-delegator to 1.3.0+ for skip-trust support.`
+4. **Set cwd** — use `process.cwd()` as the MCP `cwd`; agy print mode needs no folder-trust pre-check.
 
 5. **Call Gemini** — single-shot, advisory, model pinned:
    ```
@@ -62,7 +55,7 @@ User question or topic: $ARGUMENTS
 ## Rules
 
 - **Single-shot only** — never reuse a `threadId` from a prior `/ask-gemini` call. Each invocation is independent.
-- **Always pass `model: "auto-gemini-3"`** — MCP server hardcodes `gemini-2.5-flash` as default. This pin routes to Gemini 3 per `~/.gemini/settings.json`.
+- **Always pass `model: "auto-gemini-3"`** — the model is pinned via the call and ultimately read from `~/.gemini/settings.json` (`model.name`). agy has no per-call model flag, so the MCP `model` param is advisory; the bridge defaults to `auto-gemini-3`.
 - **Advisory by default** — use `sandbox: "read-only"` unless user explicitly asks for implementation.
 - **No contamination** — do not include prior GPT opinions in the Gemini prompt. Each expert reasons independently.
 - **Print status line** immediately before the MCP dispatch: `Gemini working (typical 30-60s)...`

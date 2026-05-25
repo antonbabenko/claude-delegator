@@ -3,22 +3,31 @@
 /**
  * Claude Delegator - Gemini MCP Bridge
  *
- * A zero-dependency MCP server that wraps the Gemini CLI.
+ * A zero-dependency MCP server that wraps the Antigravity CLI (agy).
  * Speaks JSON-RPC 2.0 over stdio.
+ *
+ * Public surface is unchanged from the legacy gemini-CLI bridge: the MCP server
+ * is still "gemini", the tools are still "gemini" / "gemini-reply", and the env
+ * vars GEMINI_DEFAULT_MODEL / GEMINI_DISABLE_TIMEOUT_RECOVERY still apply. Only
+ * the underlying CLI, flags, output parsing, and timeout recovery changed.
  */
 
-const { spawn, execSync } = require("node:child_process");
+const { spawn, execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const DEFAULT_MODEL = process.env.GEMINI_DEFAULT_MODEL || "gemini-2.5-flash";
+const AGY_BIN = process.env.AGY_BIN || "agy";
+const DEFAULT_MODEL = process.env.GEMINI_DEFAULT_MODEL || "auto-gemini-3";
 const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes (Gemini 3 deep prompts run 200-260s)
 const DEFAULT_RECOVERY_GRACE_MS = 120_000; // extra drain budget after the soft timeout
-const RECOVERY_POLL_MS = 1_000;
-const RECOVERY_SKEW_MS = 2_000; // clock-skew tolerance for the stale-answer guard
 const MAX_MS = 600_000;
 const VALID_SANDBOX_VALUES = new Set(["read-only", "workspace-write"]);
+
+// agy's --print-timeout takes a Go duration string ("420s"). Convert ms.
+function goDuration(ms) {
+  return Math.ceil(ms / 1000) + "s";
+}
 
 // --- MCP Protocol Helpers ---
 
@@ -50,6 +59,14 @@ function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+// agy reports failures as "Error: <msg>" on stdout at exit 0. Any stdout LINE
+// starting with "Error:" is a failure even when the process exits 0 - the
+// sentinel can arrive after streamed partial output, so match line-anchored
+// (multiline), not just at the very start of the buffer.
+function stdoutIsError(s) {
+  return /^\s*Error:\s/m.test(s);
+}
+
 // --- Error Classification ---
 
 // Pure helper: given a runGemini rejection's message and code, produce the
@@ -62,150 +79,42 @@ function classifyGeminiError(errMsg, errCode) {
   if (
     lower.includes("trusted directory") ||
     lower.includes("trust check") ||
-    lower.includes("not a trusted folder")
+    lower.includes("not a trusted folder") ||
+    lower.includes("trusted folder")
   ) {
+    // agy has no trusted-folder check in print mode, so this branch should
+    // never fire in practice. Kept harmless for back-compat; hint is benign.
     return { errorKind: "trust", retryable: true, hint: "skip-trust" };
   }
-  if (msg.includes("Gemini CLI not found")) return { errorKind: "missing-cli", retryable: false };
+  if (msg.includes("(agy) not found")) return { errorKind: "missing-cli", retryable: false };
   if (lower.includes("aborterror") || lower.includes("aborted")) {
     return { errorKind: "upstream-abort", retryable: true };
   }
   return { errorKind: "unknown", retryable: false };
 }
 
-// --- Timeout Recovery ---
+// --- Conversation id resolution ---
 //
-// The Gemini CLI ignores SIGTERM and persists its full answer to disk at
-// ~/.gemini/tmp/<slug>/chats/session-*.jsonl regardless. When the bridge's
-// soft timeout fires we drain (keep the CLI alive, poll the jsonl) and return
-// the late-flushed answer instead of failing hard.
-
-function geminiTmpRoot() {
-  return process.env.GEMINI_TMP_ROOT || path.join(os.homedir(), ".gemini", "tmp");
-}
-
-function realOrSelf(p) {
-  try { return fs.realpathSync(p); } catch (_) { return p; }
-}
-
-// Find the slug dir whose .project_root points at `cwd`. Slug names are not
-// derivable reliably, so match by file content rather than name.
-function resolveSlugDir(cwd, root) {
-  const base = root || geminiTmpRoot();
-  const target = realOrSelf(path.resolve(cwd));
-  let entries;
-  try { entries = fs.readdirSync(base, { withFileTypes: true }); }
-  catch (_) { return null; }
-  for (const e of entries) {
-    if (!e.isDirectory()) continue;
-    const slugDir = path.join(base, e.name);
-    let content;
-    try { content = fs.readFileSync(path.join(slugDir, ".project_root"), "utf8"); }
-    catch (_) { continue; }
-    if (realOrSelf(path.resolve(content.trim())) === target) return slugDir;
-  }
-  return null;
-}
-
-function newestSessionFile(slugDir) {
-  const chats = path.join(slugDir, "chats");
-  let names;
-  try { names = fs.readdirSync(chats); }
-  catch (_) { return null; }
-  let best = null, bestMtime = -1;
-  for (const n of names) {
-    if (!n.startsWith("session-") || !n.endsWith(".jsonl")) continue;
-    const fp = path.join(chats, n);
-    let st;
-    try { st = fs.statSync(fp); } catch (_) { continue; }
-    if (st.mtimeMs > bestMtime) { bestMtime = st.mtimeMs; best = fp; }
-  }
-  return best;
-}
-
-// Last `type:"gemini"` record whose timestamp is at/after the spawn start
-// (stale-answer guard). threadId comes from the metadata record's sessionId.
-function extractGeminiAnswer(filePath, sinceMs) {
-  let raw;
-  try { raw = fs.readFileSync(filePath, "utf8"); }
-  catch (_) { return null; }
-  const floor = (typeof sinceMs === "number" ? sinceMs : 0) - RECOVERY_SKEW_MS;
-  let threadId = "unknown";
-  let answer = null;
-  for (const line of raw.split("\n")) {
-    const s = line.trim();
-    if (!s) continue;
-    let o;
-    try { o = JSON.parse(s); } catch (_) { continue; }
-    if (o && typeof o === "object" && o.sessionId && o.type === undefined) {
-      threadId = o.sessionId;
-      continue;
-    }
-    if (o && o.type === "gemini" && typeof o.content === "string") {
-      const ts = Date.parse(o.timestamp);
-      if (Number.isFinite(ts) && ts >= floor) answer = o.content;
-    }
-  }
-  if (answer == null) return null;
-  return { content: answer, threadId };
-}
-
-function tryRecoverOnce(cwd, spawnStartMs) {
-  const slugDir = resolveSlugDir(cwd);
-  if (!slugDir) return null;
-  const f = newestSessionFile(slugDir);
-  if (!f) return null;
-  return extractGeminiAnswer(f, spawnStartMs);
-}
-
-// Poll for a recovered answer until found or `graceMs` is exhausted.
-// `isAborted()` lets the caller stop the loop once the call settles elsewhere.
-async function recoverAfterTimeout({ cwd, spawnStartMs, graceMs, pollMs, isAborted }) {
-  const deadline = Date.now() + (graceMs > 0 ? graceMs : 0);
-  const step = pollMs > 0 ? pollMs : RECOVERY_POLL_MS;
-  for (;;) {
-    if (isAborted && isAborted()) return null;
-    const rec = tryRecoverOnce(cwd, spawnStartMs);
-    if (rec) return rec;
-    if (Date.now() >= deadline) return null;
-    await new Promise((r) => setTimeout(r, step));
+// agy persists a cwd -> conversation-id map at
+// ~/.gemini/antigravity-cli/cache/last_conversations.json. After an agy -p run
+// in a cwd, that cwd's value is the run's conversation id. Resume uses
+// --conversation <id>. There is no id on stderr; we read it from this map.
+function resolveConversationId(cwd) {
+  try {
+    const mapPath = process.env.AGY_LAST_CONVERSATIONS ||
+      path.join(os.homedir(), ".gemini", "antigravity-cli", "cache", "last_conversations.json");
+    const map = JSON.parse(fs.readFileSync(mapPath, "utf8"));
+    if (!map || typeof map !== "object") return null;
+    const resolved = path.resolve(cwd);
+    let real = resolved;
+    try { real = fs.realpathSync(resolved); } catch (_) { /* ignore */ }
+    return map[real] ?? map[resolved] ?? map[cwd] ?? null;
+  } catch (_) {
+    return null;
   }
 }
 
-// --- Gemini CLI Wrapper ---
-
-function lastJSONObject(s) {
-  const spans = [];
-  let depth = 0, start = -1, inStr = false, escape = false;
-  for (let i = 0; i < s.length; i++) {
-    const c = s[i];
-    if (depth === 0) {
-      // Outside any candidate object: only `{` is meaningful. Reset string state.
-      inStr = false; escape = false;
-      if (c === "{") { depth = 1; start = i; }
-      continue;
-    }
-    // depth >= 1: track string + escape per JSON grammar
-    if (escape) { escape = false; continue; }
-    if (c === "\\") { escape = true; continue; }
-    if (c === '"') { inStr = !inStr; continue; }
-    if (inStr) continue;
-    if (c === "{") { depth++; }
-    else if (c === "}") {
-      depth--;
-      if (depth === 0) {
-        spans.push([start, i]);
-        start = -1;
-      } else if (depth < 0) {
-        // Defensive: floor at 0, abandon the candidate.
-        depth = 0; start = -1;
-      }
-    }
-  }
-  if (!spans.length) return null;
-  const [a, b] = spans[spans.length - 1];
-  return s.slice(a, b + 1);
-}
+// --- agy CLI Wrapper ---
 
 async function runGemini(args, cwd, timeoutMs, recoveryGraceMs) {
   return new Promise((resolve, reject) => {
@@ -220,13 +129,20 @@ async function runGemini(args, cwd, timeoutMs, recoveryGraceMs) {
           : DEFAULT_RECOVERY_GRACE_MS);
 
     let killed = false;   // legacy hard-kill path (grace === 0)
-    let draining = false; // soft timeout fired, waiting for a disk-flushed answer
+    let draining = false; // soft timeout fired, buffering streamed stdout
     let settled = false;
     let graceTimer = null;
 
-    // Force JSON output for reliable parsing
-    const geminiArgs = [...args, "-o", "json"];
-    const geminiProcess = spawn("gemini", geminiArgs, {
+    // agy streams stdout incrementally; we buffer it. The agy print-timeout is
+    // set generously past the bridge soft timeout + grace so the BRIDGE owns
+    // timing (agy should not error out before we drain).
+    // args already end with "-p <prompt>"; prepend --print-timeout before them
+    // so flags stay together and -p <prompt> remains the tail.
+    const ptIdx = args.lastIndexOf("-p");
+    const head = ptIdx >= 0 ? args.slice(0, ptIdx) : args;
+    const tail = ptIdx >= 0 ? args.slice(ptIdx) : [];
+    const agyArgs = [...head, "--print-timeout", goDuration(t + grace + 30_000), ...tail];
+    const agyProcess = spawn(AGY_BIN, agyArgs, {
       env: process.env,
       shell: false,
       cwd: effCwd
@@ -234,33 +150,20 @@ async function runGemini(args, cwd, timeoutMs, recoveryGraceMs) {
 
     function clearTimers() { clearTimeout(killTimer); if (graceTimer) clearTimeout(graceTimer); }
     function destroyStreams() {
-      try { geminiProcess.stdout.destroy(); } catch (_) {}
-      try { geminiProcess.stderr.destroy(); } catch (_) {}
+      try { agyProcess.stdout.destroy(); } catch (_) {}
+      try { agyProcess.stderr.destroy(); } catch (_) {}
     }
     function timeoutError() {
-      const err = new Error("Gemini timed out after " + Math.round(t / 1000) + "s");
+      const err = new Error("Gemini (agy) timed out after " + Math.round(t / 1000) + "s");
       err.code = "timeout";
       return err;
-    }
-    function finishRecovered(rec) {
-      if (settled) return;
-      settled = true;
-      clearTimers();
-      try { geminiProcess.kill("SIGTERM"); } catch (_) {}
-      setTimeout(() => { try { geminiProcess.kill("SIGKILL"); } catch (_) {} }, 1_000);
-      destroyStreams();
-      process.stderr.write(
-        "[claude-delegator] recovered Gemini answer from disk after soft timeout (" +
-        Math.round((Date.now() - spawnStartMs) / 1000) + "s)\n"
-      );
-      resolve({ response: rec.content, threadId: rec.threadId, recovered: true });
     }
     function finishTimeout() {
       if (settled) return;
       settled = true;
       clearTimers();
-      try { geminiProcess.kill("SIGTERM"); } catch (_) {}
-      setTimeout(() => { try { geminiProcess.kill("SIGKILL"); } catch (_) {} }, 1_000);
+      try { agyProcess.kill("SIGTERM"); } catch (_) {}
+      setTimeout(() => { try { agyProcess.kill("SIGKILL"); } catch (_) {} }, 1_000);
       destroyStreams();
       reject(timeoutError());
     }
@@ -268,36 +171,28 @@ async function runGemini(args, cwd, timeoutMs, recoveryGraceMs) {
     const killTimer = setTimeout(() => {
       if (settled) return;
       if (grace > 0) {
-        // Drain: do NOT kill. Keep Gemini alive and poll the chat jsonl for a
-        // record newer than spawn-start, up to the grace budget.
+        // Drain: keep agy alive and keep buffering streamed stdout. If agy
+        // exits cleanly (exit 0, non-empty stdout, no Error: sentinel) within
+        // the grace budget the close handler resolves recovered:true. If the
+        // grace expires first, finishTimeout() fails hard.
         draining = true;
-        recoverAfterTimeout({
-          cwd: effCwd,
-          spawnStartMs,
-          graceMs: grace,
-          pollMs: RECOVERY_POLL_MS,
-          isAborted: () => settled,
-        }).then((rec) => {
-          if (settled) return;
-          if (rec) finishRecovered(rec);
-          else finishTimeout();
-        }).catch(() => { if (!settled) finishTimeout(); });
+        graceTimer = setTimeout(() => finishTimeout(), grace);
         return;
       }
       // Legacy hard-kill path.
       killed = true;
-      try { geminiProcess.kill("SIGTERM"); } catch (_) {}
+      try { agyProcess.kill("SIGTERM"); } catch (_) {}
       graceTimer = setTimeout(() => {
-        try { geminiProcess.kill("SIGKILL"); } catch (_) {}
+        try { agyProcess.kill("SIGKILL"); } catch (_) {}
       }, 1_000);
     }, t);
 
-    geminiProcess.on("close", clearTimers);
-    geminiProcess.on("error", clearTimers);
+    agyProcess.on("close", clearTimers);
+    agyProcess.on("error", clearTimers);
 
     // exit fires when the process itself exits even if child pipes are still
     // open. Surface the legacy timeout early without waiting for pipe drain.
-    geminiProcess.on("exit", () => {
+    agyProcess.on("exit", () => {
       if (killed && !settled) {
         settled = true;
         clearTimers();
@@ -309,20 +204,20 @@ async function runGemini(args, cwd, timeoutMs, recoveryGraceMs) {
     let stdout = "";
     let stderr = "";
 
-    geminiProcess.on("error", (err) => {
+    agyProcess.on("error", (err) => {
       if (settled) return;
       settled = true;
       if (err.code === "ENOENT") {
-        reject(new Error("Gemini CLI not found. Please install it with 'npm install -g @google/gemini-cli'."));
+        reject(new Error("Antigravity CLI (agy) not found. Install from https://antigravity.google and run `agy` once to sign in."));
       } else {
         reject(err);
       }
     });
 
-    geminiProcess.stdout.on("data", (data) => { stdout += data.toString(); });
-    geminiProcess.stderr.on("data", (data) => { stderr += data.toString(); });
+    agyProcess.stdout.on("data", (data) => { stdout += data.toString(); });
+    agyProcess.stderr.on("data", (data) => { stderr += data.toString(); });
 
-    geminiProcess.on("close", (code) => {
+    agyProcess.on("close", (code) => {
       if (settled) return; // already resolved/rejected elsewhere
       if (killed) {        // legacy soft-timeout kill
         settled = true;
@@ -330,57 +225,57 @@ async function runGemini(args, cwd, timeoutMs, recoveryGraceMs) {
         return reject(timeoutError());
       }
 
-      // Child exited on its own. Prefer real stdout JSON (normal completion,
-      // including slow-but-finished during drain).
+      const out = stdout.trim();
       const trimmedErr = stderr.trim();
-      const jsonStr = lastJSONObject(stdout);
-      if (jsonStr) {
-        try {
-          const data = JSON.parse(jsonStr);
-          settled = true;
-          clearTimers();
-          return resolve({
-            response: data.response || "(No output)",
-            threadId: data.session_id || "unknown"
-          });
-        } catch (e) {
-          if (!draining) {
-            settled = true;
-            clearTimers();
-            const err = new Error(`Parse error: ${e.message}\nRaw output was: ${stdout}`);
-            err.code = "parse";
-            return reject(err);
-          }
-          // draining: fall through to disk recovery
-        }
-      }
-
-      // Prefer stderr on failure so trust/auth errors are not masked by
-      // stdout banners (issue #2).
-      if (code !== 0 && trimmedErr) {
-        settled = true;
-        clearTimers();
-        return reject(new Error(trimmedErr));
-      }
+      const success = code === 0 && out && !stdoutIsError(out);
 
       if (draining) {
-        // Soft timeout already fired; the child is gone. One final disk check,
-        // then give up (no point waiting the rest of the grace budget).
-        const rec = tryRecoverOnce(effCwd, spawnStartMs);
-        if (rec) return finishRecovered(rec);
+        // Soft timeout already fired. Only a clean exit meeting the success
+        // contract recovers; anything else is a hard timeout. NEVER return
+        // partial buffered stdout as success.
+        if (success) {
+          settled = true;
+          clearTimers();
+          process.stderr.write(
+            "[claude-delegator] recovered agy answer via stdout drain after soft timeout (" +
+            Math.round((Date.now() - spawnStartMs) / 1000) + "s)\n"
+          );
+          return resolve({ response: out, threadId: resolveConversationId(effCwd) || "unknown", recovered: true });
+        }
         return finishTimeout();
-      }
-
-      if (code !== 0 && !stdout) {
-        settled = true;
-        clearTimers();
-        return reject(new Error(`Gemini exited with code ${code}`));
       }
 
       settled = true;
       clearTimers();
-      const err = new Error(`Parse error: No JSON response found\nRaw output was: ${stdout}`);
-      err.code = "parse";
+
+      if (success) {
+        const threadId = resolveConversationId(effCwd);
+        if (threadId == null) {
+          process.stderr.write(
+            "[claude-delegator] no conversation id found for cwd " + effCwd +
+            "; returning threadId:\"unknown\" (resume will be unavailable)\n"
+          );
+        }
+        return resolve({ response: out, threadId: threadId || "unknown" });
+      }
+
+      // Failure. Prefer stderr so it is not masked by an stdout banner; then an
+      // stdout Error: sentinel; then a generic message.
+      let message;
+      if (trimmedErr) message = trimmedErr;
+      else if (stdoutIsError(out)) message = out;
+      else if (!out) message = `No output from agy`;
+      else message = `agy exited with code ${code}`;
+
+      const err = new Error(message);
+      if (/timed out/i.test(message)) {
+        err.code = "timeout";
+      } else if (!trimmedErr && !out) {
+        // Clean exit, nothing on either stream: empty/garbage output.
+        err.code = "parse";
+      }
+      // Otherwise leave err.code undefined and let classifyGeminiError map the
+      // message text (trust / abort / unknown).
       reject(err);
     });
   });
@@ -394,7 +289,7 @@ const handlers = {
     sendResponse(id, {
       protocolVersion: "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "claude-delegator-gemini", version: "1.5.0" }
+      serverInfo: { name: "claude-delegator-gemini", version: "1.6.0" }
     });
   },
 
@@ -412,15 +307,15 @@ const handlers = {
               "developer-instructions": { type: "string", description: "Expert system instructions" },
               sandbox: { type: "string", enum: ["read-only", "workspace-write"], default: "read-only" },
               cwd: { type: "string", description: "Current working directory" },
-              model: { type: "string", default: DEFAULT_MODEL },
+              model: { type: "string", default: DEFAULT_MODEL, description: "Advisory only; agy reads the model from ~/.gemini/settings.json (default auto-gemini-3)." },
               "include-directories": {
                 type: "array",
                 items: { type: "string" },
-                description: "Additional directories to include in the workspace alongside cwd. Equivalent to --include-directories on the Gemini CLI."
+                description: "Additional workspace dirs; maps to repeated --add-dir on the Antigravity CLI (agy)."
               },
-              timeout: { type: "number", description: "Soft timeout in ms. 1..600000. Default 300000. On expiry the bridge drains and recovers the disk-flushed answer instead of failing.", default: DEFAULT_TIMEOUT_MS },
-              "recovery-grace": { type: "number", description: "Extra ms to keep Gemini alive after the soft timeout to recover a late-flushed answer from disk. 0..600000. Default 120000. 0 disables drain.", default: DEFAULT_RECOVERY_GRACE_MS },
-              "skip-trust": { type: "boolean", description: "Pass --skip-trust to bypass the Gemini CLI's trusted-directory check. Read-only sandbox is still gated separately.", default: false }
+              timeout: { type: "number", description: "Soft timeout in ms. 1..600000. Default 300000. On expiry the bridge drains the streamed stdout and recovers a late answer instead of failing.", default: DEFAULT_TIMEOUT_MS },
+              "recovery-grace": { type: "number", description: "Extra ms to keep agy alive after the soft timeout to drain a late answer from streamed stdout. 0..600000. Default 120000. 0 disables drain.", default: DEFAULT_RECOVERY_GRACE_MS },
+              "skip-trust": { type: "boolean", description: "Accepted for back-compat; agy has no trusted-folder check in print mode, so this is a no-op.", default: false }
             },
             required: ["prompt"]
           }
@@ -431,18 +326,18 @@ const handlers = {
           inputSchema: {
             type: "object",
             properties: {
-              threadId: { type: "string", description: "Session ID returned by a previous gemini call" },
+              threadId: { type: "string", description: "Conversation ID returned by a previous gemini call" },
               prompt: { type: "string", description: "Follow-up prompt" },
               sandbox: { type: "string", enum: ["read-only", "workspace-write"], default: "read-only" },
               cwd: { type: "string" },
               "include-directories": {
                 type: "array",
                 items: { type: "string" },
-                description: "Additional directories to include in the workspace alongside cwd. Equivalent to --include-directories on the Gemini CLI."
+                description: "Additional workspace dirs; maps to repeated --add-dir on the Antigravity CLI (agy)."
               },
-              timeout: { type: "number", description: "Soft timeout in ms. 1..600000. Default 300000. On expiry the bridge drains and recovers the disk-flushed answer instead of failing.", default: DEFAULT_TIMEOUT_MS },
-              "recovery-grace": { type: "number", description: "Extra ms to keep Gemini alive after the soft timeout to recover a late-flushed answer from disk. 0..600000. Default 120000. 0 disables drain.", default: DEFAULT_RECOVERY_GRACE_MS },
-              "skip-trust": { type: "boolean", description: "Pass --skip-trust to bypass the Gemini CLI's trusted-directory check. Read-only sandbox is still gated separately.", default: false }
+              timeout: { type: "number", description: "Soft timeout in ms. 1..600000. Default 300000. On expiry the bridge drains the streamed stdout and recovers a late answer instead of failing.", default: DEFAULT_TIMEOUT_MS },
+              "recovery-grace": { type: "number", description: "Extra ms to keep agy alive after the soft timeout to drain a late answer from streamed stdout. 0..600000. Default 120000. 0 disables drain.", default: DEFAULT_RECOVERY_GRACE_MS },
+              "skip-trust": { type: "boolean", description: "Accepted for back-compat; agy has no trusted-folder check in print mode, so this is a no-op.", default: false }
             },
             required: ["threadId", "prompt"]
           }
@@ -475,7 +370,7 @@ const handlers = {
       return;
     }
     if (args.timeout !== undefined) {
-      if (typeof args.timeout !== "number" || !Number.isFinite(args.timeout) || args.timeout <= 0 || args.timeout > 600_000) {
+      if (typeof args.timeout !== "number" || !Number.isFinite(args.timeout) || args.timeout <= 0 || args.timeout > MAX_MS) {
         if (shouldRespond) sendError(id, -32602, "Invalid params: 'timeout' must be a number > 0 and <= 600000 milliseconds");
         return;
       }
@@ -487,6 +382,7 @@ const handlers = {
         return;
       }
     }
+    // skip-trust is accepted for back-compat but produces no agy flag.
     if (args["skip-trust"] !== undefined && typeof args["skip-trust"] !== "boolean") {
       if (shouldRespond) sendError(id, -32602, "Invalid params: 'skip-trust' must be a boolean when provided");
       return;
@@ -505,8 +401,21 @@ const handlers = {
     }
 
     try {
-      const geminiArgs = [];
+      const agyArgs = [];
+
+      // Sandbox / permissions mapping is common to both tools.
+      const sandboxFlags = [];
+      if (args.sandbox === "workspace-write") sandboxFlags.push("--dangerously-skip-permissions");
+      else sandboxFlags.push("--sandbox");
+
+      const addDirFlags = [];
+      if (args["include-directories"]) {
+        for (const dir of args["include-directories"]) addDirFlags.push("--add-dir", dir);
+      }
+
       if (name === "gemini") {
+        // model is accepted + validated but never reaches argv (agy reads the
+        // model from ~/.gemini/settings.json).
         if (args.model !== undefined && !isNonEmptyString(args.model)) {
           if (shouldRespond) sendError(id, -32602, "Invalid params: 'model' must be a non-empty string when provided");
           return;
@@ -520,23 +429,18 @@ const handlers = {
           return;
         }
 
-        geminiArgs.push("-m", args.model || DEFAULT_MODEL);
-        if (args["include-directories"]) {
-          geminiArgs.push("--include-directories", args["include-directories"].join(","));
-        }
-        if (args["skip-trust"] === true) geminiArgs.push("--skip-trust");
-        if (args.sandbox === "workspace-write") geminiArgs.push("-s");
+        agyArgs.push(...sandboxFlags, ...addDirFlags);
         let prompt = args.prompt;
         if (args["developer-instructions"]) prompt = `${args["developer-instructions"]}\n\n${prompt}`;
-        geminiArgs.push("-p", prompt);
+        agyArgs.push("-p", prompt);
       } else if (name === "gemini-reply") {
         if (!isNonEmptyString(args.threadId)) {
           if (shouldRespond) sendError(id, -32602, "Invalid params: 'threadId' is required for gemini-reply");
           return;
         }
         const threadId = args.threadId.trim();
-        if (threadId === "latest") {
-          if (shouldRespond) sendError(id, -32602, "Invalid params: 'threadId' must be an explicit session id, not 'latest'");
+        if (threadId === "" || threadId === "latest" || threadId === "unknown") {
+          if (shouldRespond) sendError(id, -32602, "Invalid params: 'threadId' must be an explicit conversation id, not '" + threadId + "'");
           return;
         }
         if (!isNonEmptyString(args.prompt)) {
@@ -544,13 +448,8 @@ const handlers = {
           return;
         }
 
-        geminiArgs.push("--resume", threadId);
-        if (args["include-directories"]) {
-          geminiArgs.push("--include-directories", args["include-directories"].join(","));
-        }
-        if (args["skip-trust"] === true) geminiArgs.push("--skip-trust");
-        if (args.sandbox === "workspace-write") geminiArgs.push("-s");
-        geminiArgs.push("-p", args.prompt);
+        agyArgs.push("--conversation", threadId, ...sandboxFlags, ...addDirFlags);
+        agyArgs.push("-p", args.prompt);
       } else {
         if (shouldRespond) sendError(id, -32601, `Tool not found: ${name}`);
         return;
@@ -560,7 +459,7 @@ const handlers = {
       const recoveryGraceMs = (typeof args["recovery-grace"] === "number" && args["recovery-grace"] >= 0)
         ? args["recovery-grace"]
         : DEFAULT_RECOVERY_GRACE_MS;
-      const { response, threadId, recovered } = await runGemini(geminiArgs, args.cwd, timeoutMs, recoveryGraceMs);
+      const { response, threadId, recovered } = await runGemini(agyArgs, args.cwd, timeoutMs, recoveryGraceMs);
 
       // Return metadata (threadId) at the top level for orchestration rules,
       // and standard content array for the UI.
@@ -634,20 +533,17 @@ if (require.main === module) {
 
   // Startup Check
   try {
-    execSync("gemini --version", { stdio: "ignore" });
+    execFileSync(AGY_BIN, ["--help"], { stdio: "ignore" });
   } catch (e) {
-    console.error("Gemini CLI not found. Please install it first.");
+    console.error("Antigravity CLI (agy) not found. Install from https://antigravity.google and run `agy` once to sign in.");
     process.exit(1);
   }
 }
 
 // Test-only exports
 if (typeof module !== "undefined" && module.exports) {
-  module.exports.lastJSONObject = lastJSONObject;
   module.exports.classifyGeminiError = classifyGeminiError;
-  module.exports.geminiTmpRoot = geminiTmpRoot;
-  module.exports.resolveSlugDir = resolveSlugDir;
-  module.exports.newestSessionFile = newestSessionFile;
-  module.exports.extractGeminiAnswer = extractGeminiAnswer;
-  module.exports.recoverAfterTimeout = recoverAfterTimeout;
+  module.exports.resolveConversationId = resolveConversationId;
+  module.exports.goDuration = goDuration;
+  module.exports.stdoutIsError = stdoutIsError;
 }
