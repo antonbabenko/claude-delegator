@@ -1,6 +1,6 @@
 # Claude Delegator
 
-GPT (Codex), Gemini, and Grok (xAI) expert subagents for Claude Code. Five specialists that can analyze and implement: architecture, plan review, scope, code review, and security. Use any of the three providers, single-shot or multi-turn, advisory or implementation (Grok is advisory-only).
+GPT (Codex), Gemini, and Grok (xAI) expert subagents for Claude Code. Five specialists that can analyze and implement: architecture, plan review, scope, code review, and security. Use any of the three providers, single-shot or multi-turn, advisory or implementation.
 
 [![License](https://img.shields.io/github/license/antonbabenko/claude-delegator?v=2)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/antonbabenko/claude-delegator?v=2)](https://github.com/antonbabenko/claude-delegator/stargazers)
@@ -9,7 +9,7 @@ GPT (Codex), Gemini, and Grok (xAI) expert subagents for Claude Code. Five speci
 
 ## What is Claude Delegator?
 
-Claude gains a team of GPT, Gemini, and Grok specialists over MCP: GPT through the Codex CLI's native MCP server, Gemini through a bundled MCP bridge, and Grok through a bundled bridge over the xAI HTTP API. Each expert has a distinct specialty and can advise or implement (Grok is advisory-only).
+Claude gains a team of GPT, Gemini, and Grok specialists over MCP: GPT through the Codex CLI's native MCP server, Gemini through a bundled MCP bridge, and Grok through a bundled bridge over the xAI HTTP API. Each expert has a distinct specialty and can advise or implement.
 
 You can use any subset of the three providers. The plugin detects which are configured and routes accordingly.
 
@@ -25,14 +25,14 @@ You can use any subset of the three providers. The plugin detects which are conf
 
 Inside a Claude Code instance, run:
 
-**1. Add the marketplace**
+**1. Add the marketplace - [antonbabenko/agent-plugins](https://github.com/antonbabenko/agent-plugins)**
 ```
-/plugin marketplace add antonbabenko/claude-delegator
+/plugin marketplace add antonbabenko/agent-plugins
 ```
 
 **2. Install the plugin**
 ```
-/plugin install claude-delegator
+/plugin install claude-delegator@antonbabenko
 ```
 
 **3. Run setup**
@@ -42,9 +42,7 @@ Inside a Claude Code instance, run:
 
 Claude now routes complex tasks to your GPT, Gemini, and Grok experts.
 
-> Requires at least one provider: [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google/gemini-cli), or Grok (no CLI to install; just set `XAI_API_KEY`). Setup walks you through it.
-
-You can also install from the [agent-plugins marketplace](https://github.com/antonbabenko/agent-plugins): run `/plugin marketplace add antonbabenko/agent-plugins`, then `/plugin install claude-delegator@antonbabenko`.
+The canonical marketplace is [`antonbabenko/agent-plugins`](https://github.com/antonbabenko/agent-plugins) (above), which also bundles the other plugins.
 
 ## Commands
 
@@ -53,15 +51,15 @@ Bundled with the plugin (available once installed):
 | Command | Purpose |
 |---------|---------|
 | `/claude-delegator:setup` | Configure Codex/Gemini/Grok MCP servers + orchestration rules |
-| `/claude-delegator:uninstall` | Remove MCP config, rules, and aliases |
+| `/claude-delegator:consensus` | 🔥🔥🔥 Arbiter-mediated GPT + Gemini + Grok + Claude convergence loop |
+| `/claude-delegator:ask-all` | 🔥 GPT + Gemini + Grok in parallel, synthesized |
 | `/claude-delegator:ask-gpt` | One-shot GPT (Codex) second opinion |
 | `/claude-delegator:ask-gemini` | One-shot Gemini second opinion |
-| `/claude-delegator:ask-grok` | One-shot Grok (xAI) second opinion (advisory-only; can read attached files) |
-| `/claude-delegator:ask-all` | GPT + Gemini + Grok in parallel, synthesized |
-| `/claude-delegator:consensus` | Iterate GPT + Gemini + Grok + Claude to consensus |
+| `/claude-delegator:ask-grok` | One-shot Grok (xAI) second opinion (advisory-only) |
+| `/claude-delegator:uninstall` | Remove MCP config, rules, and aliases |
 | `/claude-delegator:grok-files` | List or prune Grok-uploaded files (storage cleanup) |
 
-`/setup` can also install short aliases (`/ask-gpt`, `/ask-gemini`, `/ask-grok`, `/ask-all`, `/consensus`, `/grok-files`) into `~/.claude/commands/`. This is opt-in and never overwrites an existing same-named command; `/uninstall` removes an alias only if it is byte-identical to the bundled copy.
+`/setup` can also install short aliases (`/ask-gpt`, `/ask-gemini`, `/ask-grok`, `/ask-all`, `/consensus`, `/grok-files`) into `~/.claude/commands/`. This is opt-in. Existing same-named commands are kept by default; setup asks before overwriting any of them. `/uninstall` removes an alias only if it is byte-identical to the bundled copy.
 
 ## The Experts
 
@@ -96,9 +94,9 @@ You: "Is this authentication flow secure?"
 Claude: routes to the Security Analyst, then synthesizes the findings.
 ```
 
-You can also ask explicitly: "Ask GPT to review this architecture", "Ask Gemini to...", or "Ask Grok to...". Each expert runs read-only for analysis or with write access to apply fixes, and Claude picks the mode from your request (Grok is advisory-only).
+You can also ask explicitly: "Ask GPT to review this architecture", "Ask Gemini to...", or "Ask Grok to...". Each expert runs read-only for analysis or with write access to apply fixes, and Claude picks the mode from your request.
 
-The bundled commands give you direct control: `/ask-gpt`, `/ask-gemini`, `/ask-grok`, `/ask-all` (all three in parallel, synthesized), and `/consensus` (the providers and Claude iterate to agreement).
+The bundled commands give you direct control: `/ask-gpt`, `/ask-gemini`, `/ask-grok`, `/ask-all` (all three in parallel, synthesized), and `/consensus` (arbiter-mediated: the providers vote, Claude commits a blind verdict and adjudicates to agreement).
 
 ## How It Works
 
@@ -128,6 +126,17 @@ Claude: "I found 3 issues..." (synthesizes, applies judgment)
 
 For the bridge internals, retry behavior, and recovery paths, see [TECHNICAL.md](TECHNICAL.md).
 
+## Bias hardening (consensus + ask-*)
+
+`/consensus` has a built-in conflict of interest: Claude writes the review prompt, casts a vote, decides which objections are real, and runs the loop. Left alone, an orchestrator like that can quietly rubber-stamp its own plan. Four guards stop that:
+
+- **Blind verdict.** Claude posts its own verdict (APPROVE / REQUEST CHANGES / REJECT) in a message sent *before* the one that calls the models. The pre-commitment is right there in the transcript, so Claude cannot reshape its opinion after seeing the panel.
+- **Arbiter-mediated, not majority vote.** The external models vote; Claude adjudicates and rewrites the plan between rounds. The command says so plainly instead of dressing it up as a democratic tally.
+- **No self-approval.** A round converges only when every responding external approves and at least one external actually answered. Claude's own approval never carries a round by itself. A provider that errors (an unconfigured Grok returning `missing-auth`, for example) drops out of the count instead of jamming the loop.
+- **No silent dismissal.** Every critical issue that gets dismissed or deferred ships with a one-line reason in the final report, including the times Claude walks back one of its own blind objections.
+
+The single and parallel commands carry a lighter version of the same rule. `/ask-gpt`, `/ask-gemini`, `/ask-grok`, and `/ask-all` each state that the external model only advises: Claude reads the output, applies its own judgment, and owns the synthesized answer. When the models agree, that is input, not a verdict.
+
 ## Configuration
 
 Every expert supports two modes, chosen automatically from your request:
@@ -149,16 +158,16 @@ For the full environment-variable reference and manual MCP setup, see [TECHNICAL
 
 You need at least one provider:
 
-- **Codex CLI** (GPT): `npm install -g @openai/codex`, then `codex login`
-- **Gemini CLI**: `npm install -g @google/gemini-cli`, then run `gemini` once (or set `GOOGLE_API_KEY`)
-- **Grok (xAI)**: no CLI to install; the bridge ships with the plugin (needs Node 18+). Set `XAI_API_KEY` (get a key at https://console.x.ai). Advisory-only.
+- **Codex CLI** (GPT): `npm install -g @openai/codex`, then `codex login`.
+- **Antigravity CLI**: [Getting Started with Antigravity CLI](https://antigravity.google/docs/cli-getting-started) and [Migrating from Gemini CLI](https://antigravity.google/docs/gcli-migration), then run `agy` and login.
+- **Grok (xAI)**: no CLI to install; the bridge ships with the plugin (needs Node 18+). Set `XAI_API_KEY` (get a key at https://console.x.ai).
 
 ## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
 | MCP server not found | Restart Claude Code after setup |
-| Provider not authenticated | Codex: `codex login`. Gemini: run `gemini` once (or set `GOOGLE_API_KEY`). Grok: export `XAI_API_KEY` (else calls return `errorKind: missing-auth`) |
+| Provider not authenticated | Codex: `codex login`. Gemini: run `agy` once (or set `GOOGLE_API_KEY`). Grok: export `XAI_API_KEY` (else calls return `errorKind: missing-auth`) |
 | Tool not appearing | Run `claude mcp list` and verify registration |
 | Expert not triggered | Ask explicitly: "Ask GPT to review...", "Ask Gemini to review...", or "Ask Grok to review..." |
 | Gemini blocked by trust check | The orchestrator retries once with `skip-trust` and prints a notice. See [TECHNICAL.md](TECHNICAL.md#gemini-trust-recovery) |
