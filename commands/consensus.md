@@ -151,15 +151,20 @@ For each round R:
 ```
 ## /consensus result
 
+**Mode**: arbiter-mediated consensus (external models vote; Claude adjudicates + synthesizes)
 **Outcome**: CONVERGED in N rounds | UNRESOLVED after 5 rounds
 **Final plan**:
 [full converged plan, or last revision]
 
-**Round history**:
-| Round | GPT | Gemini | Grok | Claude | Changes applied |
-| 1     | RC  | RC     | RC   | RC     | added rollback step, clarified ownership |
-| 2     | RC  | APPR   | APPR | APPR   | tightened error handling on step 3 |
-| 3     | APPR | APPR  | APPR | APPR   | - (no change; consensus reached) |
+**Round history** (CB = Claude blind verdict; reviewer cols use APPR/RC/REJ or ERR; Adj = Claude adjudicated):
+| Round | CB   | GPT  | Gemini | Grok | Adj  | Changes applied |
+| 1     | RC   | RC   | RC     | RC   | RC   | added rollback step, clarified ownership |
+| 2     | RC   | RC   | APPR   | ERR  | RC   | tightened error handling on step 3 |
+| 3     | APPR | APPR | APPR   | ERR  | APPR | - (Grok unconfigured; converged on responding externals) |
+
+**Dismissed / deferred issues** (every dismiss/defer, with reason - no silent dismissal; includes Claude walking back its own blind issues):
+- [R{n}] {source} raised "{issue}" -> dismissed: {one-line reason}
+- [R{n}] {source} raised "{issue}" -> deferred (out of scope): {one-line reason}
 
 **Residual disagreements** (if any):
 - GPT (held out on R5): [issue + reason Claude dismissed it]
@@ -170,8 +175,10 @@ For each round R:
 - **Always dispatch in parallel** - all three MCP calls in the same message. Sequential triples wall time.
 - **Single-shot per round** - fresh thread each call. Do NOT use `*-reply` with stored threadId. Cross-round state lives in the prompt body, not in provider memory. Avoids contamination if one provider went off track.
 - **Trusted `cwd` for Gemini** - run the Pre-flight cwd trust check from Setup step 3. NEVER switch folders; use skip-trust when supported, abort otherwise.
-- **Provider failure does not kill the loop** - if a provider errors (timeout, trust failure, Grok `missing-auth`, transient API error), treat its verdict as `REQUEST CHANGES` with a note `"provider error: <truncated msg>"`. Continue the round. The loop can still converge if the surviving reviewers agree with Claude.
+- **Provider failure does not kill the loop** - if a provider errors (timeout, trust failure, Grok `missing-auth`, transient API error), mark it ERRORED with a note `"provider error: <truncated msg>"` and EXCLUDE it from the convergence bar for that round (it counts as neither APPROVE nor REQUEST CHANGES). The loop still converges when every responding external and Claude APPROVE and at least one external responded. If ALL externals errored in a round, there is no responding external, so that round cannot converge.
 - **Pin Gemini model** - always `model: "auto-gemini-3"`. Grok uses its bridge default (`GROK_DEFAULT_MODEL` or `grok-4.3`); no in-command pin.
+- **Claude cannot self-approve into consensus** - convergence requires every responding external to APPROVE and at least one external to respond; Claude's APPROVE alone never converges. Claude's blind verdict is a peer vote; its adjudication is a separate, accountable role.
+- **No silent dismissal** - every `dismiss`/`defer` of a critical issue (from a reviewer OR from Claude's own blind verdict) carries a one-line reason that appears in the final report. Repeated cross-source issues are accepted by default.
 - **Hard cap at 5 rounds** - even if one reviewer is being stubborn, terminate. Diverging too many rounds usually means the plan has an unresolved ambiguity, not that the reviewer is wrong.
 - **Report as you go** - print a status line after each round dispatch and after each return. Long silences look like a hang.
 - **Synthesize, never paste raw** - reviewers' raw output never appears verbatim in the final report.
@@ -179,7 +186,7 @@ For each round R:
 ## Heuristics for Claude's per-issue decisions
 
 - **accept**: reviewer found a real gap or risk that the plan does not cover. Update the plan.
-- **dismiss**: reviewer flagged something that the plan already addresses, or that is genuinely out of scope, or that is theoretical (e.g., "what if the disk fails mid-write" on a non-critical caching plan). Record the dismissal reason in `history` so the next round's prompt explains why it was not changed.
+- **dismiss**: a source (reviewer or Claude's own blind verdict) flagged something that the plan already addresses, or that is genuinely out of scope, or that is theoretical (e.g., "what if the disk fails mid-write" on a non-critical caching plan). Record the dismissal reason in `history` AND surface it in the final report's "Dismissed / deferred issues" section - never dismiss silently.
 - **defer**: reviewer is right but the issue is for a future phase. Add to plan's `Out of scope` section explicitly so the next round doesn't re-flag it.
 
 When Claude dismisses or defers an issue, the next round's prompt should include:
