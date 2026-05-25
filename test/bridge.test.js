@@ -81,6 +81,24 @@ test("A5: gemini-reply -> --conversation <threadId>", async () => {
   assert.equal(argv[idx + 1], "abc", "conversation id follows the flag");
 });
 
+test("A6: agy stdin is closed so print mode is not stalled waiting for EOF", async () => {
+  // fake-agy-needs-stdin-eof.sh blocks on `cat` until stdin EOF, then prints.
+  // The bridge must spawn agy with stdin /dev/null (not an open pipe) or this stalls.
+  const child = startBridge({ fakeBin: "fake-agy-needs-stdin-eof.sh" });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "hi", timeout: 8000 } },
+  });
+  setTimeout(() => child.stdin.end(), 3000);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.ok(r, "got tools/call response (no stdin-EOF stall)");
+  assert.ok(!r.result.isError, "not an error: " + JSON.stringify(r.result));
+  assert.equal(r.result.content[0].text, "STDIN EOF OK");
+});
+
 // --- output handling ---
 
 test("O1: plain stdout -> content text + conversation-id threadId", async () => {

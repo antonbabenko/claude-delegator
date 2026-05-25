@@ -135,7 +135,11 @@ async function runGemini(args, cwd, timeoutMs, recoveryGraceMs) {
     const agyProcess = spawn(AGY_BIN, agyArgs, {
       env: process.env,
       shell: false,
-      cwd: effCwd
+      cwd: effCwd,
+      // agy -p (print mode) waits for stdin EOF before returning; if the stdin
+      // pipe is left open it hangs until the timeout. Give it /dev/null so it
+      // sees EOF immediately and runs to completion.
+      stdio: ["ignore", "pipe", "pipe"]
     });
 
     function clearTimers() { clearTimeout(killTimer); if (graceTimer) clearTimeout(graceTimer); }
