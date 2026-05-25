@@ -16,9 +16,10 @@ Configure GPT (via Codex) or Gemini as specialized expert subagents via native M
 which codex 2>/dev/null && codex --version 2>&1 | head -1 || echo "CODEX_MISSING"
 ```
 
-### Gemini
+### Gemini (Antigravity CLI)
 ```bash
-which gemini 2>/dev/null && gemini --version 2>&1 | head -1 || echo "GEMINI_MISSING"
+# agy has no --version flag; presence on PATH is the install signal.
+which agy 2>/dev/null && echo "agy: installed" || echo "GEMINI_MISSING"
 ```
 
 ### Grok (xAI)
@@ -38,9 +39,9 @@ Then authenticate: codex login
 
 **Gemini Missing:**
 ```
-Gemini CLI not found.
-Install with: npm install -g @google/gemini-cli
-Then authenticate: launch `gemini` once and complete sign-in (or set `GOOGLE_API_KEY`)
+Antigravity CLI (agy) not found.
+Install Antigravity from https://antigravity.google
+Then authenticate: run `agy` once and complete sign-in (or set the model in ~/.gemini/settings.json)
 ```
 
 **Grok key missing (XAI_API_KEY_MISSING):**
@@ -156,7 +157,7 @@ Run these checks and report results:
 ```bash
 # Check 1: CLI versions
 codex --version 2>&1 | head -1 || echo "Not installed"
-gemini --version 2>&1 | head -1 || echo "Not installed"
+agy --help 2>&1 | head -1 || echo "Not installed"
 
 # Check 2: Codex MCP server
 CODEX_CONFIG=$(claude mcp get codex 2>/dev/null)
@@ -170,7 +171,7 @@ fi
 # Check 3: Gemini MCP server
 GEMINI_CONFIG=$(claude mcp get gemini 2>/dev/null)
 if echo "$GEMINI_CONFIG" | grep -q "server/gemini/index.js"; then
-  GEMINI_MODEL="${GEMINI_DEFAULT_MODEL:-gemini-2.5-flash}"
+  GEMINI_MODEL="${GEMINI_DEFAULT_MODEL:-auto-gemini-3}"
   echo "Gemini: OK (model: $GEMINI_MODEL)"
 else
   echo "Gemini: NOT CONFIGURED"
@@ -185,6 +186,23 @@ if echo "$GEMINI_CONFIG" | grep -q "server/gemini/index.js"; then
 else
   echo "Gemini Bridge: SKIPPED (Gemini MCP not configured)"
 fi
+
+# Check 4a: Gemini model validation
+# agy reads the model from ~/.gemini/settings.json (model.name); the bridge cannot
+# override it per call. Warn if the configured model is not a known Gemini 3 value.
+GEMINI_SETTINGS_MODEL=$(node -e 'try{const s=require(require("os").homedir()+"/.gemini/settings.json");process.stdout.write((s.model&&s.model.name)||"")}catch(e){process.stdout.write("")}' 2>/dev/null)
+case "$GEMINI_SETTINGS_MODEL" in
+  auto-gemini-3|gemini-3-pro-preview|gemini-3-flash-preview)
+    echo "Gemini model: $GEMINI_SETTINGS_MODEL (OK)"
+    ;;
+  "")
+    echo "Gemini model: not set in ~/.gemini/settings.json (agy default: auto-gemini-3)"
+    ;;
+  *)
+    echo "Gemini model: $GEMINI_SETTINGS_MODEL (WARNING: unexpected value)"
+    echo "  The bridge cannot override the model per call. Set it via \`agy\` /model or by editing ~/.gemini/settings.json (model.name) to one of: auto-gemini-3, gemini-3-pro-preview, gemini-3-flash-preview."
+    ;;
+esac
 
 # Check 4b: Grok MCP server + bridge health
 GROK_CONFIG=$(claude mcp get grok 2>/dev/null)
@@ -214,15 +232,16 @@ Display actual values from the checks above:
 ```
 claude-delegator Status
 ───────────────────────────────────────────────────
-Codex CLI:     [version from check 1]
-Gemini CLI:    [version from check 1]
-Codex MCP:     [status + model from check 2]
-Gemini MCP:    [status + model from check 3]
-Gemini Bridge: [status from check 4]
-Grok MCP:      [status + model from check 4b]
-Rules:         ✓ [N] files in ~/.claude/rules/delegator/
-Codex Auth:    [status from check 6]
-Grok Auth:     [XAI_API_KEY status from check 4b]
+Codex CLI:       [version from check 1]
+Antigravity CLI: [agy install signal from check 1]
+Codex MCP:       [status + model from check 2]
+Gemini MCP:      [status + model from check 3]
+Gemini Bridge:   [status from check 4]
+Gemini model:    [value from check 4a]
+Grok MCP:        [status + model from check 4b]
+Rules:           ✓ [N] files in ~/.claude/rules/delegator/
+Codex Auth:      [status from check 6]
+Grok Auth:       [XAI_API_KEY status from check 4b]
 ───────────────────────────────────────────────────
 ```
 
@@ -237,7 +256,7 @@ Next steps:
 1. Restart Claude Code to load MCP server(s)
 2. Authenticate providers as needed:
    - Codex: Run `codex login`
-   - Gemini: Run `gemini` once and complete the sign-in flow (or set `GOOGLE_API_KEY`)
+   - Gemini: Run `agy` once and complete sign-in (or set the model in ~/.gemini/settings.json)
    - Grok: export XAI_API_KEY=xai-... (get a key at https://console.x.ai) in your shell profile, then restart Claude Code
 
 Five experts available:

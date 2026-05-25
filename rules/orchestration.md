@@ -213,53 +213,23 @@ REQUIREMENTS:
 
 ### Trust Failure Recovery (Gemini only)
 
-The Gemini CLI refuses to run from an untrusted directory unless `--skip-trust` is passed. When this happens, the bridge surfaces a structured signal:
-
-```
-{
-  isError: true,
-  errorKind: "trust",
-  retryable: true,
-  hint: "skip-trust",
-  content: [{ type: "text", text: "Error: ... not a trusted directory ..." }]
-}
-```
-
-Treat this as a recoverable failure and run the recovery once:
-
-1. **If the originating call was `mcp__gemini__gemini` AND the original args did NOT include `skip-trust: true`:**
-   - Print a user-visible notice: `Gemini blocked by trust check; retrying with skip-trust...`
-   - Re-issue `mcp__gemini__gemini` with the SAME `prompt`, `developer-instructions`, `sandbox`, `cwd`, `model`, `include-directories`, `timeout`, plus `skip-trust: true`.
-2. **If the originating call was `mcp__gemini__gemini-reply` AND the original args did NOT include `skip-trust: true`:**
-   - Print the same notice.
-   - Re-issue `mcp__gemini__gemini-reply` with the SAME `threadId`, SAME `prompt`, plus `skip-trust: true`. Preserves the session.
-3. **If the original args ALREADY had `skip-trust: true` and the call still returned `errorKind: "trust"`:**
-   - Do NOT retry. Surface the bridge's error message verbatim and escalate to the user.
-
-Recovery applies to Gemini only. Codex has its own trust model via `[projects.*]` entries in `~/.codex/config.toml`.
-
-```typescript
-// Example: initial gemini failed with trust error
-const r1 = await mcp__gemini__gemini({ prompt, "developer-instructions": di, cwd, model: "auto-gemini-3" })
-if (r1.isError && r1.errorKind === "trust") {
-  // Notice already printed
-  const r2 = await mcp__gemini__gemini({
-    prompt, "developer-instructions": di, cwd, model: "auto-gemini-3",
-    "skip-trust": true,
-  })
-}
-```
+Not applicable. The Antigravity CLI (agy) does not enforce trusted folders in print
+mode, and the bridge ignores the `skip-trust` param, so there is no trust-recovery
+dance to run. The `errorKind: "trust"` envelope stays defined for back-compat but
+should not fire in practice; if it ever does, surface it and escalate rather than
+retrying with skip-trust.
 
 ### Timeout Recovery (Gemini only)
 
-The Gemini bridge has a **soft** timeout. On expiry it keeps Gemini alive and
-recovers the disk-flushed answer (see README "Timeouts and recovery"). Two
-outcomes:
+The Gemini bridge has a **soft** timeout. On expiry it keeps agy alive past the soft
+timeout, keeps buffering the streamed stdout, and returns `recovered: true` only if
+agy completes cleanly within the grace budget (stdout-drain). A still-running process
+at grace expiry is a timeout. Two outcomes:
 
 - Success with `recovered: true` -> this is a **normal success**. Use `content`
   and `threadId` as usual. No retry, no special handling. (The `recovered` flag
   is informational only.)
-- `errorKind: "timeout"` -> recovery failed within the grace budget. Still
+- `errorKind: "timeout"` -> the drain did not complete within the grace budget. Still
   `retryable`. Retry as a fresh call; consider a larger `timeout` /
   `recovery-grace` for known-deep prompts.
 

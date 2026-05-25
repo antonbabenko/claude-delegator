@@ -40,14 +40,7 @@ Plan, design, spec, or proposal to refine: $ARGUMENTS
    3. If neither found, abort with: `Error: claude-delegator plugin cache missing for expert "[Expert]". Run /plugin install claude-delegator or /reload-plugins.`
 
    Reuse the loaded contents across all rounds.
-3. **Pre-flight cwd trust check**:
-   - Always use `process.cwd()` as the MCP `cwd` argument; NEVER switch folders.
-   - Detect B2 (skip-trust) support: glob `~/.claude/plugins/cache/*claude-delegator/claude-delegator/*/.claude-plugin/plugin.json`, parse the highest-semver match, treat `version >= "1.3.0"` (semver compare) as B2-supported. On parse error or no match: treat as B2 absent.
-   - Try reading `~/.gemini/trustedFolders.json`. On any error (ENOENT, EACCES, SyntaxError, value not an object): treat the trusted set as EMPTY and emit a one-line warning to stderr including the specific error message (for example `trustedFolders.json unreadable: ENOENT: no such file`).
-   - Build trusted-set = direct keys plus all descendants of keys whose value is `"TRUST_PARENT"`. Normalize paths first: resolve `~`, follow symlinks, strip trailing slashes (use `path.resolve` plus `fs.realpathSync` semantics).
-   - If `process.cwd()` (normalized) is in trusted-set: call as today.
-   - Else if B2 is supported: set `"skip-trust": true` on the call.
-   - Else: abort with: `Error: cwd "${process.cwd()}" not in trustedFolders.json; trust it via `gemini` once, or upgrade claude-delegator to 1.3.0+ for skip-trust support.`
+3. **Set cwd**: use `process.cwd()` as the MCP `cwd` for every call; agy print mode needs no folder-trust pre-check (Grok and Codex have no trusted-directory concept either).
 4. Initialize state:
    - `plan` = original `$ARGUMENTS`
    - `round` = 0
@@ -91,7 +84,7 @@ For each round R:
      prompt: "[identical 7-section prompt for round R]",
      "developer-instructions": "[expert prompt]",
      sandbox: "read-only",
-     cwd: "[trusted cwd]"
+     cwd: "[cwd]"
    })
 
    mcp__gemini__gemini({
@@ -99,7 +92,7 @@ For each round R:
      "developer-instructions": "[expert prompt]",
      sandbox: "read-only",
      model: "auto-gemini-3",
-     cwd: "[trusted cwd]"
+     cwd: "[cwd]"
    })
 
    mcp__grok__grok({
@@ -111,7 +104,7 @@ For each round R:
    ```
    **Files (optional):** if the plan under review references attached files, pass them to
    Grok via `files:[{path}]` each round; GPT and Gemini read the named paths from their
-   trusted `cwd`.
+   `cwd`.
 
 5. **Stream short status as each return arrives**. Do not wait until all are back to print anything. Mark a provider that returned an MCP error or `result.isError` as ERRORED. Examples:
    ```
@@ -174,8 +167,8 @@ For each round R:
 
 - **Always dispatch in parallel** - all three MCP calls in the same message. Sequential triples wall time.
 - **Single-shot per round** - fresh thread each call. Do NOT use `*-reply` with stored threadId. Cross-round state lives in the prompt body, not in provider memory. Avoids contamination if one provider went off track.
-- **Trusted `cwd` for Gemini** - run the Pre-flight cwd trust check from Setup step 3. NEVER switch folders; use skip-trust when supported, abort otherwise.
-- **Provider failure does not kill the loop** - if a provider errors (timeout, trust failure, Grok `missing-auth`, transient API error), mark it ERRORED with a note `"provider error: <truncated msg>"` and EXCLUDE it from the convergence bar for that round (it counts as neither APPROVE nor REQUEST CHANGES). The loop still converges when every responding external and Claude APPROVE and at least one external responded. If ALL externals errored in a round, there is no responding external, so that round cannot converge.
+- **`cwd` for Gemini** - use `process.cwd()` (Setup step 3). agy print mode needs no folder-trust pre-check, so there is no skip-trust dance and nothing to abort on.
+- **Provider failure does not kill the loop** - if a provider errors (timeout, Grok `missing-auth`, transient API error), mark it ERRORED with a note `"provider error: <truncated msg>"` and EXCLUDE it from the convergence bar for that round (it counts as neither APPROVE nor REQUEST CHANGES). The loop still converges when every responding external and Claude APPROVE and at least one external responded. If ALL externals errored in a round, there is no responding external, so that round cannot converge.
 - **Pin Gemini model** - always `model: "auto-gemini-3"`. Grok uses its bridge default (`GROK_DEFAULT_MODEL` or `grok-4.3`); no in-command pin.
 - **Claude cannot self-approve into consensus** - convergence requires every responding external to APPROVE and at least one external to respond; Claude's APPROVE alone never converges. Claude's blind verdict is a peer vote; its adjudication is a separate, accountable role.
 - **No silent dismissal** - every `dismiss`/`defer` of a critical issue (from a reviewer OR from Claude's own blind verdict) carries a one-line reason that appears in the final report. Repeated cross-source issues are accepted by default.
