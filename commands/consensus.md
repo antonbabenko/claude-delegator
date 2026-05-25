@@ -51,7 +51,7 @@ Plan, design, spec, or proposal to refine: $ARGUMENTS
 4. Initialize state:
    - `plan` = original `$ARGUMENTS`
    - `round` = 0
-   - `history` = empty list of `{round, plan_diff_summary, gpt_verdict, gemini_verdict, grok_verdict, claude_decision}`
+   - `history` = empty list of `{round, plan_diff_summary, claude_blind_verdict, gpt_verdict, gemini_verdict, grok_verdict, claude_decision, dismissals}`
 5. Print:
    ```
    /consensus: starting consensus loop (max 5 rounds, expert=[Expert])
@@ -61,9 +61,9 @@ Plan, design, spec, or proposal to refine: $ARGUMENTS
 
 For each round R:
 
-1. **Print round header** before dispatching, so the user knows progress:
+1. **Print round header** before anything else this round:
    ```
-   --- Round R/5 --- Codex + Gemini + Grok working in parallel (typical 30-60s)...
+   --- Round R/5 ---
    ```
 
 2. **Build identical review prompt** (7-section format per `~/.claude/rules/delegator/delegation-format.md`). Include:
@@ -78,7 +78,14 @@ For each round R:
      **Recommendations** (nice-to-have; empty list = none): [bullets]
      **One-line bottom line**: [single sentence]
      ```
-3. **Parallel dispatch** - all three calls in ONE message with three tool blocks. Identical prompt body, identical expert prompt:
+
+3. **Claude's BLIND verdict - EMIT BEFORE DISPATCHING**: in a message of its OWN, BEFORE the message that calls any MCP tool, Claude writes its own verdict in the strict OUTPUT FORMAT above using ONLY the review prompt from step 2 (it has not seen any reviewer output yet), and stores it verbatim in `history[R].claude_blind_verdict`. Print:
+   ```
+   Claude blind (R{R}): APPROVE | REQUEST CHANGES | REJECT (N critical)
+   ```
+   This is the orchestrator's PEER vote. Emitting it in an earlier message than the dispatch makes the pre-commitment visible in the transcript. Claude must NOT edit the blind verdict after seeing reviewers; it appears verbatim in the final report. (Claude's *adjudication* in step 6 is a separate, arbiter-role decision, recorded distinctly.)
+
+4. **Parallel dispatch** - in the NEXT message, all three calls in ONE message with three tool blocks. Identical prompt body, identical expert prompt:
    ```
    mcp__codex__codex({
      prompt: "[identical 7-section prompt for round R]",
@@ -106,35 +113,38 @@ For each round R:
    Grok via `files:[{path}]` each round; GPT and Gemini read the named paths from their
    trusted `cwd`.
 
-4. **Stream short status as each return arrives**. Do not wait until all are back to print anything. Examples:
+5. **Stream short status as each return arrives**. Do not wait until all are back to print anything. Mark a provider that returned an MCP error or `result.isError` as ERRORED. Examples:
    ```
    GPT (R{R}): APPROVE
    Gemini (R{R}): REQUEST CHANGES (3 critical)
-   Grok (R{R}): APPROVE
+   Grok (R{R}): ERRORED (provider error: missing-auth)
    ```
 
-5. **Parse verdicts and form Claude's own opinion**:
-   - Extract `Verdict`, `Critical issues`, `Recommendations` from each of the three reviewers.
-   - For each critical issue: Claude marks it as `accept` (real problem, fix), `dismiss` (false positive - record why), or `defer` (legitimate but out of scope for this plan).
-   - Claude's own `verdict` is APPROVE if and only if there are zero accepted critical issues across all three reviewers, AND Claude has no critical issues of its own.
+6. **Adjudicate (arbiter role) - reconcile issues against the blind verdict**:
+   - From each RESPONDING reviewer, extract `Verdict`, `Critical issues`, `Recommendations`. An ERRORED provider is excluded (see Convergence check); it contributes no verdict and no issues.
+   - For each critical issue - whether raised by a reviewer OR by Claude's own blind verdict - record a decision WITH a one-line reason: `accept` (real problem, fix), `dismiss` (false positive - reason REQUIRED), or `defer` (out of scope - reason REQUIRED). Append every `dismiss`/`defer` to `history[R].dismissals`. **This includes Claude walking back one of its own blind critical issues** - that is a `dismiss` and needs a recorded reason too.
+   - **Repeated-issue default**: if two or more sources (reviewers, or a reviewer plus Claude's blind verdict) raise substantially the same critical issue, `accept` it by default; only `dismiss` with a concrete factual reason ("out of scope" alone is not enough).
+   - Claude's adjudicated verdict is APPROVE if and only if zero accepted critical issues remain anywhere (reviewers or Claude's blind verdict).
 
-6. **Convergence check** - STOP the loop when ALL FOUR are APPROVE:
-   - GPT verdict == APPROVE AND
-   - Gemini verdict == APPROVE AND
-   - Grok verdict == APPROVE AND
-   - Claude verdict == APPROVE (no accepted critical issues anywhere)
+7. **Convergence check** - the loop CONVERGES only when ALL of these hold:
+   - At least one external reviewer RESPONDED this round (not all errored), AND
+   - Every RESPONDING external returned APPROVE (ERRORED providers are excluded from the bar - not counted as APPROVE or as REQUEST CHANGES), AND
+   - No responding reviewer returned REJECT, AND
+   - Zero accepted critical issues remain (from any reviewer or from Claude's blind verdict), AND
+   - Claude's adjudicated verdict == APPROVE.
+   A round in which ALL externals errored has no responding external and therefore CANNOT converge. If any responding reviewer returned REJECT, the result may NOT be labelled "consensus" even at round 5.
 
-7. **If not converged**:
-   - Compile the union of `accept`-ed critical issues from all three reviewers plus any Claude found.
+8. **If not converged**:
+   - Compile the union of `accept`-ed critical issues from all responding reviewers plus any Claude found.
    - Revise the plan to address them. Be explicit about what changed and what was deliberately not changed.
-   - Record this round in `history` with: GPT verdict, Gemini verdict, Grok verdict, Claude's per-issue decisions, the diff summary applied to the plan.
+   - Record this round in `history` with: Claude blind verdict, GPT/Gemini/Grok verdicts (or ERRORED), Claude's per-issue decisions + reasons, the diff summary applied to the plan.
    - Print the revised plan ONLY if it has changed materially (don't spam on small wording tweaks).
    - Continue to round R+1.
-   - **Backoff after multi error**: if MORE THAN ONE provider returned a provider-error in round R (not a regular REQUEST CHANGES verdict, but an MCP error or `result.isError`), wait 1-2 seconds before dispatching round R+1 to let transient API hiccups clear.
+   - **Backoff after multi error**: if MORE THAN ONE provider errored in round R, wait 1-2 seconds before dispatching round R+1 to let transient API hiccups clear.
 
-8. **If round R == 5 and still not converged**:
+9. **If round R == 5 and still not converged**:
    - Emit the final state with residual disagreements clearly labeled. Do not pretend convergence.
-   - Note which side (GPT, Gemini, Grok, or Claude) holds out on which issues.
+   - Note which side (Claude blind, GPT, Gemini, or Grok) holds out on which issues.
 
 ### Final output
 
