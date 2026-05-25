@@ -64,37 +64,6 @@ test("A3: include-directories -> repeated --add-dir", async () => {
   assert.ok(!argv.includes("--include-directories"), "no legacy --include-directories flag");
 });
 
-test("A4: skip-trust true -> accepted, NO extra flag emitted", async () => {
-  const child = startBridge({ fakeBin: "fake-agy.sh" });
-  const responsesP = collectResponses(child);
-  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
-  send(child, {
-    jsonrpc: "2.0", id: 2, method: "tools/call",
-    params: { name: "gemini", arguments: { prompt: "hi", "skip-trust": true } },
-  });
-  setTimeout(() => child.stdin.end(), 1000);
-  const responses = await responsesP;
-
-  const r = responses.find((x) => x.id === 2);
-  assert.ok(!r.error, "skip-trust:true is accepted (no -32602)");
-  const argv = readArgv(child.argvLog)[0];
-  assert.ok(!argv.includes("--skip-trust"), "no --skip-trust flag (agy has none)");
-});
-
-test("A4: skip-trust non-boolean -> -32602", async () => {
-  const child = startBridge({ fakeBin: "fake-agy.sh" });
-  const responsesP = collectResponses(child);
-  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
-  send(child, {
-    jsonrpc: "2.0", id: 2, method: "tools/call",
-    params: { name: "gemini", arguments: { prompt: "hi", "skip-trust": "yes" } },
-  });
-  setTimeout(() => child.stdin.end(), 1000);
-  const responses = await responsesP;
-  const r = responses.find((x) => x.id === 2);
-  assert.equal(r.error && r.error.code, -32602);
-});
-
 test("A5: gemini-reply -> --conversation <threadId>", async () => {
   const child = startBridge({ fakeBin: "fake-agy.sh" });
   const responsesP = collectResponses(child);
@@ -110,6 +79,24 @@ test("A5: gemini-reply -> --conversation <threadId>", async () => {
   const idx = argv.indexOf("--conversation");
   assert.notEqual(idx, -1, "argv contains --conversation");
   assert.equal(argv[idx + 1], "abc", "conversation id follows the flag");
+});
+
+test("A6: agy stdin is closed so print mode is not stalled waiting for EOF", async () => {
+  // fake-agy-needs-stdin-eof.sh blocks on `cat` until stdin EOF, then prints.
+  // The bridge must spawn agy with stdin /dev/null (not an open pipe) or this stalls.
+  const child = startBridge({ fakeBin: "fake-agy-needs-stdin-eof.sh" });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "hi", timeout: 8000 } },
+  });
+  setTimeout(() => child.stdin.end(), 3000);
+  const responses = await responsesP;
+  const r = responses.find((x) => x.id === 2);
+  assert.ok(r, "got tools/call response (no stdin-EOF stall)");
+  assert.ok(!r.result.isError, "not an error: " + JSON.stringify(r.result));
+  assert.equal(r.result.content[0].text, "STDIN EOF OK");
 });
 
 // --- output handling ---
@@ -162,8 +149,8 @@ test("O3: stderr failure -> isError, stderr wins over stdout banner", async () =
   const responses = await responsesP;
   const r = responses.find((x) => x.id === 2);
   assert.equal(r.result.isError, true, "isError");
-  // classifier sees the stderr text ("trust check failed") -> trust kind.
-  assert.equal(r.result.errorKind, "trust", "classified from stderr text");
+  // classifier no longer special-cases trust text -> unknown kind.
+  assert.equal(r.result.errorKind, "unknown", "classified from stderr text");
   const text = r.result.content[0].text;
   assert.ok(text.includes("trust check failed"), "stderr text surfaced");
   assert.ok(!text.includes("agy config banner"), "stdout banner not surfaced");
@@ -370,17 +357,6 @@ test("M1: model empty string -> -32602", async () => {
 });
 
 // --- pure classifier units (no spawn) ---
-
-test("C1: classifyGeminiError matches 'trusted'/'trust check' case-insensitively", () => {
-  const { classifyGeminiError } = require("../server/gemini/index.js");
-  assert.deepEqual(
-    classifyGeminiError("Error: not a trusted folder", null),
-    { errorKind: "trust", retryable: true, hint: "skip-trust" }
-  );
-  const r = classifyGeminiError("trust check failed for /tmp/x", null);
-  assert.equal(r.errorKind, "trust");
-  assert.equal(r.hint, "skip-trust");
-});
 
 test("C2: classifyGeminiError preserves timeout / parse / missing-cli / abort", () => {
   const { classifyGeminiError } = require("../server/gemini/index.js");
