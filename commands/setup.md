@@ -72,29 +72,29 @@ claude mcp add --transport stdio --scope user gemini -- node ${CLAUDE_PLUGIN_ROO
 
 ### Grok (xAI)
 ```bash
-# Idempotent: safe to rerun setup. The key is passed via --env so the bridge
-# inherits it. WARNING: --env persists XAI_API_KEY in plaintext in ~/.claude.json.
-# To avoid that, drop --env and instead export XAI_API_KEY in the environment that
-# launches Claude Code.
+# Idempotent: safe to rerun setup. Registered WITHOUT --env so the key is NOT
+# written to ~/.claude.json. The bridge inherits XAI_API_KEY from the environment
+# that launches Claude Code, so export it in your shell profile to persist it.
 claude mcp remove grok >/dev/null 2>&1 || true
-if [ -n "$XAI_API_KEY" ]; then
-  claude mcp add --transport stdio --scope user grok --env XAI_API_KEY="$XAI_API_KEY" -- node ${CLAUDE_PLUGIN_ROOT}/server/grok/index.js
-else
-  echo "XAI_API_KEY not set; registering grok without it (calls return missing-auth until you export it and re-run setup)."
-  claude mcp add --transport stdio --scope user grok -- node ${CLAUDE_PLUGIN_ROOT}/server/grok/index.js
+claude mcp add --transport stdio --scope user grok -- node ${CLAUDE_PLUGIN_ROOT}/server/grok/index.js
+if [ -z "$XAI_API_KEY" ]; then
+  echo "Note: XAI_API_KEY not set in this environment; Grok calls return missing-auth until you export it (add it to your shell profile) and restart Claude Code."
 fi
 ```
+
+Want the key persisted in config instead of an exported env var? Add `--env XAI_API_KEY="$XAI_API_KEY"` before `-- node ...` on the command above. That writes the key in plaintext into `~/.claude.json`, so only do it if you accept storing a secret on disk.
 
 This registers the MCP servers at user scope (available across all projects).
 
 **Grok file TTL (optional):** files Grok uploads default to a 7-day `expires_after` so they
-self-delete. To change it, also pass `--env GROK_FILE_TTL_SECONDS=<seconds>` (1h..30d, i.e.
-3600..2592000) on the `grok` registration, or export it in Claude Code's launch environment.
-Prune bridge-owned files early any time with `/grok-files prune --older-than <age>`.
+self-delete. To change it, export `GROK_FILE_TTL_SECONDS=<seconds>` (1h..30d, i.e. 3600..2592000)
+in Claude Code's launch environment, or add `--env GROK_FILE_TTL_SECONDS=<seconds>` on the `grok`
+registration. Prune bridge-owned files early any time with `/grok-files prune --older-than <age>`.
 
-**Grok reasoning effort (optional):** defaults to `high`. Override globally with
-`--env GROK_REASONING_EFFORT=<low|medium|high|none>` on the `grok` registration (or export it),
-or per call with the `reasoning_effort` parameter; `none` omits the field so the model uses its default.
+**Grok reasoning effort (optional):** defaults to `high`. Override by exporting
+`GROK_REASONING_EFFORT=<low|medium|high|none>` in Claude Code's launch environment, or add
+`--env GROK_REASONING_EFFORT=<low|medium|high|none>` on the `grok` registration, or set it per
+call with the `reasoning_effort` parameter; `none` omits the field so the model uses its default.
 
 **Note:** To customise Codex behaviour, add CLI flags before `mcp-server`.
 - For Codex: `-p nosandbox`
@@ -117,19 +117,35 @@ Offer the short, unnamespaced aliases (`/ask-gpt` etc.) by copying them into
 Use AskUserQuestion: "Also install short command names (/ask-gpt etc.) into
 ~/.claude/commands?" Options: "Yes (recommended)" / "No, keep namespaced only".
 
-**If yes**, run (idempotent; never overwrites a pre-existing file - skips it
-with a notice so an unrelated command of the same name is left untouched):
+**If yes**, run (installs only the missing aliases; pre-existing files are skipped
+and collected so you can decide about them next):
 ```bash
 mkdir -p ~/.claude/commands
+collisions=""
 for c in ask-gpt ask-gemini ask-grok ask-all consensus grok-files; do
   dest=~/.claude/commands/$c.md
   if [ -e "$dest" ]; then
     echo "skip $c: ~/.claude/commands/$c.md already exists (left untouched)"
+    collisions="$collisions $c"
   else
     cp "${CLAUDE_PLUGIN_ROOT}/commands/$c.md" "$dest" && echo "installed /$c"
   fi
 done
+echo "COLLISIONS:$collisions"
 ```
+
+If `COLLISIONS` is empty, you are done. If it lists names, ask before touching
+those files. Use AskUserQuestion: "These alias file(s) already exist:[list].
+Overwrite them with the bundled versions?" Options (default first = keep):
+"No, keep existing (recommended)" / "Yes, overwrite".
+
+**Only if the user picks "Yes, overwrite"**, force-copy just the collided names:
+```bash
+for c in <collided names>; do
+  cp -f "${CLAUDE_PLUGIN_ROOT}/commands/$c.md" ~/.claude/commands/$c.md && echo "overwrote /$c"
+done
+```
+Keeping the existing files is the default; overwrite only on explicit opt-in.
 
 **If no**, skip - the namespaced commands still work.
 
@@ -154,7 +170,8 @@ fi
 # Check 3: Gemini MCP server
 GEMINI_CONFIG=$(claude mcp get gemini 2>/dev/null)
 if echo "$GEMINI_CONFIG" | grep -q "server/gemini/index.js"; then
-  echo "Gemini: OK"
+  GEMINI_MODEL="${GEMINI_DEFAULT_MODEL:-gemini-2.5-flash}"
+  echo "Gemini: OK (model: $GEMINI_MODEL)"
 else
   echo "Gemini: NOT CONFIGURED"
 fi
@@ -172,6 +189,8 @@ fi
 # Check 4b: Grok MCP server + bridge health
 GROK_CONFIG=$(claude mcp get grok 2>/dev/null)
 if echo "$GROK_CONFIG" | grep -q "server/grok/index.js"; then
+  GROK_MODEL="${GROK_DEFAULT_MODEL:-grok-4.3}"
+  echo "Grok: OK (model: $GROK_MODEL)"
   GROK_HEALTH=$(printf '{"jsonrpc":"2.0","id":"health","method":"initialize","params":{}}\n' \
     | node "${CLAUDE_PLUGIN_ROOT}/server/grok/index.js" 2>/dev/null \
     | grep -q '"id":"health"' && echo "Grok Bridge: HEALTHY" || echo "Grok Bridge: UNHEALTHY")
@@ -197,10 +216,10 @@ claude-delegator Status
 ───────────────────────────────────────────────────
 Codex CLI:     [version from check 1]
 Gemini CLI:    [version from check 1]
-Codex MCP:     [status from check 2]
-Gemini MCP:    [status from check 3]
+Codex MCP:     [status + model from check 2]
+Gemini MCP:    [status + model from check 3]
 Gemini Bridge: [status from check 4]
-Grok MCP:      [status from check 4b]
+Grok MCP:      [status + model from check 4b]
 Rules:         ✓ [N] files in ~/.claude/rules/delegator/
 Codex Auth:    [status from check 6]
 Grok Auth:     [XAI_API_KEY status from check 4b]
@@ -219,7 +238,7 @@ Next steps:
 2. Authenticate providers as needed:
    - Codex: Run `codex login`
    - Gemini: Run `gemini` once and complete the sign-in flow (or set `GOOGLE_API_KEY`)
-   - Grok: export XAI_API_KEY=xai-... (get a key at https://console.x.ai), then re-run setup
+   - Grok: export XAI_API_KEY=xai-... (get a key at https://console.x.ai) in your shell profile, then restart Claude Code
 
 Five experts available:
 
