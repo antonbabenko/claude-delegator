@@ -58,10 +58,10 @@ Bundled with the plugin (available once installed):
 | `/claude-delegator:ask-gemini` | One-shot Gemini second opinion |
 | `/claude-delegator:ask-grok` | One-shot Grok (xAI) second opinion (advisory-only; can read attached files) |
 | `/claude-delegator:ask-all` | GPT + Gemini + Grok in parallel, synthesized |
-| `/claude-delegator:consensus` | Iterate GPT + Gemini + Grok + Claude to consensus |
+| `/claude-delegator:consensus` | Arbiter-mediated GPT + Gemini + Grok + Claude convergence loop |
 | `/claude-delegator:grok-files` | List or prune Grok-uploaded files (storage cleanup) |
 
-`/setup` can also install short aliases (`/ask-gpt`, `/ask-gemini`, `/ask-grok`, `/ask-all`, `/consensus`, `/grok-files`) into `~/.claude/commands/`. This is opt-in and never overwrites an existing same-named command; `/uninstall` removes an alias only if it is byte-identical to the bundled copy.
+`/setup` can also install short aliases (`/ask-gpt`, `/ask-gemini`, `/ask-grok`, `/ask-all`, `/consensus`, `/grok-files`) into `~/.claude/commands/`. This is opt-in. Existing same-named commands are kept by default; setup asks before overwriting any of them. `/uninstall` removes an alias only if it is byte-identical to the bundled copy.
 
 ## The Experts
 
@@ -98,7 +98,7 @@ Claude: routes to the Security Analyst, then synthesizes the findings.
 
 You can also ask explicitly: "Ask GPT to review this architecture", "Ask Gemini to...", or "Ask Grok to...". Each expert runs read-only for analysis or with write access to apply fixes, and Claude picks the mode from your request (Grok is advisory-only).
 
-The bundled commands give you direct control: `/ask-gpt`, `/ask-gemini`, `/ask-grok`, `/ask-all` (all three in parallel, synthesized), and `/consensus` (the providers and Claude iterate to agreement).
+The bundled commands give you direct control: `/ask-gpt`, `/ask-gemini`, `/ask-grok`, `/ask-all` (all three in parallel, synthesized), and `/consensus` (arbiter-mediated: the providers vote, Claude commits a blind verdict and adjudicates to agreement).
 
 ## How It Works
 
@@ -127,6 +127,17 @@ Claude: "I found 3 issues..." (synthesizes, applies judgment)
 - Multi-turn conversations preserve context via `threadId` for chained work, and implementation retries before escalating to you.
 
 For the bridge internals, retry behavior, and recovery paths, see [TECHNICAL.md](TECHNICAL.md).
+
+## Bias hardening (consensus + ask-*)
+
+`/consensus` has a built-in conflict of interest: Claude writes the review prompt, casts a vote, decides which objections are real, and runs the loop. Left alone, an orchestrator like that can quietly rubber-stamp its own plan. Four guards stop that:
+
+- **Blind verdict.** Claude posts its own verdict (APPROVE / REQUEST CHANGES / REJECT) in a message sent *before* the one that calls the models. The pre-commitment is right there in the transcript, so Claude cannot reshape its opinion after seeing the panel.
+- **Arbiter-mediated, not majority vote.** The external models vote; Claude adjudicates and rewrites the plan between rounds. The command says so plainly instead of dressing it up as a democratic tally.
+- **No self-approval.** A round converges only when every responding external approves and at least one external actually answered. Claude's own approval never carries a round by itself. A provider that errors (an unconfigured Grok returning `missing-auth`, for example) drops out of the count instead of jamming the loop.
+- **No silent dismissal.** Every critical issue that gets dismissed or deferred ships with a one-line reason in the final report, including the times Claude walks back one of its own blind objections.
+
+The single and parallel commands carry a lighter version of the same rule. `/ask-gpt`, `/ask-gemini`, `/ask-grok`, and `/ask-all` each state that the external model only advises: Claude reads the output, applies its own judgment, and owns the synthesized answer. When the models agree, that is input, not a verdict.
 
 ## Configuration
 
