@@ -59,10 +59,12 @@ function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-// agy reports failures as "Error: <msg>" on stdout at exit 0. An stdout line
-// starting with "Error:" is a failure even when the process exits 0.
+// agy reports failures as "Error: <msg>" on stdout at exit 0. Any stdout LINE
+// starting with "Error:" is a failure even when the process exits 0 - the
+// sentinel can arrive after streamed partial output, so match line-anchored
+// (multiline), not just at the very start of the buffer.
 function stdoutIsError(s) {
-  return /^\s*Error:\s/.test(s);
+  return /^\s*Error:\s/m.test(s);
 }
 
 // --- Error Classification ---
@@ -368,7 +370,7 @@ const handlers = {
       return;
     }
     if (args.timeout !== undefined) {
-      if (typeof args.timeout !== "number" || !Number.isFinite(args.timeout) || args.timeout <= 0 || args.timeout > 600_000) {
+      if (typeof args.timeout !== "number" || !Number.isFinite(args.timeout) || args.timeout <= 0 || args.timeout > MAX_MS) {
         if (shouldRespond) sendError(id, -32602, "Invalid params: 'timeout' must be a number > 0 and <= 600000 milliseconds");
         return;
       }

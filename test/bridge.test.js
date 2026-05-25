@@ -229,6 +229,69 @@ test("B8b: GEMINI_DISABLE_TIMEOUT_RECOVERY=1 keeps legacy timeout", async () => 
   assert.equal(r.result.retryable, true);
 });
 
+// Resolve as soon as the response for `id` arrives, so timing assertions measure
+// response latency rather than the long-running stdin server's close time.
+function awaitResponse(child, id) {
+  return new Promise((resolve) => {
+    let buf = "";
+    child.stdout.on("data", (d) => {
+      buf += d.toString();
+      const lines = buf.split("\n");
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try { const o = JSON.parse(line); if (o.id === id) resolve(o); } catch (_) {}
+      }
+    });
+    child.on("close", () => resolve(null));
+  });
+}
+
+test("R-C: grace=0 hard timeout kills agy via SIGTERM/SIGKILL (no wait-for-exit)", async () => {
+  const child = startBridge({ fakeBin: "fake-agy-slow.sh" });
+  const got2 = awaitResponse(child, 2);
+  const t0 = Date.now();
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "slow", timeout: 500, "recovery-grace": 0 } },
+  });
+  const r = await got2;
+  const elapsed = Date.now() - t0;
+  child.stdin.end();
+  child.kill();
+
+  assert.ok(r, "got tools/call response");
+  assert.equal(r.result.isError, true, "isError");
+  assert.equal(r.result.errorKind, "timeout", "errorKind timeout");
+  assert.equal(r.result.retryable, true, "retryable");
+  // fake-agy-slow.sh sleeps 30s; the legacy kill path must return far sooner,
+  // proving SIGTERM/SIGKILL fired rather than waiting for the child to exit.
+  assert.ok(elapsed < 5000, "returned before the fixture's 30s sleep, got " + elapsed + "ms");
+});
+
+test("R-D: drain-window failure (stdout Error: during drain) -> timeout, not recovered", async () => {
+  const child = startBridge({
+    fakeBin: "fake-agy-slow-error.sh",
+    env: { FAKE_AGY_SLEEP: "3" },
+  });
+  const got2 = awaitResponse(child, 2);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "deep", timeout: 500, "recovery-grace": 6000 } },
+  });
+  const r = await got2;
+  child.stdin.end();
+  child.kill();
+  assert.ok(r, "got tools/call response");
+  assert.equal(r.result.isError, true, "isError");
+  assert.equal(r.result.errorKind, "timeout", "drain-window failure classified as timeout");
+  const blob = JSON.stringify(r.result);
+  assert.ok(!blob.includes("recovered"), "no recovered field in JSON");
+  assert.ok(!blob.includes("partial answer so far"), "partial text not returned as a successful answer");
+});
+
 // --- reply guards ---
 
 test("G1: gemini-reply threadId 'unknown' -> -32602", async () => {
