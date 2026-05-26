@@ -38,6 +38,8 @@ Classify intent FIRST, before any analysis. Every request maps to one type:
 
 **Risks**: What could go wrong? What is the blast radius? What is the rollback plan?
 
+**Non-issue check**: if the request describes a non-issue or a misunderstanding, say so and ask, rather than inventing scope.
+
 ## Anti-Patterns to Flag
 
 For each, ask the exact clarifying question rather than guessing:
@@ -64,6 +66,8 @@ For each, ask the exact clarifying question rather than guessing:
 - [Risk]: [Mitigation]
 
 **Recommendation**: Proceed / Clarify First / Reconsider Scope
+
+`<SUMMARY>` intent + recommendation + the single most critical question, under ~120 words `</SUMMARY>`.
 
 ## Modes of Operation
 

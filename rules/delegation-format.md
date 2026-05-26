@@ -7,7 +7,7 @@ When delegating to GPT experts, use these structured templates.
 Every delegation prompt MUST include these sections:
 
 ```
-1. TASK: [One sentence—atomic, specific goal]
+1. TASK: [One sentence - atomic, specific goal]
 
 2. EXPECTED OUTCOME: [What success looks like]
 
@@ -196,6 +196,30 @@ OUTPUT FORMAT:
 
 ---
 
+### Debugger
+
+```markdown
+TASK: Debug [symptom] in [component].
+
+EXPECTED OUTCOME: Ranked root-cause hypotheses with a minimal fix, or an honest no-bug-found result.
+
+CONTEXT:
+- Symptom: [what happens vs expected]
+- Code/logs: [paths or snippets, exact error output]
+- Already tried: [previous fix attempts]
+
+MUST DO:
+- Rank hypotheses (confidence, root cause, evidence, confirm-step, minimal fix, regression note)
+- If the evidence shows no concrete bug, say so and ask targeted questions
+
+MUST NOT DO:
+- Invent a bug, file, or line not present in the evidence
+- Propose a broad refactor instead of the minimal fix
+
+OUTPUT FORMAT:
+Bottom line -> ranked hypotheses (or no-bug-found + questions) -> SUMMARY
+```
+
 ## Quick Reference
 
 | Expert | Advisory Output | Implementation Output |
@@ -206,3 +230,4 @@ OUTPUT FORMAT:
 | Code Reviewer | Issues + verdict | Fixes + verification |
 | Security Analyst | Vulnerabilities + risk rating | Hardening + verification |
 | Researcher | Findings + sources (cited or [unverified]) | Written findings doc |
+| Debugger | Ranked hypotheses + minimal fix | Minimal fix + verification |

@@ -45,7 +45,9 @@ In Strict mode, list the top 3-5 improvements on REJECT.
 
 **Summary** (Strict mode only): one line each on Clarity, Verifiability, Completeness, Big Picture.
 
-**Blocking issues** (on REJECT): default mode at most 3; Strict mode top 3-5. Each: specific location + what needs to change.
+**Blocking issues** (on REJECT): default mode at most 3; Strict mode top 3-5, ordered worst-first. Each: specific location + what needs to change.
+
+`<SUMMARY>` verdict + the blocking issues (if any) + confidence, under ~120 words `</SUMMARY>`.
 
 ## Modes of Operation
 

@@ -1,11 +1,24 @@
 # Claude Delegator
 
-GPT (Codex), Gemini, and Grok (xAI) expert subagents for Claude Code. Six specialists that can analyze and implement: architecture, plan review, scope, code review, security, and external research. Use any of the three providers, single-shot or multi-turn, advisory or implementation.
+Claude Code plugin for external model second opinions, multi-provider advisory review, and arbiter-mediated consensus across Codex, Gemini/Antigravity, Grok (xAI), and Claude. Seven experts (Architect, Plan Reviewer, Scope Analyst, Code Reviewer, Security Analyst, Researcher, and Debugger) run in advisory or implementation mode, single-shot or multi-turn.
 
-[![License](https://img.shields.io/github/license/antonbabenko/claude-delegator?v=2)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/antonbabenko/claude-delegator?v=2)](https://github.com/antonbabenko/claude-delegator/stargazers)
+[![Claude Delegator in action](assets/agents.png)<br>Read blog post "One model is a guess. Three that agree is a plan."](https://builder.aws.com/content/3DtBiR4ua0qy7ybZMPzPmQ2SDMj/one-model-is-a-guess-three-that-agree-is-a-plan)
 
-![Claude Delegator in action](claude-delegator.png)
+<details>
+<summary>📸 See a full <code>/consensus</code> run: round 1 disagreement to round 5 convergence</summary>
+
+![Round 1: reviewers disagree](assets/round1.png)
+
+<details>
+<summary>... a few moments later ...</summary>
+
+![A Few Moments Later](assets/afewmomentslater.png)
+
+</details>
+
+![Round 5: convergence reached](assets/round5.png)
+
+</details>
 
 ## What is Claude Delegator?
 
@@ -15,7 +28,7 @@ You can use any subset of the three providers. The plugin detects which are conf
 
 | What you get | Why it matters |
 |--------------|----------------|
-| 6 domain experts | The right specialist for each problem type |
+| 7 domain experts | The right specialist for each problem type |
 | GPT, Gemini, or Grok | Use your preferred provider(s) |
 | Dual mode | Experts analyze (read-only) or implement (write) |
 | Auto-routing | Claude detects when to delegate from your request |
@@ -71,6 +84,7 @@ Bundled with the plugin (available once installed):
 | **Code Reviewer** | Find bugs, improve quality | "Review this PR" / "What's wrong with this?" |
 | **Security Analyst** | Vulnerabilities, threat modeling | "Is this secure?" / "Harden this endpoint" |
 | **Researcher** | External libraries, docs, best practices | "How do I use X?" / "Find examples of Y" |
+| **Debugger** | Root-cause analysis, minimal fixes | "Why does this crash?" / "Debug this failing test" |
 
 ### When experts help most
 
@@ -127,7 +141,7 @@ Claude: "I found 3 issues..." (synthesizes, applies judgment)
 
 For the bridge internals, retry behavior, and recovery paths, see [TECHNICAL.md](TECHNICAL.md).
 
-## Bias hardening (consensus + ask-*)
+## Bias hardening (`/consensus` + `/ask-*`)
 
 `/consensus` has a built-in conflict of interest: Claude writes the review prompt, casts a vote, decides which objections are real, and runs the loop. Left alone, an orchestrator like that can quietly rubber-stamp its own plan. Four guards stop that:
 
@@ -175,23 +189,21 @@ You need at least one provider:
 
 `agy` print mode does not enforce folder trust, so there is no trust prompt to clear. Soft-timeout recovery (stdout-drain) is documented in [TECHNICAL.md](TECHNICAL.md#gemini-timeout-recovery).
 
+## Author
+
+Maintained by Anton Babenko - [LinkedIn](https://linkedin.com/in/antonbabenko), [X/Twitter](https://x.com/antonbabenko).
+
 ## Contributing
 
-Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow, commit conventions, and the automated release process. To work on the plugin locally:
-
-```bash
-git clone https://github.com/antonbabenko/claude-delegator
-cd claude-delegator
-
-# Test locally without reinstalling
-claude --plugin-dir /path/to/claude-delegator
-```
+Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow, commit conventions, and the automated release process. 
 
 ## Credits
 
 Claude Delegator started as a fork of [jarrodwatts/claude-delegator](https://github.com/jarrodwatts/claude-delegator) - credit to Jarrod Watts for the original solution and inspiration. Original work and MIT copyright are retained. This fork adds Grok support, Gemini bridge reliability (timeout and trust recovery), provider configuration overrides, and the bundled delegation commands. It is not an official continuation of the upstream project.
 
 Expert prompts are adapted from [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) (snapshot `03eb9fff`, 2026-05-25).
+
+Additional expert patterns (the Debugger expert, code-review severity and diff-intent, and security status/remediation refinements) are adapted from the [PAL MCP server](https://github.com/BeehiveInnovations/pal-mcp-server) (Apache-2.0, snapshot `7afc7c1`, 2026-05-25).
 
 ## License
 

@@ -25,6 +25,7 @@ You have access to GPT experts via MCP tools. Use them strategically based on th
 | **Code Reviewer** | Code quality, bugs, security issues | `${CLAUDE_PLUGIN_ROOT}/prompts/code-reviewer.md` |
 | **Security Analyst** | Vulnerabilities, threat modeling | `${CLAUDE_PLUGIN_ROOT}/prompts/security-analyst.md` |
 | **Researcher** | External library and source research | `${CLAUDE_PLUGIN_ROOT}/prompts/researcher.md` |
+| **Debugger** | Root-cause analysis, ranked hypotheses | `${CLAUDE_PLUGIN_ROOT}/prompts/debugger.md` |
 
 ---
 
@@ -80,6 +81,7 @@ Before handling any request, check if an expert would help:
 | "Review this code", "find issues" | Code Reviewer |
 | Security concerns, "is this secure" | Security Analyst |
 | "How do I use [library]", "best practice for", "find examples of" | Researcher (prefer GPT/Gemini) |
+| "debug this", "why does this crash/fail", "track down the bug" | Debugger (prefer GPT/Gemini) |
 
 **If a signal matches → delegate to the appropriate expert.**
 
@@ -188,7 +190,7 @@ Escalate to user
 // Attempt 1 (Codex or Gemini)
 const result = mcp__codex__codex({ ... }) // or mcp__gemini__gemini
 
-// Attempt 2 (context preserved — expert remembers attempt 1)
+// Attempt 2 (context preserved - expert remembers attempt 1)
 mcp__codex__codex-reply({ // or mcp__gemini__gemini-reply
   threadId: result.threadId,
   prompt: `The previous implementation failed verification.
@@ -291,7 +293,7 @@ mcp__codex__codex-reply({
   prompt: `The previous implementation failed verification.
 Error: TypeError: Cannot read property 'x' of undefined at line 45
 The middleware was added but req.body was undefined.
-Fix the issue — ensure validation runs after body parser.`
+Fix the issue - ensure validation runs after body parser.`
 })
 ```
 

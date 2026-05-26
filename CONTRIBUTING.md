@@ -11,10 +11,12 @@ Contributions welcome. This document covers how to contribute effectively.
 git clone https://github.com/antonbabenko/claude-delegator
 cd claude-delegator
 
-# Install plugin in Claude Code
+# Run `claude` and install plugin in Claude Code
+claude
 /claude-delegator:setup
 
-# Test your changes by invoking the oracle
+# Or test your changes locally without reinstalling
+claude --plugin-dir /path/to/claude-delegator
 ```
 
 ---
