@@ -9,7 +9,7 @@ Before delegating, check which MCP tools are available in the current environmen
 1. **If multiple are available**:
    - Use **Gemini** (Gemini 3 via the Antigravity CLI, `agy`) for tasks requiring large context or multimodal analysis. Gemini-via-agy is **advisory-effective**: agy print-mode writes are sandboxed to a scratch dir, so it can read context to advise but cannot mutate the real workspace. Prefer it for analysis/review over file-editing (`workspace-write` is best-effort).
    - Use **GPT (Codex)** when the user explicitly asks for "GPT" or "Codex".
-   - Use **Grok (xAI)** when the user explicitly asks for "Grok". Grok is advisory-only (it cannot edit files), so never route file-editing / implementation tasks to it. It reads attached files (PDF/code/docs) via `files:[{path|file_id|file_url}]` on the `mcp__grok__grok` call - attach referenced local files by default, and set `cwd` to the directory that contains them (paths resolve against `cwd`; a path outside `cwd` is refused).
+   - Use **Grok (xAI)** when the user explicitly asks for "Grok". Grok is advisory-only (it cannot edit files), so never route file-editing / implementation tasks to it. It reads attached files (PDF/code/docs) via `files:[{path|file_id|file_url}]` on the `mcp__grok__grok` call - attach referenced local files by default, and set `cwd` to the directory that contains them (paths resolve against `cwd`; a path outside `cwd` is refused). **Context parity vs GPT/Gemini:** GPT (Codex) and Gemini (agy) walk the filesystem at `cwd` under `sandbox: "read-only"` - they can glob and read any file in the repo. Grok sees ONLY what is in the `files` array. For any open-ended, repo-wide question routed to Grok (or to a parallel pattern like `/ask-all` / `/consensus`), attach an orientation bundle (2-6 files: project `CLAUDE.md` / `AGENTS.md`, top-level entrypoints, modules the question targets, total <= 48 MB) so Grok answers from real source instead of the textual description alone. Skipping this is the dominant reason Grok loses argument rounds against GPT/Gemini in repo-audit prompts.
    - Default to **Gemini** for general reasoning.
    - For **Researcher** (external library/docs research): prefer GPT or Gemini (tool-capable); route to Grok only when the user names it or attaches files, since Grok answers from knowledge and marks claims `[unverified]`.
 2. **If only one is available**: Use the available provider regardless of the task type (but Grok cannot implement file changes - only advise).
@@ -25,6 +25,7 @@ Before delegating, check which MCP tools are available in the current environmen
 | **Code Reviewer** | Code quality | Code review, finding bugs |
 | **Security Analyst** | Security | Vulnerabilities, threat modeling, hardening |
 | **Researcher** | External libraries and docs | Library usage, best practices, third-party source |
+| **Debugger** | Root-cause debugging | Ranked hypotheses, minimal fixes |
 
 ## Operating Modes
 
@@ -51,7 +52,7 @@ Every expert can operate in two modes:
 - After 2+ failed fix attempts
 - Tradeoff analysis
 
-**Philosophy**: Pragmatic minimalism—simplest solution that works.
+**Philosophy**: Pragmatic minimalism - simplest solution that works.
 
 **Output format**:
 - Advisory: Bottom line, action plan, effort estimate
@@ -66,7 +67,7 @@ Every expert can operate in two modes:
 - After creating a work plan
 - Before delegating to other agents
 
-**Philosophy**: Ruthlessly critical—finds every gap before work begins.
+**Philosophy**: Ruthlessly critical - finds every gap before work begins.
 
 **Output format**: APPROVE/REJECT with justification and criteria assessment
 
@@ -110,7 +111,7 @@ Every expert can operate in two modes:
 - Third-party integrations
 - Periodic security audits
 
-**Philosophy**: Attacker's mindset—find vulnerabilities before they do.
+**Philosophy**: Attacker's mindset - find vulnerabilities before they do.
 
 **Output format**:
 - Advisory: Threat summary, vulnerabilities, risk rating
@@ -133,6 +134,22 @@ Every expert can operate in two modes:
 **Output format**:
 - Advisory: Bottom line, evidence (cited or `[unverified]`), caveats
 - Implementation: Written findings document
+
+### Debugger
+
+**Specialty**: Root-cause analysis of reported defects
+
+**When to use**:
+- A reported runtime error, crash, failing test, or wrong output
+- After 2+ failed fix attempts (fresh ranked hypotheses)
+
+**Philosophy**: Evidence over hunches - rank hypotheses, propose the minimal fix, and say so honestly when the evidence shows no bug.
+
+**Provider routing**: prefer GPT/Codex first, Gemini second. Grok only for an alternate hypothesis (advisory-only).
+
+**Output format**:
+- Advisory: ranked hypotheses with minimal fix + regression note, or a no-bug-found result with questions
+- Implementation: the minimal fix applied + verification
 
 ## Codex Parameters Reference
 

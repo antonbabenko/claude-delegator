@@ -285,6 +285,10 @@ Five experts available:
 │ Researcher       │ "How do I use this library?"                │
 │                  │ "Find examples of X"                        │
 │                  │ → External libraries, docs, best practices  │
+├──────────────────┼─────────────────────────────────────────────┤
+│ Debugger         │ "Why does this crash?" / "Debug this"       │
+│                  │ "This failing test - find the bug"          │
+│                  │ → Root-cause hypotheses, minimal fixes      │
 └──────────────────┴─────────────────────────────────────────────┘
 
 Every expert can advise (read-only) OR implement (write).

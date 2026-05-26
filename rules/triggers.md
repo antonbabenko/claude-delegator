@@ -27,6 +27,7 @@ When a trigger matches:
 | **Code Reviewer** | Code quality, bugs | Reviewing code changes, finding issues |
 | **Security Analyst** | Vulnerabilities, threats | Security audits, hardening |
 | **Researcher** | External libraries, docs | Library usage, best practices, third-party source |
+| **Debugger** | Root-cause analysis | Runtime errors, crashes, failing tests |
 
 ## Explicit Triggers (Highest Priority)
 
@@ -35,13 +36,15 @@ User explicitly requests delegation:
 | Phrase Pattern | Expert |
 |----------------|--------|
 | "ask GPT", "consult GPT" | Route based on context |
-| "ask Gemini", "ask gemini" | Route based on context |
+| "ask Gemini", "consult gemini" | Route based on context |
+| "ask Grok", "consult grok" | Route based on context |
 | "review this architecture" | Architect |
 | "review this plan" | Plan Reviewer |
 | "analyze the scope" | Scope Analyst |
 | "review this code" | Code Reviewer |
 | "security review", "is this secure" | Security Analyst |
 | "research [library]", "how do I use [X]" | Researcher |
+| "debug this", "why does this crash/fail", "find the bug" | Debugger |
 
 ## Semantic Triggers (Intent Matching)
 
@@ -91,6 +94,26 @@ User explicitly requests delegation:
 | "vulnerabilities in" | "Any vulnerabilities in this code?" |
 | "threat model" | "Threat model for this API" |
 | "harden this" | "Harden this endpoint" |
+
+### External Research (-> Researcher)
+
+| Intent Pattern | Example |
+|----------------|---------|
+| "how do I use [library]" | "How do I use TanStack Query subscriptions?" |
+| "best practice for" | "Best practice for caching in Next.js 15" |
+| "find examples of" | "Find examples of Zod discriminated unions" |
+| "why does [dependency] behave" | "Why does this Prisma migration keep diffing?" |
+| Working with an unfamiliar package | Before adopting a new dependency |
+
+### Debugging (-> Debugger)
+
+| Intent Pattern | Example |
+|----------------|---------|
+| "why does this crash/fail" | "Why does this crash on empty input?" |
+| "this test fails" | "This test fails intermittently - find the bug" |
+| "debug this" / "find the bug" | "Debug this auth handler" |
+| Stack trace or error output pasted | When the user supplies a failing log |
+| After 2+ failed fix attempts | Fresh ranked hypotheses |
 
 ## Trigger Priority
 
