@@ -7,7 +7,7 @@ timeout: 60000
 
 # Setup
 
-Configure GPT (via Codex) or Gemini as specialized expert subagents via native MCP. Five domain experts that can advise OR implement.
+Configure GPT (via Codex) or Gemini as specialized expert subagents via native MCP. Seven domain experts that can advise OR implement.
 
 ## Step 1: Check CLI Dependencies
 
@@ -259,7 +259,7 @@ Next steps:
    - Gemini: Run `agy` once and complete sign-in (or set the model in ~/.gemini/settings.json)
    - Grok: export XAI_API_KEY=xai-... (get a key at https://console.x.ai) in your shell profile, then restart Claude Code
 
-Five experts available:
+Seven experts available:
 
 ┌──────────────────┬─────────────────────────────────────────────┐
 │ Architect        │ "How should I structure this service?"      │
