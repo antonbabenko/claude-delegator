@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A Claude Code plugin that provides GPT (via Codex CLI), Gemini 3 (via the Antigravity CLI `agy`), and Grok (via the xAI HTTP API) as specialized expert subagents. Five domain experts that can advise OR implement: Architect, Plan Reviewer, Scope Analyst, Code Reviewer, and Security Analyst. (Grok is advisory-only - it cannot edit files, but can read attached files via the xAI Files API.)
+A Claude Code plugin that provides GPT (via Codex CLI), Gemini 3 (via the Antigravity CLI `agy`), and Grok (via the xAI HTTP API) as specialized expert subagents. Seven domain experts that can advise OR implement: Architect, Plan Reviewer, Scope Analyst, Code Reviewer, Security Analyst, Researcher, and Debugger. (Grok is advisory-only - it cannot edit files, but can read attached files via the xAI Files API.)
 
 ## Development Commands
 
@@ -69,7 +69,7 @@ Retries use multi-turn (`*-reply` with `threadId`) so the expert remembers previ
 
 > Expert prompts adapted from [oh-my-opencode](https://github.com/code-yeongyu/oh-my-opencode)
 
-## Five GPT Experts
+## Seven GPT Experts
 
 | Expert | Prompt | Specialty | Triggers |
 |--------|--------|-----------|----------|
@@ -78,6 +78,8 @@ Retries use multi-turn (`*-reply` with `threadId`) so the expert remembers previ
 | **Scope Analyst** | `prompts/scope-analyst.md` | Requirements analysis | "clarify the scope", vague requirements |
 | **Code Reviewer** | `prompts/code-reviewer.md` | Code quality, bugs | "review this code", "find issues" |
 | **Security Analyst** | `prompts/security-analyst.md` | Vulnerabilities | "is this secure", "harden this" |
+| **Researcher** | `prompts/researcher.md` | External libraries, docs, best practices | "how do I use X", "find examples of Y" |
+| **Debugger** | `prompts/debugger.md` | Root-cause analysis, minimal fixes | "why does this crash", "debug this failing test" |
 
 Every expert can operate in **advisory** (`sandbox: read-only`) or **implementation** (`sandbox: workspace-write`) mode based on the task.
 
