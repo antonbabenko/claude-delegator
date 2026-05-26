@@ -1,3 +1,12 @@
+# [1.14.0](https://github.com/antonbabenko/claude-delegator/compare/v1.13.1...v1.14.0) (2026-05-26)
+
+
+### Features
+
+* **consensus:** confidence label + issue category signals ([#27](https://github.com/antonbabenko/claude-delegator/issues/27)) ([60a91f9](https://github.com/antonbabenko/claude-delegator/commit/60a91f95cc6094faeb1e9d3b2527553cb727c871))
+
+
+
 ## [1.13.1](https://github.com/antonbabenko/claude-delegator/compare/v1.13.0...v1.13.1) (2026-05-26)
 
 
@@ -31,15 +40,6 @@
 ### Features
 
 * migrate Gemini bridge to Antigravity CLI (agy) + Gemini 3 ([#16](https://github.com/antonbabenko/claude-delegator/issues/16)) ([44b5cd2](https://github.com/antonbabenko/claude-delegator/commit/44b5cd26b52231c429b1d78e19cc684ccb14948e))
-
-
-
-# [1.10.0](https://github.com/antonbabenko/claude-delegator/compare/v1.9.1...v1.10.0) (2026-05-25)
-
-
-### Features
-
-* **consensus:** arbiter-mediated bias hardening for /consensus + ask-* disclaimer ([#14](https://github.com/antonbabenko/claude-delegator/issues/14)) ([352902c](https://github.com/antonbabenko/claude-delegator/commit/352902c5806e620d4fe71c99aed705d77b5faea2))
 
 
 
