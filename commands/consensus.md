@@ -44,7 +44,7 @@ Plan, design, spec, or proposal to refine: $ARGUMENTS
 4. Initialize state:
    - `plan` = original `$ARGUMENTS`
    - `round` = 0
-   - `history` = empty list of `{round, plan_diff_summary, claude_blind_verdict, gpt_verdict, gemini_verdict, grok_verdict, claude_decision, dismissals}`
+   - `history` = empty list of `{round, plan_diff_summary, claude_blind_verdict, gpt_verdict, gemini_verdict, grok_verdict, claude_decision, dismissals, cat_hits, parse_fallbacks}`
 5. Print:
    ```
    /consensus: starting consensus loop (max 5 rounds, expert=[Expert])
@@ -65,13 +65,23 @@ For each round R:
    - **Round metadata is BOUNDED**: include the last 2 rounds verbatim; for any rounds older than that, include only a one-line summary of each (verdict + applied-change phrase). This prevents prompt-length growth across 5 rounds.
    - **TASK**: review the plan for completeness, correctness, hidden assumptions, missing edge cases, and blockers
    - **REVIEW MODE**: include the line `Review mode: strict` so the Plan Reviewer applies full four-criteria rigor. Consensus is a rigorous convergence loop, not a quick blocker check.
+   - **ISSUE CATEGORY TAXONOMY** (closed set, every critical issue picks exactly one):
+     - `security`    - auth, secrets, injection, data exposure, privilege boundary
+     - `correctness` - wrong behaviour, broken invariant, missing case, race condition
+     - `scope`       - undefined boundary, missing acceptance criteria, deliverable unclear
+     - `ambiguity`   - reference too vague to act on, contradictory steps, missing context
+     - `performance` - latency, throughput, resource use, scaling limit
+     - `ops`         - rollback, observability, deploy, migration, on-call surface
    - **OUTPUT FORMAT** (strict, so parsing is deterministic):
      ```
      **Verdict**: APPROVE | REQUEST CHANGES | REJECT
-     **Critical issues** (must-fix; empty list = none): [bullets]
+     **Critical issues** (must-fix; empty list = none):
+       - `[category]` issue description
+       - ...
      **Recommendations** (nice-to-have; empty list = none): [bullets]
      **One-line bottom line**: [single sentence]
      ```
+     `[category]` MUST be exactly one of: `security`, `correctness`, `scope`, `ambiguity`, `performance`, `ops`. Reviewers that emit a critical issue without a category tag get that issue parsed as `ambiguity` by default, and the fallback is recorded in a NEW per-round field `history[R].parse_fallbacks` (an array of `{source, issue_excerpt, reason: "reviewer omitted category tag"}`). Do NOT write parse fallbacks into `history[R].dismissals`; that field is reserved for adjudicated dismiss/defer decisions and feeds the "Dismissed / deferred issues" section of the final report. Parse fallbacks surface separately as a one-line footnote under the Round history table.
 
 3. **Claude's BLIND verdict - EMIT BEFORE DISPATCHING**: in a message of its OWN, BEFORE the message that calls any MCP tool, Claude writes its own verdict in the strict OUTPUT FORMAT above using ONLY the review prompt from step 2 (it has not seen any reviewer output yet), and stores it verbatim in `history[R].claude_blind_verdict`. Print:
    ```
@@ -148,6 +158,7 @@ For each round R:
    - From each RESPONDING reviewer, extract `Verdict`, `Critical issues`, `Recommendations`. An ERRORED provider is excluded (see Convergence check); it contributes no verdict and no issues.
    - For each critical issue - whether raised by a reviewer OR by Claude's own blind verdict - record a decision WITH a one-line reason: `accept` (real problem, fix), `dismiss` (false positive - reason REQUIRED), or `defer` (out of scope - reason REQUIRED). Append every `dismiss`/`defer` to `history[R].dismissals`. **This includes Claude walking back one of its own blind critical issues** - that is a `dismiss` and needs a recorded reason too.
    - **Repeated-issue default**: if two or more sources (reviewers, or a reviewer plus Claude's blind verdict) raise substantially the same critical issue, `accept` it by default; only `dismiss` with a concrete factual reason ("out of scope" alone is not enough).
+   - **Category overlap signal**: after extracting categories from every responding reviewer plus Claude's blind verdict, build a `{category: source_count}` map counting how many DISTINCT sources raised at least one critical issue in each category. Store as `history[R].cat_hits`. Any category with `source_count >= 2` is a cross-source category hit and surfaces in the Round history table's `Cat hits` column. Cell format: comma-separated `category x<source_count>` entries, ordered by source_count descending then category name ascending; render `-` if no category reached the 2+ threshold. Example cell: `security x4, ops x2`. This is a reporting-only signal; it does not change the convergence rule.
    - Claude's adjudicated verdict is APPROVE if and only if zero accepted critical issues remain anywhere (reviewers or Claude's blind verdict).
 
 7. **Convergence check** - the loop CONVERGES only when ALL of these hold:
@@ -191,11 +202,16 @@ This is a copy-only signal: it is computed at the end from `round`, does not aff
 **Final plan**:
 [full converged plan, or last revision]
 
-**Round history** (CB = Claude blind verdict; reviewer cols use APPR/RC/REJ or ERR; Adj = Claude adjudicated):
-| Round | CB   | GPT  | Gemini | Grok | Adj  | Changes applied |
-| 1     | RC   | RC   | RC     | RC   | RC   | added rollback step, clarified ownership |
-| 2     | RC   | RC   | APPR   | ERR  | RC   | tightened error handling on step 3 |
-| 3     | APPR | APPR | APPR   | ERR  | APPR | - (Grok unconfigured; converged on responding externals) |
+**Round history** (CB = Claude blind verdict; reviewer cols use APPR/RC/REJ or ERR; Adj = Claude adjudicated; Cat hits = categories raised by 2+ sources this round):
+| Round | CB   | GPT  | Gemini | Grok | Adj  | Cat hits                | Changes applied |
+| 1     | RC   | RC   | RC     | RC   | RC   | security x4, ops x2     | added rollback step, clarified ownership |
+| 2     | RC   | RC   | APPR   | ERR  | RC   | correctness x2          | tightened error handling on step 3 |
+| 3     | APPR | APPR | APPR   | ERR  | APPR | -                       | - (Grok unconfigured; converged on responding externals) |
+
+**Parse fallbacks** (reviewers that omitted a category tag; auto-parsed as `ambiguity`):
+- [R{n}] {source}: "{issue excerpt}" - reason: reviewer omitted category tag
+
+If there were zero fallbacks across the whole loop, render `**Parse fallbacks**: none.`
 
 **Dismissed / deferred issues** (every dismiss/defer, with reason - no silent dismissal; includes Claude walking back its own blind issues):
 - [R{n}] {source} raised "{issue}" -> dismissed: {one-line reason}
