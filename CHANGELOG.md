@@ -1,3 +1,12 @@
+# [1.13.0](https://github.com/antonbabenko/claude-delegator/compare/v1.12.0...v1.13.0) (2026-05-26)
+
+
+### Features
+
+* add Debugger expert + severity grading and SUMMARY blocks across reviewers ([#22](https://github.com/antonbabenko/claude-delegator/issues/22)) ([a22d436](https://github.com/antonbabenko/claude-delegator/commit/a22d436de6cd6a49094c75bf5a3d5bdb113ef0a9))
+
+
+
 # [1.12.0](https://github.com/antonbabenko/claude-delegator/compare/v1.11.0...v1.12.0) (2026-05-25)
 
 
@@ -31,16 +40,6 @@
 ### Bug Fixes
 
 * harden release PR lookup against a closed release/next PR ([#11](https://github.com/antonbabenko/claude-delegator/issues/11)) ([e911185](https://github.com/antonbabenko/claude-delegator/commit/e911185f51ca4f32741aa02e10d8be7dbd53b47e))
-
-
-
-# [1.9.0](https://github.com/antonbabenko/claude-delegator/compare/v1.6.0...v1.9.0) (2026-05-24)
-
-
-### Features
-
-* add automated release process and fix marketplace metadata ([#7](https://github.com/antonbabenko/claude-delegator/issues/7)) ([9bfdda2](https://github.com/antonbabenko/claude-delegator/commit/9bfdda2a1c777b6ea0f3d43ca446cc167e35ae01))
-* add Grok (xAI) as a third delegation provider, with file support ([#6](https://github.com/antonbabenko/claude-delegator/issues/6)) ([0b0a5d7](https://github.com/antonbabenko/claude-delegator/commit/0b0a5d7ac439144a8f326f949d6843d2ce003e03))
 
 
 
