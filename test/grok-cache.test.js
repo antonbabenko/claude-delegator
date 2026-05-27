@@ -322,3 +322,50 @@ test("apiBase port difference produces separate cache rows for same bytes", asyn
 
   assert.equal(uploadCount, 2, "different apiBase ports → separate uploads");
 });
+
+test("evict is a no-op when cacheFile is null (XAI_DISABLE_FILE_CACHE path)", async () => {
+  // Should not throw.
+  await cache.evict(null, "file_x");
+  await cache.store(null, "K", { fileId: "x", size: 0, filename: "f", uploadedAt: 0, expiresAt: 9, apiBase: "x", keyFp: "y" });
+  assert.ok(true);
+});
+
+test("runWithFiles 404 recovery is safe when cacheFile is null", async () => {
+  const idx = require("../server/grok/index.js");
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-nocache-"));
+  fs.writeFileSync(path.join(root, "a.tf"), "tfcontent");
+
+  let responsesCalls = 0;
+  let uploadCalls = 0;
+  const fakeFetch = async (url) => {
+    const s = String(url);
+    if (s.endsWith("/responses")) {
+      responsesCalls += 1;
+      if (responsesCalls === 1) {
+        const e = new Error(`xAI API error 400: Invalid file id: file_STALE_NULL`);
+        e.status = 400;
+        throw e;
+      }
+      return { ok: true, text: async () => JSON.stringify({ output: [{ content: [{ type: "output_text", text: "ok" }] }] }) };
+    }
+    if (s.endsWith("/files")) {
+      uploadCalls += 1;
+      return { ok: true, text: async () => JSON.stringify({ id: uploadCalls === 1 ? "file_STALE_NULL" : "file_FRESH" }) };
+    }
+    return { ok: true, text: async () => "{}" };
+  };
+
+  const result = await idx.runWithFiles({
+    prompt: "do",
+    files: [{ path: "a.tf" }],
+    apiKey: "xai-A",
+    apiBase: "https://api.x.ai/v1",
+    roots: [root],
+    cacheFile: null, // simulate XAI_DISABLE_FILE_CACHE=1
+    fetchImpl: fakeFetch,
+  });
+  assert.equal(result.text, "ok");
+  assert.equal(responsesCalls, 2);
+  assert.equal(uploadCalls, 2, "uploaded once initially + once after eviction");
+});

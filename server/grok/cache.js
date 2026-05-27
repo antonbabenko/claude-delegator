@@ -80,6 +80,7 @@ function lookup(file, key, { apiBase, keyFp } = {}) {
 }
 
 async function store(file, key, entry) {
+  if (!file) return;
   const handle = lock.acquire(file, { maxWaitMs: 1000 });
   if (!handle) {
     process.stderr.write("[grok] cache lock contention; skipping persist\n");
@@ -95,6 +96,7 @@ async function store(file, key, entry) {
 }
 
 async function evict(file, fileId) {
+  if (!file) return;
   const handle = lock.acquire(file, { maxWaitMs: 1000 });
   if (!handle) return;
   try {

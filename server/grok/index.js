@@ -490,8 +490,8 @@ async function runGrok({ turns, model, timeoutMs, apiKey, apiBase, fetchImpl, re
 
 // Non-/g regex for boolean "does the message mention any file_id?" check.
 // Using a /g flag here would mutate lastIndex across .test() calls.
-const STALE_FILE_ID_TEST = /file_[A-Za-z0-9_-]+/;
-const STALE_FILE_ID_EXTRACT = /file_[A-Za-z0-9_-]+/g;
+const STALE_FILE_ID_TEST = /file[-_][A-Za-z0-9_-]+/;
+const STALE_FILE_ID_EXTRACT = /file[-_][A-Za-z0-9_-]+/g;
 
 function isStaleFileError(err) {
   if (!err) return false;
@@ -541,8 +541,10 @@ async function runWithFiles(args) {
     if (matchingRefs.length === 0) throw e;
 
     const cacheMod = require("./cache.js");
-    for (const r of matchingRefs) {
-      await cacheMod.evict(args.cacheFile, r.file_id);
+    if (args.cacheFile) {
+      for (const r of matchingRefs) {
+        await cacheMod.evict(args.cacheFile, r.file_id);
+      }
     }
 
     for (let i = 0; i < refs.length; i++) {

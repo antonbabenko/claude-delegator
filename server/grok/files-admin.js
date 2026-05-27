@@ -130,18 +130,29 @@ async function gc({ cacheFile, apiKey, apiBase, fetchImpl, allKeys = false, forc
   const currentKeyFp = require("node:crypto").createHash("sha256").update(String(apiKey)).digest("hex").slice(0, 16);
   const apiBaseNorm = cacheModule.normalize(apiBase);
 
-  const data = cacheModule.readCache(cacheFile);
-  let prunedLocal = 0;
-  for (const k of Object.keys(data.entries)) {
-    const e = data.entries[k];
-    const isMine = e.keyFp === currentKeyFp && e.apiBase === apiBaseNorm;
-    if (!isMine && !allKeys) continue;
-    if (remoteIds.has(e.fileId)) continue;
-    if (!isMine && !forceLocalPrune) continue;
-    delete data.entries[k];
-    prunedLocal += 1;
+  const lock = require("./lock.js");
+  const handle = lock.acquire(cacheFile, { maxWaitMs: 3000 });
+  if (!handle) {
+    const err = new Error("gc: could not acquire cache lock (another process is writing); retry");
+    err.exitCode = 3;
+    throw err;
   }
-  cacheModule.writeCache(cacheFile, data);
+  let prunedLocal = 0;
+  try {
+    const data = cacheModule.readCache(cacheFile);
+    for (const k of Object.keys(data.entries)) {
+      const e = data.entries[k];
+      const isMine = e.keyFp === currentKeyFp && e.apiBase === apiBaseNorm;
+      if (!isMine && !allKeys) continue;
+      if (remoteIds.has(e.fileId)) continue;
+      if (!isMine && !forceLocalPrune) continue;
+      delete data.entries[k];
+      prunedLocal += 1;
+    }
+    cacheModule.writeCache(cacheFile, data);
+  } finally {
+    lock.release(handle);
+  }
   return { prunedLocal };
 }
 
