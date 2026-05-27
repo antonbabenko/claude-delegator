@@ -144,6 +144,38 @@ test("store writes an entry under lock", async () => {
   assert.equal(data.entries["K2"].fileId, "file_2");
 });
 
+test("uploadFile with cache hit returns cached fileId and skips fetch", async () => {
+  const idx = require("../server/grok/index.js");
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-up-"));
+  const file = path.join(root, "a.tf");
+  fs.writeFileSync(file, "content");
+
+  const cacheFile = tmpCachePath();
+  const bytes = Buffer.from("content");
+  const apiBase = "https://api.x.ai/v1";
+  const apiBaseNorm = cache.normalize(apiBase);
+  const key = cache.buildCacheKey({ bytes, apiKey: "xai-A", apiBase, filename: "a.tf" });
+  const keyFp = require("node:crypto").createHash("sha256").update("xai-A").digest("hex").slice(0, 16);
+  const entry = { fileId: "file_CACHED", size: 7, filename: "a.tf", uploadedAt: 1, expiresAt: Math.floor(Date.now()/1000) + 3600, apiBase: apiBaseNorm, keyFp };
+  await cache.store(cacheFile, key, entry);
+
+  let fetchCalls = 0;
+  const fakeFetch = async () => { fetchCalls += 1; return { ok: true, text: async () => JSON.stringify({ id: "file_NEW" }) }; };
+
+  const result = await idx.uploadFile({
+    filePath: "a.tf",
+    apiKey: "xai-A",
+    apiBase,
+    ttl: 86400,
+    roots: [root],
+    fetchImpl: fakeFetch,
+    cacheFile,
+  });
+  assert.equal(result.id, "file_CACHED");
+  assert.equal(fetchCalls, 0, "cache hit avoids network");
+});
+
 test("evict removes all rows holding a given fileId", async () => {
   const p = tmpCachePath();
   cache.writeCache(p, {

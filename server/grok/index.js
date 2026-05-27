@@ -195,7 +195,12 @@ function parseResponsesOutput(data) {
 // Upload one local file and return its file object. Errors carry `.code`
 // (file-too-large/file-read/file-upload/missing-auth) and/or `.status`.
 // `fetchImpl` is injectable for tests.
-async function uploadFile({ filePath, filename, apiKey, apiBase, ttl, cwd, fetchImpl }) {
+// Accepts `roots: string[]` for multi-root containment; falls back to
+// `[realpathSync(cwd ?? process.cwd())]` so old single-cwd callers still work.
+// Cache integration: checks cache.js before uploading; on miss wraps upload in
+// withInflight for concurrent dedup and writes the result to the cache.
+// Set XAI_DISABLE_FILE_CACHE=1 to bypass the cache layer entirely.
+async function uploadFile({ filePath, filename, apiKey, apiBase, ttl, roots, cwd, fetchImpl, cacheFile }) {
   if (!isNonEmptyString(apiKey)) {
     const e = new Error("XAI_API_KEY is not set; cannot upload files.");
     e.code = "missing-auth";
@@ -203,81 +208,103 @@ async function uploadFile({ filePath, filename, apiKey, apiBase, ttl, cwd, fetch
   }
   const f = fetchImpl || globalThis.fetch;
   const base = (apiBase || DEFAULT_API_BASE).replace(/\/+$/, "");
-  // Containment: the resolved path must stay within the base dir. Blocks absolute
-  // paths and `../` escapes from exfiltrating arbitrary local files to xAI.
-  const root = path.resolve(cwd || process.cwd());
-  const resolved = path.resolve(root, filePath);
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-    const e = new Error(`File "${filePath}" resolves outside the working directory (${root}); refused.`);
-    e.code = "file-read";
-    throw e;
-  }
 
-  let info;
+  const rootList = (Array.isArray(roots) && roots.length)
+    ? roots
+    : [require("node:fs").realpathSync(cwd || process.cwd())];
+
+  let resolved;
   try {
-    info = await stat(resolved);
+    resolved = resolvePathUnderRoots(filePath.replace(/\\/g, "/"), rootList, "file");
   } catch (err) {
     const e = new Error(`Cannot read file "${filePath}": ${(err && err.message) || err}`);
     e.code = "file-read";
     throw e;
   }
-  if (!info.isFile()) {
-    const e = new Error(`Not a regular file: "${filePath}"`);
-    e.code = "file-read";
-    throw e;
-  }
-  if (info.size > MAX_FILE_BYTES) {
-    const e = new Error(`File "${filePath}" is ${info.size} bytes; exceeds the ${MAX_FILE_BYTES}-byte cap.`);
+
+  if (resolved.size > MAX_FILE_BYTES) {
+    const e = new Error(`File "${filePath}" is ${resolved.size} bytes; exceeds the ${MAX_FILE_BYTES}-byte cap.`);
     e.code = "file-too-large";
     throw e;
   }
 
   let buf;
-  try {
-    buf = await readFile(resolved);
-  } catch (err) {
+  try { buf = await require("node:fs/promises").readFile(resolved.abs); }
+  catch (err) {
     const e = new Error(`Cannot read file "${filePath}": ${(err && err.message) || err}`);
     e.code = "file-read";
     throw e;
   }
 
-  const baseName = path.basename(filename || resolved);
-  const storedName = `${FILE_PREFIX}${Date.now()}-${baseName}`;
-  // Append scalar fields BEFORE the (potentially large, streamed) file part so a
-  // streaming multipart parser sees expires_after/purpose regardless of body size.
-  const form = new FormData();
-  form.append("expires_after", String(ttl != null ? ttl : FILE_TTL_SECONDS));
-  form.append("purpose", UPLOAD_PURPOSE);
-  form.append("file", new Blob([buf]), storedName);
+  const cacheMod = require("./cache.js");
+  const baseName = require("node:path").basename(filename || resolved.abs);
+  const effectiveFilename = baseName;
+  const apiBaseNorm = cacheMod.normalize(base);
+  const cacheKey = cacheMod.buildCacheKey({ bytes: buf, apiKey, apiBase: base, filename: effectiveFilename });
+  const keyFp = require("node:crypto").createHash("sha256").update(apiKey).digest("hex").slice(0, 16);
+  const useCache = !process.env.XAI_DISABLE_FILE_CACHE && cacheFile;
 
-  let res;
-  try {
-    res = await f(`${base}/files`, {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${apiKey}` }, // no Content-Type: fetch sets the multipart boundary
-      body: form,
-    });
-  } catch (err) {
-    const e = new Error(`File upload network error: ${(err && err.message) || err}`);
-    e.code = "file-upload";
-    throw e;
+  if (useCache) {
+    const hit = cacheMod.lookup(cacheFile, cacheKey, { apiBase: apiBaseNorm, keyFp });
+    if (hit) return { id: hit.fileId, _fromCache: true, _cacheKey: cacheKey, _sourcePath: resolved.abs, _sourceRoot: resolved.root };
   }
 
-  let bodyText = "";
-  try { bodyText = await res.text(); } catch (_) { bodyText = ""; }
-  if (!res.ok) {
-    const e = new Error(`xAI file upload error ${res.status}: ${truncate(bodyText, 300)}`);
-    e.status = res.status;
-    if (res.status < 400 || res.status >= 500) e.code = "file-upload";
-    throw e;
-  }
-  try {
-    return JSON.parse(bodyText);
-  } catch (e2) {
-    const e = new Error(`File upload parse error: ${e2.message}`);
-    e.code = "parse";
-    throw e;
-  }
+  const work = async () => {
+    const contentHash = require("node:crypto").createHash("sha256").update(buf).digest("hex");
+    const storedName = `${FILE_PREFIX}${contentHash.slice(0, 16)}-${baseName}`;
+    const form = new FormData();
+    form.append("expires_after", String(ttl != null ? ttl : FILE_TTL_SECONDS));
+    form.append("purpose", UPLOAD_PURPOSE);
+    form.append("file", new Blob([buf]), storedName);
+
+    let res;
+    try {
+      res = await f(`${base}/files`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${apiKey}` },
+        body: form,
+      });
+    } catch (err) {
+      const e = new Error(`File upload network error: ${(err && err.message) || err}`);
+      e.code = "file-upload";
+      throw e;
+    }
+    let bodyText = "";
+    try { bodyText = await res.text(); } catch (_) { bodyText = ""; }
+    if (!res.ok) {
+      const e = new Error(`xAI file upload error ${res.status}: ${truncate(bodyText, 300)}`);
+      e.status = res.status;
+      if (res.status < 400 || res.status >= 500) e.code = "file-upload";
+      throw e;
+    }
+    let uploaded;
+    try { uploaded = JSON.parse(bodyText); }
+    catch (e2) { const e = new Error(`File upload parse error: ${e2.message}`); e.code = "parse"; throw e; }
+    if (!isNonEmptyString(uploaded && uploaded.id)) {
+      const e = new Error("File upload returned no file id");
+      e.code = "parse";
+      throw e;
+    }
+
+    if (useCache) {
+      const entry = {
+        fileId: uploaded.id,
+        size: buf.length,
+        filename: effectiveFilename,
+        uploadedAt: Math.floor(Date.now() / 1000),
+        expiresAt: Math.floor(Date.now() / 1000) + (ttl != null ? ttl : FILE_TTL_SECONDS),
+        apiBase: apiBaseNorm,
+        keyFp,
+      };
+      await cacheMod.store(cacheFile, cacheKey, entry);
+    }
+    return uploaded;
+  };
+
+  const uploaded = useCache
+    ? await cacheMod.withInflight(cacheKey, work)
+    : await work();
+  return { ...uploaded, _cacheKey: cacheKey, _sourcePath: resolved.abs, _sourceRoot: resolved.root };
 }
 
 // Resolve a `files` param into { refs, ownedIds }. `path` entries are uploaded
