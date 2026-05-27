@@ -3,18 +3,28 @@
 /**
  * Claude Delegator - Grok (xAI) MCP Bridge
  *
- * A zero-dependency MCP server that calls the xAI **Responses API**
- * (`POST /v1/responses`). Speaks JSON-RPC 2.0 over stdio.
+ * Zero-dependency MCP server speaking JSON-RPC 2.0 over stdio that calls the
+ * xAI Responses API (POST /v1/responses). The Responses endpoint is required
+ * to attach uploaded files. Multi-turn state is held in-memory; the bridge
+ * resends the full `input` each turn rather than relying on previous_response_id.
  *
- * The Responses endpoint (not chat/completions) is required to attach uploaded
- * files (`{type:"input_file", file_id}`). The bridge owns conversation state
- * directly, so multi-turn (grok-reply) is an in-memory threadId -> turns map and
- * we resend the full `input` each turn (no reliance on previous_response_id).
+ * File access (v2):
+ *   - files: [{ path | file_id | file_url | dir }]; paths and dirs resolve under
+ *     roots: string[] (top-level), or [cwd] if roots is omitted.
+ *   - dir entries are expanded by the bundled glob walker (./glob.js) with
+ *     prune-before-descend, symlink-safe containment, and maxFiles/maxBytes caps.
+ *   - Uploads are SHA-256 deduplicated via the local cache at
+ *     ~/.claude/cache/claude-delegator/grok-files.json (./cache.js). Cache key
+ *     scopes by content + API key + normalised apiBase + effective filename.
+ *   - Cross-process cache safety via mkdir-based lock with token-specific
+ *     owner markers and heartbeat (./lock.js).
+ *   - 4xx mid-/v1/responses whose body names a known file_/file- id triggers
+ *     evict + re-upload + retry once.
  *
  * Auth: XAI_API_KEY (env). Model: GROK_DEFAULT_MODEL (env) or grok-4.3.
  * Endpoint: XAI_API_BASE (env) or https://api.x.ai/v1.
  * File TTL: GROK_FILE_TTL_SECONDS (env) or 604800 (7 days).
- * Reasoning effort: GROK_REASONING_EFFORT (env) or "high"; per-call reasoning_effort overrides.
+ * Cache off switch: XAI_DISABLE_FILE_CACHE=1.
  */
 
 const crypto = require("node:crypto");
@@ -42,6 +52,20 @@ const MAX_FILE_BYTES = 48 * 1024 * 1024;
 // user's own xAI files. Flat (no slashes/colons) to avoid filename mangling.
 const FILE_PREFIX = "claude-delegator-";
 const UPLOAD_PURPOSE = "assistants";
+
+const cacheModule = require("./cache.js");
+const DEFAULT_CACHE_FILE = cacheModule.CACHE_FILE;
+const globMod = require("./glob.js");
+
+const DEFAULT_INCLUDE = ["**/*"];
+const DEFAULT_EXCLUDE = [
+  ".git", ".git/**", "node_modules", "node_modules/**",
+  "dist/**", "build/**", ".venv/**", "**/*.lock",
+  "**/.next/**", "**/.svelte-kit/**",
+];
+const DEFAULT_MAX_FILES = 50;
+const DEFAULT_MAX_BYTES = 128 * 1024 * 1024;
+const DIR_UPLOAD_CONCURRENCY = 4;
 
 // Reasoning effort: per-call value wins, then GROK_REASONING_EFFORT, then the
 // default. "", "none", or "off" omit the field so the model uses its own default.
@@ -155,7 +179,13 @@ function turnsToInput(turns) {
     }
     const content = [{ type: "input_text", text: turn.text }];
     for (const ref of turn.fileRefs || []) {
-      if (ref.file_id) content.push({ type: "input_file", file_id: ref.file_id });
+      if (ref.inline_text != null) {
+        // Inline file content as input_text so Grok reads it fully line-by-line.
+        // input_file references are treated as searchable attachments and may not
+        // be fully expanded into the model's working context.
+        const name = ref.inline_filename || "file";
+        content.push({ type: "input_text", text: `=== ${name} ===\n${ref.inline_text}` });
+      } else if (ref.file_id) content.push({ type: "input_file", file_id: ref.file_id });
       else if (ref.file_url) content.push({ type: "input_file", file_url: ref.file_url });
     }
     input.push({ role: "user", content });
@@ -192,10 +222,55 @@ function parseResponsesOutput(data) {
 
 // --- xAI Files API ---
 
+// Inline vs upload heuristics. xAI's input_file references are treated as
+// searchable attachments and may not be fully expanded into the model's working
+// context; for source code review at line level, prefer input_text (inline).
+const INLINE_MAX_BYTES_DEFAULT = 256 * 1024; // 256 KB
+function resolveInlineMaxBytes() {
+  const raw = Number(process.env.GROK_INLINE_MAX_BYTES);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : INLINE_MAX_BYTES_DEFAULT;
+}
+
+// Cheap text vs binary sniff. Checks the first 4 KB: any NUL byte → binary;
+// >5% non-printable (outside tab/LF/CR/printable ASCII/UTF-8 continuations) → binary.
+function isProbablyText(buf) {
+  if (!buf || buf.length === 0) return true;
+  const slice = buf.subarray(0, Math.min(buf.length, 4096));
+  if (slice.includes(0)) return false;
+  let np = 0;
+  for (const b of slice) {
+    if (b === 0x09 || b === 0x0a || b === 0x0d) continue;
+    if (b >= 0x20 && b <= 0x7e) continue;
+    if (b >= 0x80) continue;
+    np++;
+  }
+  return np / slice.length < 0.05;
+}
+
+// Decide whether a (already-read) file buffer should be inlined as input_text
+// rather than uploaded via the Files API. `mode` is one of:
+//   "upload" - never inline (default; preserves legacy behavior)
+//   "inline" - always inline (caller asserts the content is fit for input_text)
+//   "auto"   - inline when buffer is probably text AND size <= INLINE_MAX_BYTES
+function shouldInline(buf, mode) {
+  if (mode === "inline") return true;
+  if (mode === "auto") {
+    return buf.length <= resolveInlineMaxBytes() && isProbablyText(buf);
+  }
+  return false;
+}
+
 // Upload one local file and return its file object. Errors carry `.code`
 // (file-too-large/file-read/file-upload/missing-auth) and/or `.status`.
 // `fetchImpl` is injectable for tests.
-async function uploadFile({ filePath, filename, apiKey, apiBase, ttl, cwd, fetchImpl }) {
+// Accepts `roots: string[]` for multi-root containment; falls back to
+// `[realpathSync(cwd ?? process.cwd())]` so old single-cwd callers still work.
+// Cache integration: checks cache.js before uploading; on miss wraps upload in
+// withInflight for concurrent dedup and writes the result to the cache.
+// Set XAI_DISABLE_FILE_CACHE=1 to bypass the cache layer entirely.
+// `mode` controls inline-vs-upload (see shouldInline). Inline refs skip the
+// Files API entirely and are emitted as input_text by turnsToInput.
+async function uploadFile({ filePath, filename, apiKey, apiBase, ttl, roots, cwd, fetchImpl, cacheFile, mode }) {
   if (!isNonEmptyString(apiKey)) {
     const e = new Error("XAI_API_KEY is not set; cannot upload files.");
     e.code = "missing-auth";
@@ -203,104 +278,239 @@ async function uploadFile({ filePath, filename, apiKey, apiBase, ttl, cwd, fetch
   }
   const f = fetchImpl || globalThis.fetch;
   const base = (apiBase || DEFAULT_API_BASE).replace(/\/+$/, "");
-  // Containment: the resolved path must stay within the base dir. Blocks absolute
-  // paths and `../` escapes from exfiltrating arbitrary local files to xAI.
-  const root = path.resolve(cwd || process.cwd());
-  const resolved = path.resolve(root, filePath);
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-    const e = new Error(`File "${filePath}" resolves outside the working directory (${root}); refused.`);
-    e.code = "file-read";
-    throw e;
-  }
 
-  let info;
+  const rootList = (Array.isArray(roots) && roots.length)
+    ? roots
+    : [require("node:fs").realpathSync(cwd || process.cwd())];
+
+  let resolved;
   try {
-    info = await stat(resolved);
+    resolved = resolvePathUnderRoots(filePath.replace(/\\/g, "/"), rootList, "file");
   } catch (err) {
     const e = new Error(`Cannot read file "${filePath}": ${(err && err.message) || err}`);
     e.code = "file-read";
     throw e;
   }
-  if (!info.isFile()) {
-    const e = new Error(`Not a regular file: "${filePath}"`);
-    e.code = "file-read";
-    throw e;
-  }
-  if (info.size > MAX_FILE_BYTES) {
-    const e = new Error(`File "${filePath}" is ${info.size} bytes; exceeds the ${MAX_FILE_BYTES}-byte cap.`);
+
+  if (resolved.size > MAX_FILE_BYTES) {
+    const e = new Error(`File "${filePath}" is ${resolved.size} bytes; exceeds the ${MAX_FILE_BYTES}-byte cap.`);
     e.code = "file-too-large";
     throw e;
   }
 
   let buf;
-  try {
-    buf = await readFile(resolved);
-  } catch (err) {
+  try { buf = await require("node:fs/promises").readFile(resolved.abs); }
+  catch (err) {
     const e = new Error(`Cannot read file "${filePath}": ${(err && err.message) || err}`);
     e.code = "file-read";
     throw e;
   }
 
-  const baseName = path.basename(filename || resolved);
-  const storedName = `${FILE_PREFIX}${Date.now()}-${baseName}`;
-  // Append scalar fields BEFORE the (potentially large, streamed) file part so a
-  // streaming multipart parser sees expires_after/purpose regardless of body size.
-  const form = new FormData();
-  form.append("expires_after", String(ttl != null ? ttl : FILE_TTL_SECONDS));
-  form.append("purpose", UPLOAD_PURPOSE);
-  form.append("file", new Blob([buf]), storedName);
+  const cacheMod = require("./cache.js");
+  const baseName = require("node:path").basename(filename || resolved.abs);
+  const effectiveFilename = baseName;
 
-  let res;
-  try {
-    res = await f(`${base}/files`, {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${apiKey}` }, // no Content-Type: fetch sets the multipart boundary
-      body: form,
-    });
-  } catch (err) {
-    const e = new Error(`File upload network error: ${(err && err.message) || err}`);
-    e.code = "file-upload";
-    throw e;
+  // Inline branch: render the file as input_text instead of uploading. No xAI
+  // network call, no cache row (sha256 dedup is meaningless without a fileId).
+  // Returned shape is { _inline: true, inline_text, inline_filename, ... } — the
+  // caller routes this into refs and turnsToInput emits an input_text part.
+  if (shouldInline(buf, mode)) {
+    return {
+      _inline: true,
+      inline_text: buf.toString("utf8"),
+      inline_filename: effectiveFilename,
+      _sourcePath: resolved.abs,
+      _sourceRoot: resolved.root,
+      _bytes: buf.length,
+    };
   }
 
-  let bodyText = "";
-  try { bodyText = await res.text(); } catch (_) { bodyText = ""; }
-  if (!res.ok) {
-    const e = new Error(`xAI file upload error ${res.status}: ${truncate(bodyText, 300)}`);
-    e.status = res.status;
-    if (res.status < 400 || res.status >= 500) e.code = "file-upload";
-    throw e;
+  const apiBaseNorm = cacheMod.normalize(base);
+  const cacheKey = cacheMod.buildCacheKey({ bytes: buf, apiKey, apiBase: base, filename: effectiveFilename });
+  const keyFp = require("node:crypto").createHash("sha256").update(apiKey).digest("hex").slice(0, 16);
+  const useCache = !process.env.XAI_DISABLE_FILE_CACHE && cacheFile;
+
+  if (useCache) {
+    const hit = cacheMod.lookup(cacheFile, cacheKey, { apiBase: apiBaseNorm, keyFp });
+    if (hit) return { id: hit.fileId, _fromCache: true, _cacheKey: cacheKey, _sourcePath: resolved.abs, _sourceRoot: resolved.root };
   }
-  try {
-    return JSON.parse(bodyText);
-  } catch (e2) {
-    const e = new Error(`File upload parse error: ${e2.message}`);
-    e.code = "parse";
-    throw e;
-  }
+
+  const work = async () => {
+    const contentHash = require("node:crypto").createHash("sha256").update(buf).digest("hex");
+    const storedName = `${FILE_PREFIX}${contentHash.slice(0, 16)}-${baseName}`;
+    const form = new FormData();
+    form.append("expires_after", String(ttl != null ? ttl : FILE_TTL_SECONDS));
+    form.append("purpose", UPLOAD_PURPOSE);
+    form.append("file", new Blob([buf]), storedName);
+
+    let res;
+    try {
+      res = await f(`${base}/files`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${apiKey}` },
+        body: form,
+      });
+    } catch (err) {
+      const e = new Error(`File upload network error: ${(err && err.message) || err}`);
+      e.code = "file-upload";
+      throw e;
+    }
+    let bodyText = "";
+    try { bodyText = await res.text(); } catch (_) { bodyText = ""; }
+    if (!res.ok) {
+      const e = new Error(`xAI file upload error ${res.status}: ${truncate(bodyText, 300)}`);
+      e.status = res.status;
+      if (res.status < 400 || res.status >= 500) e.code = "file-upload";
+      throw e;
+    }
+    let uploaded;
+    try { uploaded = JSON.parse(bodyText); }
+    catch (e2) { const e = new Error(`File upload parse error: ${e2.message}`); e.code = "parse"; throw e; }
+    if (!isNonEmptyString(uploaded && uploaded.id)) {
+      const e = new Error("File upload returned no file id");
+      e.code = "parse";
+      throw e;
+    }
+
+    if (useCache) {
+      const entry = {
+        fileId: uploaded.id,
+        size: buf.length,
+        filename: effectiveFilename,
+        uploadedAt: Math.floor(Date.now() / 1000),
+        expiresAt: Math.floor(Date.now() / 1000) + (ttl != null ? ttl : FILE_TTL_SECONDS),
+        apiBase: apiBaseNorm,
+        keyFp,
+      };
+      await cacheMod.store(cacheFile, cacheKey, entry);
+    }
+    return uploaded;
+  };
+
+  const uploaded = useCache
+    ? await cacheMod.withInflight(cacheKey, work)
+    : await work();
+  return { ...uploaded, _cacheKey: cacheKey, _sourcePath: resolved.abs, _sourceRoot: resolved.root };
 }
 
 // Resolve a `files` param into { refs, ownedIds }. `path` entries are uploaded
-// (bridge-owned); `file_id`/`file_url` pass through untouched.
+// (bridge-owned); `file_id`/`file_url` pass through untouched; `dir` entries
+// are expanded via the glob walker and uploaded with cache-aware dedup.
 async function resolveFiles(files, opts) {
   const refs = [];
   const ownedIds = [];
-  for (const entry of files || []) {
-    if (entry.file_id) {
-      refs.push({ file_id: entry.file_id });
-    } else if (entry.file_url) {
-      refs.push({ file_url: entry.file_url });
-    } else if (entry.path) {
-      const uploaded = await uploadFile({ filePath: entry.path, filename: entry.filename, ...opts });
-      if (!isNonEmptyString(uploaded && uploaded.id)) {
-        const e = new Error("File upload returned no file id");
-        e.code = "parse";
-        throw e;
-      }
-      refs.push({ file_id: uploaded.id });
-      ownedIds.push(uploaded.id);
+  // Dedup keyed by cacheKey for uploaded files, or absolute sourcePath for
+  // inline files (which have no cacheKey). Same file appearing in both an
+  // explicit {path} and a {dir} expansion is only attached once.
+  const seen = new Set();
+  const dedupKey = (single) => single._cacheKey || `inline:${single._sourcePath}`;
+
+  async function handlePath(entry) {
+    const uploaded = await uploadFile({
+      filePath: entry.path,
+      filename: entry.filename,
+      mode: entry.mode,
+      ...opts,
+    });
+    if (uploaded && uploaded._inline) {
+      const k = dedupKey(uploaded);
+      // Order-independent dedup: if this content was already attached by a
+      // prior {dir} expansion (or another {path}), skip the duplicate push.
+      if (seen.has(k)) return;
+      seen.add(k);
+      refs.push({
+        inline_text: uploaded.inline_text,
+        inline_filename: uploaded.inline_filename,
+        sourcePath: uploaded._sourcePath,
+        sourceRoot: uploaded._sourceRoot,
+      });
+      return;
     }
+    if (!isNonEmptyString(uploaded && uploaded.id)) {
+      const e = new Error("File upload returned no file id");
+      e.code = "parse";
+      throw e;
+    }
+    if (uploaded._cacheKey) {
+      if (seen.has(uploaded._cacheKey)) return;
+      seen.add(uploaded._cacheKey);
+    }
+    refs.push({
+      file_id: uploaded.id,
+      sourcePath: uploaded._sourcePath,
+      sourceRoot: uploaded._sourceRoot,
+      sourceCacheKey: uploaded._cacheKey,
+    });
+    if (!uploaded._fromCache) ownedIds.push(uploaded.id);
   }
+
+  async function handleDir(entry) {
+    const rootList = (Array.isArray(opts.roots) && opts.roots.length)
+      ? opts.roots
+      : [require("node:fs").realpathSync(opts.cwd || process.cwd())];
+    const resolved = resolvePathUnderRoots(entry.dir.replace(/\\/g, "/"), rootList, "dir");
+    const include = entry.include || DEFAULT_INCLUDE;
+    const exclude = entry.exclude || DEFAULT_EXCLUDE;
+    const maxFiles = entry.maxFiles || DEFAULT_MAX_FILES;
+    const maxBytes = entry.maxBytes || DEFAULT_MAX_BYTES;
+
+    const { files: walked } = globMod.walk(resolved.abs, { include, exclude, maxFiles, maxBytes });
+
+    let cached = 0, uploaded = 0, skipped = 0;
+    const queue = [...walked];
+    let inlined = 0;
+    async function worker() {
+      while (queue.length) {
+        const f = queue.shift();
+        const single = await uploadFile({
+          filePath: f.abs,
+          apiKey: opts.apiKey,
+          apiBase: opts.apiBase,
+          ttl: opts.ttl,
+          roots: [resolved.root],
+          fetchImpl: opts.fetchImpl,
+          cacheFile: opts.cacheFile,
+          mode: entry.mode,
+        });
+        if (single && single._inline) {
+          const k = dedupKey(single);
+          if (seen.has(k)) { skipped += 1; continue; }
+          seen.add(k);
+          inlined += 1;
+          refs.push({
+            inline_text: single.inline_text,
+            inline_filename: single.inline_filename,
+            sourcePath: single._sourcePath,
+            sourceRoot: single._sourceRoot,
+          });
+          continue;
+        }
+        if (!isNonEmptyString(single && single.id)) continue;
+        if (seen.has(single._cacheKey)) { skipped += 1; continue; }
+        seen.add(single._cacheKey);
+        if (single._fromCache) cached += 1;
+        else { uploaded += 1; ownedIds.push(single.id); }
+        refs.push({
+          file_id: single.id,
+          sourcePath: single._sourcePath,
+          sourceRoot: single._sourceRoot,
+          sourceCacheKey: single._cacheKey,
+        });
+      }
+    }
+    const N = Math.max(1, Math.min(DIR_UPLOAD_CONCURRENCY, walked.length));
+    await Promise.all(Array.from({ length: N }, () => worker()));
+
+    process.stderr.write(`[grok] ${opts.cid || "-"} expanded dir=${entry.dir} count=${walked.length} cached=${cached} uploaded=${uploaded} inlined=${inlined} skipped=${skipped}\n`);
+  }
+
+  for (const entry of files || []) {
+    if (entry.file_id) refs.push({ file_id: entry.file_id, sourcePath: null, sourceRoot: null });
+    else if (entry.file_url) refs.push({ file_url: entry.file_url, sourcePath: null, sourceRoot: null });
+    else if (entry.path) await handlePath(entry);
+    else if (entry.dir) await handleDir(entry);
+  }
+
   return { refs, ownedIds };
 }
 
@@ -376,18 +586,165 @@ async function runGrok({ turns, model, timeoutMs, apiKey, apiBase, fetchImpl, re
   return { text, output: Array.isArray(data.output) ? data.output : null };
 }
 
+// --- Stale-File Recovery ---
+
+// Non-/g regex for boolean "does the message mention any file_id?" check.
+// Using a /g flag here would mutate lastIndex across .test() calls.
+const STALE_FILE_ID_TEST = /file[-_][A-Za-z0-9_-]+/;
+const STALE_FILE_ID_EXTRACT = /file[-_][A-Za-z0-9_-]+/g;
+
+function isStaleFileError(err) {
+  if (!err) return false;
+  const msg = String(err.message || "");
+  if (!STALE_FILE_ID_TEST.test(msg)) return false;
+  if (err.status && err.status >= 400 && err.status < 500) return true;
+  return /invalid|not found|missing|expired/i.test(msg);
+}
+
+// runWithFiles supports BOTH a fresh `grok` call (no priorTurns) and a
+// `grok-reply` continuation (priorTurns provided). The new user turn is
+// appended to priorTurns so accumulated conversation context is preserved on
+// the actual /v1/responses payload.
+async function runWithFiles(args) {
+  const { refs, ownedIds } = await resolveFiles(args.files, args);
+
+  const developerInstructions = args["developer-instructions"];
+  const prompt = args.prompt;
+  const priorTurns = args.priorTurns || null;
+
+  function buildTurns(currentRefs) {
+    if (priorTurns) {
+      return [...priorTurns, { role: "user", text: prompt, fileRefs: currentRefs }];
+    }
+    return buildInitialTurns(developerInstructions, prompt, currentRefs);
+  }
+
+  async function attempt(currentTurns) {
+    return runGrok({
+      turns: currentTurns,
+      apiKey: args.apiKey,
+      apiBase: args.apiBase,
+      fetchImpl: args.fetchImpl,
+      timeoutMs: args.timeout,
+      model: args.model,
+      reasoningEffort: args.reasoningEffort,
+    });
+  }
+
+  try {
+    const out = await attempt(buildTurns(refs));
+    return { text: out.text, output: out.output, refs, ownedIds };
+  } catch (e) {
+    if (!isStaleFileError(e)) throw e;
+    const matches = (e.message || "").match(STALE_FILE_ID_EXTRACT) || [];
+    const matchingRefs = refs.filter((r) => r.sourcePath && matches.includes(r.file_id));
+    if (matchingRefs.length === 0) throw e;
+
+    const cacheMod = require("./cache.js");
+    if (args.cacheFile) {
+      for (const r of matchingRefs) {
+        await cacheMod.evict(args.cacheFile, r.file_id);
+      }
+    }
+
+    for (let i = 0; i < refs.length; i++) {
+      const r = refs[i];
+      if (!matchingRefs.includes(r)) continue;
+      const reuploaded = await uploadFile({
+        filePath: r.sourcePath,
+        apiKey: args.apiKey,
+        apiBase: args.apiBase,
+        ttl: args.ttl || FILE_TTL_SECONDS,
+        roots: [r.sourceRoot],
+        cacheFile: args.cacheFile,
+        fetchImpl: args.fetchImpl,
+      });
+      refs[i] = {
+        ...r,
+        file_id: reuploaded.id,
+        sourceCacheKey: reuploaded._cacheKey,
+      };
+      // Track the fresh xAI file_id so uploadedFileIds in the MCP response
+      // reflects what this session actually uploaded after stale-id recovery.
+      if (!reuploaded._fromCache) ownedIds.push(reuploaded.id);
+    }
+
+    const out = await attempt(buildTurns(refs));
+    return { text: out.text, output: out.output, refs, ownedIds };
+  }
+}
+
+// --- Multi-Root Path Resolution ---
+
+function validateRoots(roots) {
+  const fsx = require("node:fs");
+  if (!Array.isArray(roots) || roots.length === 0) {
+    throw new Error("'roots' must be a non-empty array of absolute directory paths");
+  }
+  for (const r of roots) {
+    if (typeof r !== "string" || r.length === 0) {
+      throw new Error("'roots' entries must be non-empty strings");
+    }
+    if (!path.isAbsolute(r)) {
+      throw new Error(`'roots' entry "${r}" must be an absolute path`);
+    }
+    let st;
+    try { st = fsx.statSync(r); }
+    catch (e) { throw new Error(`'roots' entry "${r}" does not exist: ${e.message}`); }
+    if (!st.isDirectory()) {
+      throw new Error(`'roots' entry "${r}" is not a directory`);
+    }
+  }
+}
+
+function resolvePathUnderRoots(p, roots, type) {
+  const fsx = require("node:fs");
+  const isAbs = path.isAbsolute(p);
+  for (const root of roots) {
+    const abs = isAbs ? p : path.join(root, p);
+    let realRoot, realAbs;
+    try { realRoot = fsx.realpathSync(root); } catch (_) { continue; }
+    try { realAbs = fsx.realpathSync(abs); } catch (_) { continue; }
+    const rel = path.relative(realRoot, realAbs);
+    if (rel !== "" && (rel.startsWith("..") || path.isAbsolute(rel))) continue;
+    let st;
+    try { st = fsx.statSync(realAbs); } catch (_) { continue; }
+    if (type === "file") {
+      if (!st.isFile()) continue;
+      return { root: realRoot, abs: realAbs, size: st.size };
+    }
+    if (type === "dir") {
+      // Multi-root fallback: continue scanning even if this root has a non-dir
+      // at that path. Only throw the "wrong type" error if NO root contains a
+      // directory there.
+      if (!st.isDirectory()) continue;
+      return { root: realRoot, abs: realAbs, size: 0 };
+    }
+  }
+  if (isAbs) {
+    throw new Error(`"${p}" is outside all declared roots: ${roots.join(", ")}`);
+  }
+  throw new Error(`"${p}" not found in any root: ${roots.join(", ")}`);
+}
+
 // --- Request Handlers ---
 
 const FILES_SCHEMA = {
   type: "array",
-  description: "Optional files to attach. Each item has EXACTLY ONE of: path (local file the bridge uploads), file_id (an already-uploaded xAI file id), or file_url (a public URL). Optional filename overrides the stored upload name.",
+  description: "Optional files to attach. Each item has EXACTLY ONE of: path (local file; delivery controlled by mode = upload | inline | auto), file_id (an already-uploaded xAI file id), file_url (a public URL), or dir (recursive directory expansion; delivery controlled by mode). Optional filename overrides the stored upload name (applies only to path entries delivered via upload).",
   items: {
     type: "object",
     properties: {
-      path: { type: "string", description: "Local file path; bridge uploads it (resolved against cwd)" },
+      path: { type: "string", description: "Local file path; bridge attaches it (resolved against roots[] or cwd). Delivery is controlled by mode: uploaded via the xAI Files API (default) or inlined as input_text." },
       file_id: { type: "string", description: "Existing xAI file id" },
       file_url: { type: "string", description: "Public URL to a file" },
+      dir: { type: "string", description: "Local directory to expand recursively (resolved against roots[] or cwd)" },
+      include: { type: "array", items: { type: "string" }, description: "POSIX glob patterns to include during dir expansion. Defaults to ['**/*']." },
+      exclude: { type: "array", items: { type: "string" }, description: "POSIX glob patterns to exclude during dir expansion. Defaults skip .git, node_modules, dist, build, .venv, **/*.lock, **/.next, **/.svelte-kit." },
+      maxFiles: { type: "number", description: "Hard cap on files per dir expansion. Default 50." },
+      maxBytes: { type: "number", description: "Hard cap on bytes per dir expansion. Default 134217728 (128 MB)." },
       filename: { type: "string", description: "Override stored filename for a path upload" },
+      mode: { type: "string", enum: ["auto", "inline", "upload"], default: "upload", description: "How to deliver this file to Grok. 'upload' (default) uses the xAI Files API (input_file); 'inline' embeds the file content directly as input_text (best for source code so Grok reads line-by-line); 'auto' inlines when the file is probably text and <= GROK_INLINE_MAX_BYTES (default 256 KB), otherwise uploads. For {dir} entries the mode is inherited by every walked file. Must NOT be set on file_id/file_url entries (those bypass the upload path; setting mode there returns -32602)." },
     },
   },
 };
@@ -396,11 +753,12 @@ const GROK_PROPERTIES = {
   prompt: { type: "string", description: "The delegation prompt" },
   "developer-instructions": { type: "string", description: "Expert system instructions (sent as a system message)" },
   model: { type: "string", description: "xAI model id. Defaults to GROK_DEFAULT_MODEL or grok-4.3.", default: DEFAULT_MODEL },
-  reasoning_effort: { type: "string", description: "Reasoning effort (e.g. low, medium, high). Defaults to GROK_REASONING_EFFORT or high. Use 'none' to omit the field.", default: DEFAULT_REASONING_EFFORT },
+  reasoning_effort: { type: "string", description: "Reasoning effort (low, medium, high). 'none' omits the field.", default: DEFAULT_REASONING_EFFORT },
   timeout: { type: "number", description: "Soft timeout in ms. 1..600000. Default 180000.", default: DEFAULT_TIMEOUT_MS },
   files: FILES_SCHEMA,
-  sandbox: { type: "string", enum: ["read-only", "workspace-write"], default: "read-only", description: "Accepted for call-shape parity with other providers; ignored (Grok cannot edit files)." },
-  cwd: { type: "string", description: "Base directory for resolving relative file `path` uploads. Defaults to the server's cwd." },
+  roots: { type: "array", items: { type: "string" }, description: "Optional absolute directory roots for resolving files[].path and files[].dir. Defaults to [cwd]." },
+  sandbox: { type: "string", enum: ["read-only", "workspace-write"], default: "read-only", description: "Accepted for call-shape parity; ignored." },
+  cwd: { type: "string", description: "Base dir for resolving relative paths. Defaults to server cwd." },
 };
 
 // Validate a `files` param. Returns an error string, or null when valid/absent.
@@ -409,10 +767,27 @@ function validateFiles(files) {
   if (!Array.isArray(files)) return "'files' must be an array when provided";
   for (const entry of files) {
     if (!isObject(entry)) return "each 'files' entry must be an object";
-    const keys = ["path", "file_id", "file_url"].filter((k) => entry[k] !== undefined);
-    if (keys.length !== 1) return "each 'files' entry needs exactly one of path, file_id, or file_url";
+    const keys = ["path", "file_id", "file_url", "dir"].filter((k) => entry[k] !== undefined);
+    if (keys.length !== 1) return "each 'files' entry needs exactly one of path, file_id, file_url, or dir";
     if (!isNonEmptyString(entry[keys[0]])) return `'files' entry ${keys[0]} must be a non-empty string`;
     if (entry.filename !== undefined && !isNonEmptyString(entry.filename)) return "'files' entry filename must be a non-empty string when provided";
+    if (entry.mode !== undefined) {
+      if (typeof entry.mode !== "string") return "'files' entry mode must be a string when provided";
+      if (!["auto", "inline", "upload"].includes(entry.mode)) return `'files' entry mode "${entry.mode}" must be one of: auto, inline, upload`;
+      if (entry.file_id !== undefined || entry.file_url !== undefined) return "'files' entry mode applies only to path/dir entries (not file_id/file_url)";
+    }
+    if (entry.dir !== undefined) {
+      for (const list of [entry.include, entry.exclude]) {
+        if (list === undefined) continue;
+        if (!Array.isArray(list)) return "'files' entry include/exclude must be arrays";
+        for (const p of list) {
+          if (typeof p !== "string" || p.length === 0) return "include/exclude patterns must be non-empty strings";
+          if (p.includes("\\")) return `glob pattern "${p}" contains backslashes; v1 patterns are POSIX-only (use /)`;
+        }
+      }
+      if (entry.maxFiles !== undefined && (typeof entry.maxFiles !== "number" || entry.maxFiles <= 0)) return "'maxFiles' must be a positive number";
+      if (entry.maxBytes !== undefined && (typeof entry.maxBytes !== "number" || entry.maxBytes <= 0)) return "'maxBytes' must be a positive number";
+    }
   }
   return null;
 }
@@ -445,6 +820,7 @@ const handlers = {
               threadId: { type: "string", description: "Session ID returned by a previous grok call" },
               prompt: { type: "string", description: "Follow-up prompt" },
               files: FILES_SCHEMA,
+              roots: { type: "array", items: { type: "string" }, description: "Optional absolute directory roots for resolving files[].path and files[].dir." },
               model: { type: "string", default: DEFAULT_MODEL },
               reasoning_effort: { type: "string", default: DEFAULT_REASONING_EFFORT, description: "Reasoning effort; defaults to GROK_REASONING_EFFORT or high. Use 'none' to omit." },
               timeout: { type: "number", default: DEFAULT_TIMEOUT_MS },
@@ -541,34 +917,44 @@ const handlers = {
     const startedAt = Date.now();
     let outcome = "ok";
     try {
-      // Upload/resolve any attached files first (so an upload failure short-circuits).
-      const { refs, ownedIds } = await resolveFiles(args.files, {
+      let rootList;
+      if (Array.isArray(args.roots) && args.roots.length) {
+        try { validateRoots(args.roots); }
+        catch (e) {
+          if (shouldRespond) sendError(id, -32602, `Invalid params: ${e.message}`);
+          return;
+        }
+        rootList = args.roots;
+      } else {
+        rootList = [require("node:fs").realpathSync(args.cwd || process.cwd())];
+      }
+
+      const out = await runWithFiles({
+        prompt: args.prompt,
+        "developer-instructions": args["developer-instructions"],
+        files: args.files,
+        priorTurns: priorTurns || null,
         apiKey: process.env.XAI_API_KEY,
         apiBase: DEFAULT_API_BASE,
         ttl: FILE_TTL_SECONDS,
+        roots: rootList,
         cwd: args.cwd,
-      });
-
-      const turns = priorTurns
-        ? [...priorTurns, { role: "user", text: args.prompt, fileRefs: refs }]
-        : buildInitialTurns(args["developer-instructions"], args.prompt, refs);
-
-      const { text, output } = await runGrok({
-        turns,
+        cacheFile: process.env.XAI_DISABLE_FILE_CACHE ? null : DEFAULT_CACHE_FILE,
         model: args.model,
-        timeoutMs: args.timeout,
         reasoningEffort: resolveReasoningEffort(args.reasoning_effort),
-        apiKey: process.env.XAI_API_KEY,
-        apiBase: DEFAULT_API_BASE,
+        timeout: args.timeout,
+        cid: id,
       });
 
-      // Persist the turn so grok-reply can continue this thread. `items` holds the
-      // server's raw output for verbatim replay (falls back to `text` if absent).
-      sessions.set(threadId, [...turns, { role: "assistant", text, items: output || undefined }]);
+      // Persist turn history symmetrically with how runWithFiles built them.
+      const turnsForPersist = priorTurns
+        ? [...priorTurns, { role: "user", text: args.prompt, fileRefs: out.refs }]
+        : buildInitialTurns(args["developer-instructions"], args.prompt, out.refs);
+      sessions.set(threadId, [...turnsForPersist, { role: "assistant", text: out.text, items: out.output || undefined }]);
 
       if (shouldRespond) {
-        const result = { content: [{ type: "text", text }], threadId };
-        if (ownedIds.length) result.uploadedFileIds = ownedIds;
+        const result = { content: [{ type: "text", text: out.text }], threadId };
+        if (out.ownedIds.length) result.uploadedFileIds = out.ownedIds;
         sendResponse(id, result);
       }
     } catch (e) {
@@ -666,9 +1052,14 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports.turnsToInput = turnsToInput;
   module.exports.parseResponsesOutput = parseResponsesOutput;
   module.exports.runGrok = runGrok;
+  module.exports.runWithFiles = runWithFiles;
   module.exports.uploadFile = uploadFile;
   module.exports.resolveFiles = resolveFiles;
   module.exports.validateFiles = validateFiles;
   module.exports.FILE_PREFIX = FILE_PREFIX;
   module.exports.FILE_TTL_SECONDS = FILE_TTL_SECONDS;
 }
+
+// Production exports (used by later tasks as well as tests)
+module.exports.validateRoots = validateRoots;
+module.exports.resolvePathUnderRoots = resolvePathUnderRoots;

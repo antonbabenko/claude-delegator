@@ -39,18 +39,31 @@ User question or topic: $ARGUMENTS
      prompt: "[7-section delegation prompt]",
      "developer-instructions": "[contents of expert prompt file]",
      sandbox: "read-only",
-     cwd: "[repo root - required when attaching files by path]",
-     files: [{ path: "path/relative/to/cwd" }]   // attach referenced local files by default
+     cwd: "[repo root]",
+     roots: ["[absolute repo root]"],            // optional; falls back to [cwd]
+     files: [{ path: "path/relative/to/root" }]  // attach referenced local files by default
    })
    ```
-   **Files:** attach the local files Grok should read by default in `files` as `[{ path }]`,
-   and set `cwd` to the repo root - a `path` resolves against `cwd` and a path outside it is
-   refused. The bridge uploads it to the xAI Files API and references it. You may also pass
-   `{ file_id }` (already uploaded) or `{ file_url }` (public URL). Uploaded files are tagged
-   and auto-expire (default 7 days, `GROK_FILE_TTL_SECONDS`); prune early with `/grok-files`.
+   **Files:** attach the local files Grok should read by default in `files`. Each entry
+   is EXACTLY ONE of `{ path }` (local file; delivery controlled by `mode` — default
+   uploads to the xAI Files API), `{ file_id }` (already uploaded), `{ file_url }`
+   (public URL), or `{ dir, include?, exclude?, maxFiles?, maxBytes? }`
+   (recursive directory expansion via the bundled glob
+   walker; defaults skip `.git`, `node_modules`, `dist`, `build`, `.venv`, lock files,
+   framework build dirs; hard caps `maxFiles=50` / `maxBytes=128MB`). Path/dir entries
+   also accept `mode: "auto" | "inline" | "upload"` (default `"upload"`): **`"inline"`
+   embeds the file as `input_text` so Grok reads it line-by-line** (use this for source
+   code review — `input_file` references are searchable, not always fully read);
+   `"auto"` inlines text ≤ `GROK_INLINE_MAX_BYTES` (default 256 KB) and uploads the rest;
+   `"upload"` always goes through the Files API. Resolution: `path` and `dir` resolve
+   under `roots[]` (first-root-wins) or `cwd` if `roots` is omitted. Uploads are SHA-256
+   dedup-cached locally, so a second `/ask-grok` with the same files uploads nothing
+   (inline files skip the cache entirely — they cost prompt tokens each call but are
+   always fully read). Uploads auto-expire (default 7 days, `GROK_FILE_TTL_SECONDS`);
+   prune with `/grok-files`. Full reference: `TECHNICAL.md` § "Grok files and cleanup".
 
-   **Grok context parity (CRITICAL):** Grok cannot list, glob, or walk the repo - it only
-   sees files in the `files` array. For any open-ended, repo-wide question
+   **Grok context parity (CRITICAL):** Grok cannot list, glob, or walk the repo - it
+   only sees what is in the `files` array. For any open-ended, repo-wide question
    ("improve this repo", "audit this code", "what are tradeoffs in our architecture"),
    Grok will otherwise answer from the prompt text alone and produce abstract,
    unciteable analysis. Whenever the prompt asks Grok to reason about the repo at all,
@@ -59,18 +72,18 @@ User question or topic: $ARGUMENTS
    1. Pick 2-6 high-signal files: project `CLAUDE.md` / `AGENTS.md` / `README.md` (if
       present), top-level entrypoints (`main.tf`, `package.json`, `app.py`,
       `Cargo.toml`, `pyproject.toml`, etc.), and any module the question is clearly
-      about.
-   2. Pass them as `files: [{ path: "CLAUDE.md" }, { path: "main.tf" }, ...]` with
-      `cwd` = repo root.
-   3. Keep total payload under 48 MB (the bridge limit). For huge repos, attach
-      `CLAUDE.md` + 1-3 anchor files (entrypoints, the module the question targets)
-      and let Grok ask follow-ups in its response instead of trying to ship a
-      file tree. Do NOT generate a temp file outside `cwd` (e.g. under `/tmp` or
-      `$TMPDIR`) and attach it - the Grok bridge refuses any `path` outside `cwd`
-      (containment check in the MCP server), so out-of-tree attachments will fail.
-      If a tree is genuinely needed, write it to a repo-local path
-      (e.g. `./.grok-tree.txt`, then delete after the call) so it satisfies the
-      `cwd` containment rule.
+      about. For a whole directory, prefer a `{ dir }` entry over enumerating files.
+   2. Pass them as `files: [{ path: "CLAUDE.md", mode: "auto" }, { path: "main.tf", mode: "auto" }, { dir: "src", include: ["**/*.ts"], mode: "auto" }, ...]`
+      with `cwd` = repo root. `mode: "auto"` is strongly recommended for source-code
+      review — it inlines text files so Grok reads them line-by-line instead of
+      treating them as searchable attachments (the default `"upload"` is back-compat
+      with v2.0; explicitly say `"inline"` to force inline regardless of size). For
+      cross-repo questions, pass `roots: [repoA, repoB]` and either relative paths
+      (first root holding the file wins) or absolute paths (must resolve under one
+      of the roots). With `roots` you NO LONGER need to put every attachment under
+      a single `cwd`.
+   3. Stay under 48 MB per file. `{ dir }` enforces its own `maxFiles` / `maxBytes`
+      caps - raise them on the entry if the default is too tight, or narrow `include`.
    4. State the attached set in the prompt so Grok knows what evidence it has
       ("Attached: CLAUDE.md, main.tf, app/app.py - reason from these.").
    5. Fallback when `CLAUDE.md`/`AGENTS.md` is absent: substitute `README.md`,

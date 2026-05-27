@@ -71,10 +71,14 @@ it can read context to advise but cannot mutate the real workspace, even under
 
 A bundled zero-dependency Node bridge over the xAI Responses API
 (`/v1/responses`). It is advisory-only (it cannot edit files) but it can read
-attached files: pass `files: [{ path | file_id | file_url }]` and the bridge
-uploads to the xAI Files API and references them. Uploads are tagged
-`claude-delegator-*` and carry an `expires_after` (default 7 days); prune early
-with `/grok-files`. See [Grok files and cleanup](#grok-files-and-cleanup).
+attached files: pass `files: [{ path | file_id | file_url | dir }]` and the
+bridge delivers them per the `mode` setting — uploaded to the xAI Files API
+(default), inlined as `input_text` (for line-by-line reading of source files),
+or expanded via the bundled glob walker for directories. Resolution is against
+the top-level `roots: string[]` (first-root-wins) or `cwd` when `roots` is
+omitted. Uploaded files are SHA-256 dedup-cached locally and carry an
+`expires_after` (default 7 days); manage with `/grok-files`
+(`list` / `prune` / `gc`). See [Grok files and cleanup](#grok-files-and-cleanup).
 
 The bridge default model is `grok-4.3`. It needs `XAI_API_KEY` in its environment;
 a missing key surfaces `errorKind: "missing-auth"`.
@@ -169,20 +173,127 @@ budget is exhausted, the call fails with `errorKind: "timeout"` (still
 
 ## Grok files and cleanup
 
-Grok can read attached files. Pass `files: [{ path | file_id | file_url }]`:
+Grok reads attached files via the `files[]` parameter. Each entry has EXACTLY ONE of:
 
-- `path` - a local file the bridge uploads to the xAI Files API, then references.
-- `file_id` - an already-uploaded xAI file id.
-- `file_url` - a public URL.
+- `path` - a local file. Delivery is controlled by `mode` (default `"upload"` — bridge uploads to the xAI Files API; `"inline"` embeds as `input_text`; `"auto"` picks per heuristic — see "Inline vs upload delivery" below).
+- `file_id` - an already-uploaded xAI file id (passed through, no upload).
+- `file_url` - a public URL (passed through).
+- `dir` - a local directory expanded recursively. Same `mode` rules; the walker
+  applies the chosen mode to every selected file (see below).
 
-A `path` resolves against the call's `cwd` (default = the server's cwd), so set `cwd`
-to the directory that contains the files - for a repo, the repo root - or the upload
-is refused as outside the working directory. Attach referenced local files by default.
+A `path` or `dir` resolves against the top-level `roots[]` array (absolute directories,
+first-root-wins for relative entries) or, when `roots` is omitted, against `cwd`. A
+path that resolves outside every declared root is refused (no exfiltration); symlinks
+that escape via `realpath` are also refused. An oversize file (>48 MB) returns
+`file-too-large`.
 
-Uploads are tagged `claude-delegator-*` and carry an `expires_after` set by
-`GROK_FILE_TTL_SECONDS` (default `604800` = 7 days, clamped 1h..30d). List or prune
-bridge-owned uploads early with `/grok-files`. A path outside the working directory
-is refused (no exfiltration); an oversize file returns `file-too-large`.
+### Cross-repo example
+
+```js
+mcp__grok__grok({
+  prompt: "Compare the auth strategy in these two services.",
+  cwd: "/Users/me/work/service-a",
+  roots: ["/Users/me/work/service-a", "/Users/me/work/service-b"],
+  files: [
+    { path: "src/auth.ts" },                          // resolves under service-a (first root)
+    { path: "/Users/me/work/service-b/src/auth.ts" }, // absolute, must lie under one root
+    { dir: "docs", include: ["**/*.md"], maxFiles: 20 }, // expands service-a/docs
+  ],
+})
+```
+
+### Directory expansion (`{dir}`)
+
+The bridge bundles a zero-dep glob walker (`server/grok/glob.js`) so you do not have
+to enumerate every file by hand:
+
+- `include` (default `["**/*"]`), `exclude` (defaults skip `.git`, `node_modules`,
+  `dist`, `build`, `.venv`, `**/*.lock`, `**/.next`, `**/.svelte-kit`).
+- `maxFiles` (default 50), `maxBytes` (default 128 MB). Exceeding either throws a
+  hard error with counts - no silent truncation.
+- Walker is symlink-safe: dirs are pruned **before** descent; symlinks to dirs are
+  not followed (cycle safety); symlinks to files are followed only when `realpath`
+  stays inside the resolved root.
+- Patterns are POSIX (`/` separator). Backslash escape sequences are rejected at
+  validation; literal `path`/`dir` values **may** contain backslashes (Windows OK).
+
+### Inline vs upload delivery (`mode`)
+
+xAI's `input_file` references are searchable attachments; for large source files
+the model may enumerate them rather than read line-by-line. To force a full
+line-by-line read, deliver the content as `input_text` instead:
+
+```js
+files: [
+  { path: "app/apps/api/routes.py", mode: "inline" },   // forced inline
+  { path: "modules/web.tm.hcl",     mode: "auto" },     // text + small → inline
+  { path: "design.pdf",             mode: "auto" },     // binary or big → upload
+  { dir:  "src", include: ["**/*.ts"], mode: "auto" },  // each walked file decides
+]
+```
+
+- `"upload"` (default) - always uses the xAI Files API. Back-compat with v2.0.
+- `"inline"` - embeds the file content directly as a separate `input_text` part
+  with a `=== {filename} ===` header. No `/files` call, no cache row, no
+  `uploadedFileIds` entry. Best for source code review.
+- `"auto"` - inlines when the file is probably text (no NUL byte; <5%
+  non-printable bytes in the first 4 KB) AND its size is at or below
+  `GROK_INLINE_MAX_BYTES` (default 262144 = 256 KB). Otherwise uploads.
+
+For `{dir}` entries the `mode` is inherited by every walked file. `mode` must
+NOT be set on `file_id` / `file_url` entries (those bypass the upload path
+entirely; setting `mode` on them returns `-32602` from `validateFiles`).
+Override the inline ceiling with `GROK_INLINE_MAX_BYTES=<bytes>` in the bridge
+environment.
+
+### Content-hash cache
+
+Uploads are deduplicated by SHA-256 content hash. A reuse hit requires the SAME content
+**plus** the same API key, the same normalised `apiBase`, and the same effective filename
+(see cache-key below); identical bytes uploaded under a different filename or a different
+key produce separate cache rows:
+
+- Cache file: `~/.claude/cache/claude-delegator/grok-files.json`
+- Cache key: `sha256(bytes)@sha256(XAI_API_KEY)[:16]@normalize(apiBase)@effectiveFilename`
+  - Key rotation auto-invalidates entries (different `keyFp`).
+  - Different `apiBase` (including port/protocol differences) → separate rows.
+  - Different effective filename (basename or `filename` override) → separate rows.
+- Reuse check: hit + `expiresAt > now + 60s` + `apiBase` + `keyFp` all match.
+- In-process Promise dedup (`withInflight`): concurrent uploads of the same content
+  collapse into a single network call.
+- Cross-process safety: mkdir-based lock (`server/grok/lock.js`) with token-specific
+  owner markers + stale reclaim via atomic rename. (`lock.heartbeat()` is provided
+  for long-running holders; cache writes complete sub-second so the 5s stale window
+  is not at risk and the bridge does not call it.)
+- Stale xAI file id mid-`/v1/responses`: when the responses call returns a 4xx
+  whose body names a `file_*` / `file-*` id from the current refs (and the ref has a
+  `sourcePath`), the bridge evicts the cached row, re-uploads from the original
+  disk path, and retries the responses call **once**. Errors that don't name a
+  known file id are surfaced unchanged.
+- `XAI_DISABLE_FILE_CACHE=1` (env) skips the cache layer entirely (debugging).
+
+Stored upload filenames are `claude-delegator-{sha256[:16]}-{basename}`. Uploads also
+carry `expires_after` set by `GROK_FILE_TTL_SECONDS` (default `604800` = 7 days,
+clamped 1h..30d).
+
+### Cleanup (`/grok-files`)
+
+The bundled `server/grok/files-admin.js` supports three subcommands:
+
+- `list` - shows total xAI file count and every `claude-delegator-*` upload.
+- `prune --older-than <30m|24h|7d|seconds> [--yes]` - dry run by default; deletes
+  **remote** bridge-owned files matched by filename prefix + age. Works without the
+  local cache; safe for environments where the cache was lost or never existed.
+- `gc [--all-keys] [--force-local-prune]` - syncs the **local** cache with the
+  remote file list via one paginated `GET /v1/files`. Prunes local rows whose
+  `fileId` is no longer on xAI. Default scope is the current `XAI_API_KEY` +
+  `XAI_API_BASE` rows only. `--all-keys` widens to foreign rows but leaves them
+  in place when remote absence is ambiguous (the current key can't see foreign
+  files). `--force-local-prune` drops ambiguous foreign rows anyway.
+
+`prune` and `gc` are complementary: `prune` is the remote-side cleaner; `gc` keeps
+the local cache aligned with remote state. The `claude-delegator-` filename prefix
+is a hard safety invariant on both paths - your own xAI files are never touched.
 
 ## Customizing expert prompts
 
