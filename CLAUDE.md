@@ -83,6 +83,22 @@ Retries use multi-turn (`*-reply` with `threadId`) so the expert remembers previ
 
 Every expert can operate in **advisory** (`sandbox: read-only`) or **implementation** (`sandbox: workspace-write`) mode based on the task.
 
+## Grok file access (v2)
+
+The Grok bridge attaches repo files to the conversation via two top-level args:
+
+- `files[]` - each entry is `{path | file_id | file_url | dir}`.
+- `roots[]` - optional absolute directories; relative `path`/`dir` resolve under the first root that contains them. Defaults to `[cwd]`.
+
+Local SHA-256 cache (`~/.claude/cache/claude-delegator/grok-files.json`) deduplicates uploads across calls: same content + same API key + same `apiBase` + same filename = no re-upload. `dir` entries are expanded via a zero-dep glob walker with prune-before-descend; defaults skip `.git`, `node_modules`, `dist`, `build`, `.venv`, lock files, and common framework build dirs.
+
+Maintenance via `server/grok/files-admin.js`:
+- `list` - shows bridge-owned files on xAI.
+- `prune --older-than <duration>` - deletes remote files by filename prefix + age.
+- `gc [--all-keys] [--force-local-prune]` - syncs the local cache via one paginated `GET /v1/files`. Default scope is the current `XAI_API_KEY` + `XAI_API_BASE`.
+
+Set `XAI_DISABLE_FILE_CACHE=1` to bypass the cache (debugging).
+
 ## Key Design Decisions
 
 1. **Native & Bridge MCP** - Codex has a native `mcp-server` command. Gemini requires a bundled bridge (`server/gemini/index.js`) that wraps the Antigravity CLI (`agy`) in print mode. Grok has no MCP or CLI server mode, so a bundled bridge (`server/grok/index.js`) wraps the xAI **Responses API** (`/v1/responses`) directly - advisory-only (no file editing), but it can READ attached files via the xAI Files API (`files:[{path|file_id|file_url}]`); uploads auto-expire (7-day default, `GROK_FILE_TTL_SECONDS`) and are prunable with `/grok-files` (`server/grok/files-admin.js`).

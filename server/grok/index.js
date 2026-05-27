@@ -3,18 +3,27 @@
 /**
  * Claude Delegator - Grok (xAI) MCP Bridge
  *
- * A zero-dependency MCP server that calls the xAI **Responses API**
- * (`POST /v1/responses`). Speaks JSON-RPC 2.0 over stdio.
+ * Zero-dependency MCP server speaking JSON-RPC 2.0 over stdio that calls the
+ * xAI Responses API (POST /v1/responses). The Responses endpoint is required
+ * to attach uploaded files. Multi-turn state is held in-memory; the bridge
+ * resends the full `input` each turn rather than relying on previous_response_id.
  *
- * The Responses endpoint (not chat/completions) is required to attach uploaded
- * files (`{type:"input_file", file_id}`). The bridge owns conversation state
- * directly, so multi-turn (grok-reply) is an in-memory threadId -> turns map and
- * we resend the full `input` each turn (no reliance on previous_response_id).
+ * File access (v2):
+ *   - files: [{ path | file_id | file_url | dir }]; paths and dirs resolve under
+ *     roots: string[] (top-level), or [cwd] if roots is omitted.
+ *   - dir entries are expanded by the bundled glob walker (./glob.js) with
+ *     prune-before-descend, symlink-safe containment, and maxFiles/maxBytes caps.
+ *   - Uploads are SHA-256 deduplicated via the local cache at
+ *     ~/.claude/cache/claude-delegator/grok-files.json (./cache.js). Cache key
+ *     scopes by content + API key + normalised apiBase + effective filename.
+ *   - Cross-process cache safety via mkdir-based lock with token-specific
+ *     owner markers and heartbeat (./lock.js).
+ *   - 404 mid-/v1/responses triggers evict + re-upload + retry once.
  *
  * Auth: XAI_API_KEY (env). Model: GROK_DEFAULT_MODEL (env) or grok-4.3.
  * Endpoint: XAI_API_BASE (env) or https://api.x.ai/v1.
  * File TTL: GROK_FILE_TTL_SECONDS (env) or 604800 (7 days).
- * Reasoning effort: GROK_REASONING_EFFORT (env) or "high"; per-call reasoning_effort overrides.
+ * Cache off switch: XAI_DISABLE_FILE_CACHE=1.
  */
 
 const crypto = require("node:crypto");
