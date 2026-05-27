@@ -45,6 +45,17 @@ const UPLOAD_PURPOSE = "assistants";
 
 const cacheModule = require("./cache.js");
 const DEFAULT_CACHE_FILE = cacheModule.CACHE_FILE;
+const globMod = require("./glob.js");
+
+const DEFAULT_INCLUDE = ["**/*"];
+const DEFAULT_EXCLUDE = [
+  ".git", ".git/**", "node_modules", "node_modules/**",
+  "dist/**", "build/**", ".venv/**", "**/*.lock",
+  "**/.next/**", "**/.svelte-kit/**",
+];
+const DEFAULT_MAX_FILES = 50;
+const DEFAULT_MAX_BYTES = 128 * 1024 * 1024;
+const DIR_UPLOAD_CONCURRENCY = 4;
 
 // Reasoning effort: per-call value wins, then GROK_REASONING_EFFORT, then the
 // default. "", "none", or "off" omit the field so the model uses its own default.
@@ -311,26 +322,86 @@ async function uploadFile({ filePath, filename, apiKey, apiBase, ttl, roots, cwd
 }
 
 // Resolve a `files` param into { refs, ownedIds }. `path` entries are uploaded
-// (bridge-owned); `file_id`/`file_url` pass through untouched.
+// (bridge-owned); `file_id`/`file_url` pass through untouched; `dir` entries
+// are expanded via the glob walker and uploaded with cache-aware dedup.
 async function resolveFiles(files, opts) {
   const refs = [];
   const ownedIds = [];
-  for (const entry of files || []) {
-    if (entry.file_id) {
-      refs.push({ file_id: entry.file_id });
-    } else if (entry.file_url) {
-      refs.push({ file_url: entry.file_url });
-    } else if (entry.path) {
-      const uploaded = await uploadFile({ filePath: entry.path, filename: entry.filename, ...opts });
-      if (!isNonEmptyString(uploaded && uploaded.id)) {
-        const e = new Error("File upload returned no file id");
-        e.code = "parse";
-        throw e;
-      }
-      refs.push({ file_id: uploaded.id });
-      ownedIds.push(uploaded.id);
+  const seenCacheKeys = new Set();
+
+  async function handlePath(entry) {
+    const uploaded = await uploadFile({
+      filePath: entry.path,
+      filename: entry.filename,
+      ...opts,
+    });
+    if (!isNonEmptyString(uploaded && uploaded.id)) {
+      const e = new Error("File upload returned no file id");
+      e.code = "parse";
+      throw e;
     }
+    if (uploaded._cacheKey) seenCacheKeys.add(uploaded._cacheKey);
+    refs.push({
+      file_id: uploaded.id,
+      sourcePath: uploaded._sourcePath,
+      sourceRoot: uploaded._sourceRoot,
+      sourceCacheKey: uploaded._cacheKey,
+    });
+    if (!uploaded._fromCache) ownedIds.push(uploaded.id);
   }
+
+  async function handleDir(entry) {
+    const rootList = (Array.isArray(opts.roots) && opts.roots.length)
+      ? opts.roots
+      : [require("node:fs").realpathSync(opts.cwd || process.cwd())];
+    const resolved = resolvePathUnderRoots(entry.dir.replace(/\\/g, "/"), rootList, "dir");
+    const include = entry.include || DEFAULT_INCLUDE;
+    const exclude = entry.exclude || DEFAULT_EXCLUDE;
+    const maxFiles = entry.maxFiles || DEFAULT_MAX_FILES;
+    const maxBytes = entry.maxBytes || DEFAULT_MAX_BYTES;
+
+    const { files: walked } = globMod.walk(resolved.abs, { include, exclude, maxFiles, maxBytes });
+
+    let cached = 0, uploaded = 0, skipped = 0;
+    const queue = [...walked];
+    async function worker() {
+      while (queue.length) {
+        const f = queue.shift();
+        const single = await uploadFile({
+          filePath: f.abs,
+          apiKey: opts.apiKey,
+          apiBase: opts.apiBase,
+          ttl: opts.ttl,
+          roots: [resolved.root],
+          fetchImpl: opts.fetchImpl,
+          cacheFile: opts.cacheFile,
+        });
+        if (!isNonEmptyString(single && single.id)) continue;
+        if (seenCacheKeys.has(single._cacheKey)) { skipped += 1; continue; }
+        seenCacheKeys.add(single._cacheKey);
+        if (single._fromCache) cached += 1;
+        else { uploaded += 1; ownedIds.push(single.id); }
+        refs.push({
+          file_id: single.id,
+          sourcePath: single._sourcePath,
+          sourceRoot: single._sourceRoot,
+          sourceCacheKey: single._cacheKey,
+        });
+      }
+    }
+    const N = Math.max(1, Math.min(DIR_UPLOAD_CONCURRENCY, walked.length));
+    await Promise.all(Array.from({ length: N }, () => worker()));
+
+    process.stderr.write(`[grok] ${opts.cid || "-"} expanded dir=${entry.dir} count=${walked.length} cached=${cached} uploaded=${uploaded} skipped=${skipped}\n`);
+  }
+
+  for (const entry of files || []) {
+    if (entry.file_id) refs.push({ file_id: entry.file_id, sourcePath: null, sourceRoot: null });
+    else if (entry.file_url) refs.push({ file_url: entry.file_url, sourcePath: null, sourceRoot: null });
+    else if (entry.path) await handlePath(entry);
+    else if (entry.dir) await handleDir(entry);
+  }
+
   return { refs, ownedIds };
 }
 
