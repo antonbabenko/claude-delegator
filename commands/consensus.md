@@ -111,12 +111,17 @@ For each round R:
      "developer-instructions": "[expert prompt]",
      sandbox: "read-only",
      cwd: "[repo root - same cwd as the other calls]",
-     files: [{ path: "path/relative/to/cwd" }]   // attach referenced files by default
+     roots: ["[absolute repo root]"],            // optional; for cross-repo plans pass multiple
+     files: [{ path: "path/relative/to/root" }]  // attach referenced files by default
    })
    ```
    **Files:** if the plan under review references local files, pass them to
-   Grok via `files:[{path}]` each round with `cwd` = repo root (paths resolve against `cwd`;
-   a path outside it is refused); GPT and Gemini read the named paths from their `cwd`.
+   Grok via `files:[{path}]` (or `{dir}` for whole directories) each round. Resolution
+   is against `roots[]` (first-root-wins) or `cwd` when `roots` is omitted; a path
+   outside every root is refused. For cross-repo plans (auditing two services together)
+   pass `roots: [repoA, repoB]`. Uploads are SHA-256 dedup-cached locally so the same
+   bundle on rounds 2-5 uploads nothing. GPT and Gemini read the named paths from their
+   `cwd`. Full reference: `TECHNICAL.md` § "Grok files and cleanup".
 
    **Grok context parity (CRITICAL):** GPT and Gemini walk the filesystem at `cwd`
    under `sandbox: "read-only"`; Grok only sees files in the `files` array. For any

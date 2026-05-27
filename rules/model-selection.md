@@ -210,8 +210,9 @@ Every expert can operate in two modes:
 |-----------|--------|-------|
 | `prompt` | string | **Required.** The delegation prompt (use 7-section format) |
 | `developer-instructions` | string | Expert prompt injection (from `prompts/*.md`) |
-| `files` | array | Attach local files for Grok to read: `[{ path \| file_id \| file_url }]`. Attach referenced files by default. |
-| `cwd` | path | Base directory for resolving `files[].path`. Set it to the repo root that contains the files; a path outside `cwd` is refused. Defaults to the server cwd. |
+| `files` | array | Attach local files for Grok to read. Each entry is EXACTLY ONE of `{ path }`, `{ file_id }`, `{ file_url }`, or `{ dir, include?, exclude?, maxFiles?, maxBytes? }`. Uploads are SHA-256 dedup-cached locally. See `TECHNICAL.md` § "Grok files and cleanup". |
+| `roots` | string[] | Optional absolute directory roots used to resolve `files[].path` and `files[].dir`. First root containing the entry wins. Falls back to `[cwd]` when omitted. Use for cross-repo attachments. |
+| `cwd` | path | Base directory used when `roots` is omitted. Set it to the repo root that contains the files. Defaults to the server cwd. |
 | `model` | e.g. `grok-4.3` | Defaults to `GROK_DEFAULT_MODEL` or `grok-4.3`. |
 | `reasoning_effort` | `low` \| `medium` \| `high` \| `none` | Defaults to `GROK_REASONING_EFFORT` or `high`. |
 
@@ -221,6 +222,9 @@ Every expert can operate in two modes:
 |-----------|--------|-------|
 | `threadId` | string | **Required.** Thread ID from a previous `grok` call (in-memory; lost on MCP restart) |
 | `prompt` | string | **Required.** Follow-up instruction |
+| `files` | array | Same shape as `grok.files` (path/file_id/file_url/dir). Attach new files for the follow-up turn. |
+| `roots` | string[] | Same as `grok.roots`. |
+| `cwd` | path | Base directory used when `roots` is omitted. |
 
 ### Response Format (both providers)
 

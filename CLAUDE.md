@@ -83,21 +83,9 @@ Retries use multi-turn (`*-reply` with `threadId`) so the expert remembers previ
 
 Every expert can operate in **advisory** (`sandbox: read-only`) or **implementation** (`sandbox: workspace-write`) mode based on the task.
 
-## Grok file access (v2)
+## Grok file access
 
-The Grok bridge attaches repo files to the conversation via two top-level args:
-
-- `files[]` - each entry is `{path | file_id | file_url | dir}`.
-- `roots[]` - optional absolute directories; relative `path`/`dir` resolve under the first root that contains them. Defaults to `[cwd]`.
-
-Local SHA-256 cache (`~/.claude/cache/claude-delegator/grok-files.json`) deduplicates uploads across calls: same content + same API key + same `apiBase` + same filename = no re-upload. `dir` entries are expanded via a zero-dep glob walker with prune-before-descend; defaults skip `.git`, `node_modules`, `dist`, `build`, `.venv`, lock files, and common framework build dirs.
-
-Maintenance via `server/grok/files-admin.js`:
-- `list` - shows bridge-owned files on xAI.
-- `prune --older-than <duration>` - deletes remote files by filename prefix + age.
-- `gc [--all-keys] [--force-local-prune]` - syncs the local cache via one paginated `GET /v1/files`. Default scope is the current `XAI_API_KEY` + `XAI_API_BASE`.
-
-Set `XAI_DISABLE_FILE_CACHE=1` to bypass the cache (debugging).
+Grok reads attached files via `files[]` and resolves them under `roots[]` (top-level array of absolute directories) or `cwd`. Uploads are SHA-256 dedup-cached locally so identical content is never re-uploaded. Directory expansion via `{dir}` entries. See **[TECHNICAL.md: Grok files and cleanup](TECHNICAL.md#grok-files-and-cleanup)** for parameters, cross-repo usage, cache layout, and the `gc` cleanup subcommand.
 
 ## Key Design Decisions
 
