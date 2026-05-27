@@ -29,4 +29,26 @@ function buildCacheKey({ bytes, apiKey, apiBase, filename }) {
   return `${contentHash}@${keyFp}@${baseNorm}@${filename}`;
 }
 
-module.exports = { normalize, buildCacheKey, CACHE_DIR, CACHE_FILE, CACHE_VERSION };
+function readCache(file) {
+  try {
+    const raw = readFileSync(file, "utf8");
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === "object" && obj.entries && typeof obj.entries === "object") {
+      return { version: obj.version || CACHE_VERSION, entries: obj.entries };
+    }
+  } catch (e) {
+    if (e && e.code !== "ENOENT") {
+      process.stderr.write(`[grok] cache read failed (${e.message}); treating as empty\n`);
+    }
+  }
+  return { version: CACHE_VERSION, entries: {} };
+}
+
+function writeCache(file, data) {
+  mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(data));
+  renameSync(tmp, file);
+}
+
+module.exports = { normalize, buildCacheKey, readCache, writeCache, CACHE_DIR, CACHE_FILE, CACHE_VERSION };

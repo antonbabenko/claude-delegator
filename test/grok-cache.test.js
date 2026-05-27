@@ -42,3 +42,40 @@ test("buildCacheKey shape is sha256@keyfp@apibase@filename", () => {
   assert.equal(parts[2], "https://api.x.ai/v1");
   assert.equal(parts[3], "a.tf");
 });
+
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+function tmpCachePath() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grok-cache-"));
+  return path.join(dir, "grok-files.json");
+}
+
+test("readCache returns empty object when file missing", () => {
+  const p = tmpCachePath();
+  const data = cache.readCache(p);
+  assert.deepEqual(data, { version: 1, entries: {} });
+});
+
+test("readCache treats corrupt JSON as empty (no throw)", () => {
+  const p = tmpCachePath();
+  fs.writeFileSync(p, "{ not json");
+  const data = cache.readCache(p);
+  assert.deepEqual(data, { version: 1, entries: {} });
+});
+
+test("writeCache then readCache round-trips entries", () => {
+  const p = tmpCachePath();
+  const payload = { version: 1, entries: { "k1@k2@k3@k4": { fileId: "file_abc", size: 5, filename: "a.tf", uploadedAt: 1, expiresAt: 999, apiBase: "https://api.x.ai/v1", keyFp: "abc" } } };
+  cache.writeCache(p, payload);
+  assert.deepEqual(cache.readCache(p), payload);
+});
+
+test("writeCache is atomic — tmp file does not linger on success", () => {
+  const p = tmpCachePath();
+  cache.writeCache(p, { version: 1, entries: {} });
+  const dir = path.dirname(p);
+  const tmps = fs.readdirSync(dir).filter((f) => f.includes(".tmp."));
+  assert.deepEqual(tmps, [], "no .tmp.* leftover");
+});
