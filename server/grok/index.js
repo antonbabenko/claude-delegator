@@ -797,34 +797,44 @@ const handlers = {
     const startedAt = Date.now();
     let outcome = "ok";
     try {
-      // Upload/resolve any attached files first (so an upload failure short-circuits).
-      const { refs, ownedIds } = await resolveFiles(args.files, {
+      let rootList;
+      if (Array.isArray(args.roots) && args.roots.length) {
+        try { validateRoots(args.roots); }
+        catch (e) {
+          if (shouldRespond) sendError(id, -32602, `Invalid params: ${e.message}`);
+          return;
+        }
+        rootList = args.roots;
+      } else {
+        rootList = [require("node:fs").realpathSync(args.cwd || process.cwd())];
+      }
+
+      const out = await runWithFiles({
+        prompt: args.prompt,
+        "developer-instructions": args["developer-instructions"],
+        files: args.files,
+        priorTurns: priorTurns || null,
         apiKey: process.env.XAI_API_KEY,
         apiBase: DEFAULT_API_BASE,
         ttl: FILE_TTL_SECONDS,
+        roots: rootList,
         cwd: args.cwd,
-      });
-
-      const turns = priorTurns
-        ? [...priorTurns, { role: "user", text: args.prompt, fileRefs: refs }]
-        : buildInitialTurns(args["developer-instructions"], args.prompt, refs);
-
-      const { text, output } = await runGrok({
-        turns,
+        cacheFile: process.env.XAI_DISABLE_FILE_CACHE ? null : DEFAULT_CACHE_FILE,
         model: args.model,
-        timeoutMs: args.timeout,
         reasoningEffort: resolveReasoningEffort(args.reasoning_effort),
-        apiKey: process.env.XAI_API_KEY,
-        apiBase: DEFAULT_API_BASE,
+        timeout: args.timeout,
+        cid: id,
       });
 
-      // Persist the turn so grok-reply can continue this thread. `items` holds the
-      // server's raw output for verbatim replay (falls back to `text` if absent).
-      sessions.set(threadId, [...turns, { role: "assistant", text, items: output || undefined }]);
+      // Persist turn history symmetrically with how runWithFiles built them.
+      const turnsForPersist = priorTurns
+        ? [...priorTurns, { role: "user", text: args.prompt, fileRefs: out.refs }]
+        : buildInitialTurns(args["developer-instructions"], args.prompt, out.refs);
+      sessions.set(threadId, [...turnsForPersist, { role: "assistant", text: out.text, items: out.output || undefined }]);
 
       if (shouldRespond) {
-        const result = { content: [{ type: "text", text }], threadId };
-        if (ownedIds.length) result.uploadedFileIds = ownedIds;
+        const result = { content: [{ type: "text", text: out.text }], threadId };
+        if (out.ownedIds.length) result.uploadedFileIds = out.ownedIds;
         sendResponse(id, result);
       }
     } catch (e) {
