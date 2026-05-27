@@ -477,6 +477,89 @@ async function runGrok({ turns, model, timeoutMs, apiKey, apiBase, fetchImpl, re
   return { text, output: Array.isArray(data.output) ? data.output : null };
 }
 
+// --- Stale-File Recovery ---
+
+// Non-/g regex for boolean "does the message mention any file_id?" check.
+// Using a /g flag here would mutate lastIndex across .test() calls.
+const STALE_FILE_ID_TEST = /file_[A-Za-z0-9_-]+/;
+const STALE_FILE_ID_EXTRACT = /file_[A-Za-z0-9_-]+/g;
+
+function isStaleFileError(err) {
+  if (!err) return false;
+  const msg = String(err.message || "");
+  if (!STALE_FILE_ID_TEST.test(msg)) return false;
+  if (err.status && err.status >= 400 && err.status < 500) return true;
+  return /invalid|not found|missing|expired/i.test(msg);
+}
+
+// runWithFiles supports BOTH a fresh `grok` call (no priorTurns) and a
+// `grok-reply` continuation (priorTurns provided). The new user turn is
+// appended to priorTurns so accumulated conversation context is preserved on
+// the actual /v1/responses payload.
+async function runWithFiles(args) {
+  const { refs, ownedIds } = await resolveFiles(args.files, args);
+
+  const developerInstructions = args["developer-instructions"];
+  const prompt = args.prompt;
+  const priorTurns = args.priorTurns || null;
+
+  function buildTurns(currentRefs) {
+    if (priorTurns) {
+      return [...priorTurns, { role: "user", text: prompt, fileRefs: currentRefs }];
+    }
+    return buildInitialTurns(developerInstructions, prompt, currentRefs);
+  }
+
+  async function attempt(currentTurns) {
+    return runGrok({
+      turns: currentTurns,
+      apiKey: args.apiKey,
+      apiBase: args.apiBase,
+      fetchImpl: args.fetchImpl,
+      timeoutMs: args.timeout,
+      model: args.model,
+      reasoningEffort: args.reasoningEffort,
+    });
+  }
+
+  try {
+    const out = await attempt(buildTurns(refs));
+    return { text: out.text, output: out.output, refs, ownedIds };
+  } catch (e) {
+    if (!isStaleFileError(e)) throw e;
+    const matches = (e.message || "").match(STALE_FILE_ID_EXTRACT) || [];
+    const matchingRefs = refs.filter((r) => r.sourcePath && matches.includes(r.file_id));
+    if (matchingRefs.length === 0) throw e;
+
+    const cacheMod = require("./cache.js");
+    for (const r of matchingRefs) {
+      await cacheMod.evict(args.cacheFile, r.file_id);
+    }
+
+    for (let i = 0; i < refs.length; i++) {
+      const r = refs[i];
+      if (!matchingRefs.includes(r)) continue;
+      const reuploaded = await uploadFile({
+        filePath: r.sourcePath,
+        apiKey: args.apiKey,
+        apiBase: args.apiBase,
+        ttl: args.ttl || FILE_TTL_SECONDS,
+        roots: [r.sourceRoot],
+        cacheFile: args.cacheFile,
+        fetchImpl: args.fetchImpl,
+      });
+      refs[i] = {
+        ...r,
+        file_id: reuploaded.id,
+        sourceCacheKey: reuploaded._cacheKey,
+      };
+    }
+
+    const out = await attempt(buildTurns(refs));
+    return { text: out.text, output: out.output, refs, ownedIds };
+  }
+}
+
 // --- Multi-Root Path Resolution ---
 
 function validateRoots(roots) {
@@ -839,6 +922,7 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports.turnsToInput = turnsToInput;
   module.exports.parseResponsesOutput = parseResponsesOutput;
   module.exports.runGrok = runGrok;
+  module.exports.runWithFiles = runWithFiles;
   module.exports.uploadFile = uploadFile;
   module.exports.resolveFiles = resolveFiles;
   module.exports.validateFiles = validateFiles;

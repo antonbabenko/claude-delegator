@@ -192,3 +192,57 @@ test("evict removes all rows holding a given fileId", async () => {
   assert.ok(!data.entries["K2"]);
   assert.ok(data.entries["K3"]);
 });
+
+test("runWithFiles with cached fileId that's gone on xAI evicts and retries", async () => {
+  const idx = require("../server/grok/index.js");
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-404-"));
+  const file = path.join(root, "a.tf");
+  fs.writeFileSync(file, "tfcontent");
+  const cacheFile = tmpCachePath();
+
+  const bytes = Buffer.from("tfcontent");
+  const apiBase = "https://api.x.ai/v1";
+  const apiBaseNorm = cache.normalize(apiBase);
+  const keyFp = require("node:crypto").createHash("sha256").update("xai-A").digest("hex").slice(0, 16);
+  const key = cache.buildCacheKey({ bytes, apiKey: "xai-A", apiBase, filename: "a.tf" });
+  await cache.store(cacheFile, key, {
+    fileId: "file_STALE",
+    size: 9, filename: "a.tf",
+    uploadedAt: 1, expiresAt: Math.floor(Date.now()/1000) + 3600,
+    apiBase: apiBaseNorm, keyFp,
+  });
+
+  let responsesCalls = 0;
+  let uploadCalls = 0;
+  const fakeFetch = async (url) => {
+    const s = String(url);
+    if (s.endsWith("/responses")) {
+      responsesCalls += 1;
+      if (responsesCalls === 1) {
+        const e = new Error(`xAI API error 400: ${JSON.stringify({ error: { message: "Invalid file id: file_STALE" } })}`);
+        e.status = 400;
+        throw e;
+      }
+      return { ok: true, text: async () => JSON.stringify({ output: [{ content: [{ type: "output_text", text: "ok" }] }] }) };
+    }
+    if (s.endsWith("/files")) {
+      uploadCalls += 1;
+      return { ok: true, text: async () => JSON.stringify({ id: "file_FRESH" }) };
+    }
+    return { ok: true, text: async () => "{}" };
+  };
+
+  const result = await idx.runWithFiles({
+    prompt: "do thing",
+    files: [{ path: "a.tf" }],
+    apiKey: "xai-A",
+    apiBase,
+    roots: [root],
+    cacheFile,
+    fetchImpl: fakeFetch,
+  });
+  assert.equal(result.text, "ok");
+  assert.equal(responsesCalls, 2, "retried once after 404");
+  assert.equal(uploadCalls, 1, "re-uploaded the stale file");
+});
