@@ -43,6 +43,9 @@ const MAX_FILE_BYTES = 48 * 1024 * 1024;
 const FILE_PREFIX = "claude-delegator-";
 const UPLOAD_PURPOSE = "assistants";
 
+const cacheModule = require("./cache.js");
+const DEFAULT_CACHE_FILE = cacheModule.CACHE_FILE;
+
 // Reasoning effort: per-call value wins, then GROK_REASONING_EFFORT, then the
 // default. "", "none", or "off" omit the field so the model uses its own default.
 const DEFAULT_REASONING_EFFORT = "high";
@@ -476,11 +479,12 @@ const GROK_PROPERTIES = {
   prompt: { type: "string", description: "The delegation prompt" },
   "developer-instructions": { type: "string", description: "Expert system instructions (sent as a system message)" },
   model: { type: "string", description: "xAI model id. Defaults to GROK_DEFAULT_MODEL or grok-4.3.", default: DEFAULT_MODEL },
-  reasoning_effort: { type: "string", description: "Reasoning effort (e.g. low, medium, high). Defaults to GROK_REASONING_EFFORT or high. Use 'none' to omit the field.", default: DEFAULT_REASONING_EFFORT },
+  reasoning_effort: { type: "string", description: "Reasoning effort (low, medium, high). 'none' omits the field.", default: DEFAULT_REASONING_EFFORT },
   timeout: { type: "number", description: "Soft timeout in ms. 1..600000. Default 180000.", default: DEFAULT_TIMEOUT_MS },
   files: FILES_SCHEMA,
-  sandbox: { type: "string", enum: ["read-only", "workspace-write"], default: "read-only", description: "Accepted for call-shape parity with other providers; ignored (Grok cannot edit files)." },
-  cwd: { type: "string", description: "Base directory for resolving relative file `path` uploads. Defaults to the server's cwd." },
+  roots: { type: "array", items: { type: "string" }, description: "Optional absolute directory roots for resolving files[].path and files[].dir. Defaults to [cwd]." },
+  sandbox: { type: "string", enum: ["read-only", "workspace-write"], default: "read-only", description: "Accepted for call-shape parity; ignored." },
+  cwd: { type: "string", description: "Base dir for resolving relative paths. Defaults to server cwd." },
 };
 
 // Validate a `files` param. Returns an error string, or null when valid/absent.
@@ -525,6 +529,7 @@ const handlers = {
               threadId: { type: "string", description: "Session ID returned by a previous grok call" },
               prompt: { type: "string", description: "Follow-up prompt" },
               files: FILES_SCHEMA,
+              roots: { type: "array", items: { type: "string" }, description: "Optional absolute directory roots for resolving files[].path and files[].dir." },
               model: { type: "string", default: DEFAULT_MODEL },
               reasoning_effort: { type: "string", default: DEFAULT_REASONING_EFFORT, description: "Reasoning effort; defaults to GROK_REASONING_EFFORT or high. Use 'none' to omit." },
               timeout: { type: "number", default: DEFAULT_TIMEOUT_MS },
