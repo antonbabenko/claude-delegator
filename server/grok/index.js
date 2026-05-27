@@ -731,7 +731,7 @@ function resolvePathUnderRoots(p, roots, type) {
 
 const FILES_SCHEMA = {
   type: "array",
-  description: "Optional files to attach. Each item has EXACTLY ONE of: path (local file the bridge uploads), file_id (an already-uploaded xAI file id), file_url (a public URL), or dir (recursive directory expansion). Optional filename overrides the stored upload name (path entries only).",
+  description: "Optional files to attach. Each item has EXACTLY ONE of: path (local file; delivery controlled by mode = upload | inline | auto), file_id (an already-uploaded xAI file id), file_url (a public URL), or dir (recursive directory expansion; delivery controlled by mode). Optional filename overrides the stored upload name (applies only to path entries delivered via upload).",
   items: {
     type: "object",
     properties: {
