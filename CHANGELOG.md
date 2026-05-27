@@ -1,3 +1,12 @@
+## [1.15.1](https://github.com/antonbabenko/claude-delegator/compare/v1.15.0...v1.15.1) (2026-05-27)
+
+
+### Bug Fixes
+
+* **grok:** expand DEFAULT_EXCLUDE, merge caller exclude with excludeReset escape hatch ([#31](https://github.com/antonbabenko/claude-delegator/issues/31)) ([dd645ef](https://github.com/antonbabenko/claude-delegator/commit/dd645efd42ecbe18b9f5c5e1ad772c468cd41da1))
+
+
+
 # [1.15.0](https://github.com/antonbabenko/claude-delegator/compare/v1.14.0...v1.15.0) (2026-05-27)
 
 
@@ -31,15 +40,6 @@
 ### Features
 
 * add Debugger expert + severity grading and SUMMARY blocks across reviewers ([#22](https://github.com/antonbabenko/claude-delegator/issues/22)) ([a22d436](https://github.com/antonbabenko/claude-delegator/commit/a22d436de6cd6a49094c75bf5a3d5bdb113ef0a9))
-
-
-
-# [1.12.0](https://github.com/antonbabenko/claude-delegator/compare/v1.11.0...v1.12.0) (2026-05-25)
-
-
-### Features
-
-* new experts + Researcher, Grok files/cwd, drop skip-trust, fix Gemini stdin stall ([#18](https://github.com/antonbabenko/claude-delegator/issues/18)) ([9b6be5f](https://github.com/antonbabenko/claude-delegator/commit/9b6be5f7367f014177c3ec3552de6503c9b26c25))
 
 
 
