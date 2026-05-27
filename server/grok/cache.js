@@ -51,4 +51,20 @@ function writeCache(file, data) {
   renameSync(tmp, file);
 }
 
-module.exports = { normalize, buildCacheKey, readCache, writeCache, CACHE_DIR, CACHE_FILE, CACHE_VERSION };
+const _inflight = new Map();
+
+function withInflight(key, worker) {
+  if (_inflight.has(key)) return _inflight.get(key);
+  const p = Promise.resolve().then(worker);
+  _inflight.set(key, p);
+  // Use then(onFulfilled, onRejected) so the cleanup branch does NOT create a
+  // dangling rejected promise (a `.finally` chain would). Returned `p` retains
+  // the rejection for the original caller.
+  p.then(
+    () => { _inflight.delete(key); },
+    () => { _inflight.delete(key); },
+  );
+  return p;
+}
+
+module.exports = { normalize, buildCacheKey, readCache, writeCache, withInflight, CACHE_DIR, CACHE_FILE, CACHE_VERSION };

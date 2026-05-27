@@ -79,3 +79,30 @@ test("writeCache is atomic — tmp file does not linger on success", () => {
   const tmps = fs.readdirSync(dir).filter((f) => f.includes(".tmp."));
   assert.deepEqual(tmps, [], "no .tmp.* leftover");
 });
+
+test("withInflight runs the worker once for concurrent same-key callers", async () => {
+  let calls = 0;
+  const work = () => new Promise((r) => setTimeout(() => { calls += 1; r("file_xyz"); }, 25));
+
+  const [a, b] = await Promise.all([
+    cache.withInflight("k1", work),
+    cache.withInflight("k1", work),
+  ]);
+
+  assert.equal(a, "file_xyz");
+  assert.equal(b, "file_xyz");
+  assert.equal(calls, 1, "worker ran exactly once");
+});
+
+test("withInflight removes the entry on rejection so next call retries", async () => {
+  let attempts = 0;
+  const failOnce = () => {
+    attempts += 1;
+    return attempts === 1 ? Promise.reject(new Error("boom")) : Promise.resolve("ok");
+  };
+
+  await assert.rejects(cache.withInflight("k2", failOnce), /boom/);
+  const ok = await cache.withInflight("k2", failOnce);
+  assert.equal(ok, "ok");
+  assert.equal(attempts, 2);
+});
