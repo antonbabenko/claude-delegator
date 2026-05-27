@@ -44,3 +44,61 @@ test("rejectBackslashes throws for patterns containing backslash", () => {
 test("**/* matches root-level files", () => {
   assert.equal(glob.matchPattern("**/*", "README.md"), true);
 });
+
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+function makeTree(spec) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-glob-"));
+  for (const [rel, contents] of Object.entries(spec)) {
+    const abs = path.join(root, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, contents);
+  }
+  return root;
+}
+
+test("walk returns files matching include and excludes excluded dirs (prune-before-descend)", () => {
+  const root = makeTree({
+    "a.tf": "1",
+    "modules/web/main.tf": "2",
+    "node_modules/dep/index.js": "3",
+    ".git/HEAD": "ref",
+  });
+  const out = glob.walk(root, {
+    include: ["**/*.tf"],
+    exclude: ["node_modules", ".git"],
+    maxFiles: 100,
+    maxBytes: 1024 * 1024,
+  });
+  assert.deepEqual(out.files.map((f) => f.rel).sort(), ["a.tf", "modules/web/main.tf"]);
+});
+
+test("walk normalises backslashes to forward slashes in walked rel paths", () => {
+  const root = makeTree({ "sub/deep/x.tf": "ok" });
+  const out = glob.walk(root, { include: ["**/*.tf"], exclude: [], maxFiles: 100, maxBytes: 1024 });
+  assert.deepEqual(out.files.map((f) => f.rel), ["sub/deep/x.tf"]);
+});
+
+test("walk throws when maxFiles exceeded with counts", () => {
+  const root = makeTree({ "a.tf": "1", "b.tf": "2", "c.tf": "3" });
+  assert.throws(
+    () => glob.walk(root, { include: ["**/*"], exclude: [], maxFiles: 2, maxBytes: 1024 }),
+    /selected 3 files.*exceeds maxFiles=2/,
+  );
+});
+
+test("walk throws when maxBytes exceeded with counts", () => {
+  const root = makeTree({ "a.tf": "x".repeat(60), "b.tf": "y".repeat(60) });
+  assert.throws(
+    () => glob.walk(root, { include: ["**/*"], exclude: [], maxFiles: 100, maxBytes: 100 }),
+    /exceeds maxBytes=100/,
+  );
+});
+
+test("walk produces deterministic POSIX-sorted file order", () => {
+  const root = makeTree({ "z.tf": "1", "a.tf": "2", "m/n.tf": "3" });
+  const out = glob.walk(root, { include: ["**/*"], exclude: [], maxFiles: 100, maxBytes: 1024 });
+  assert.deepEqual(out.files.map((f) => f.rel), ["a.tf", "m/n.tf", "z.tf"]);
+});

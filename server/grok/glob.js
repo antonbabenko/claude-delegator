@@ -63,4 +63,68 @@ function matchAny(patterns, relPath) {
   return false;
 }
 
-module.exports = { matchPattern, matchAny, rejectBackslashes, compile };
+const fs = require("node:fs");
+const path = require("node:path");
+
+function walk(rootAbs, { include, exclude, maxFiles, maxBytes }) {
+  const includeRes = include.map((p) => compile(p));
+  const excludeRes = exclude.map((p) => compile(p));
+  const files = [];
+  let totalBytes = 0;
+
+  function matches(res, rel) {
+    for (const c of res) if (c.re.test(rel)) return true;
+    return false;
+  }
+
+  function descend(absDir, relDir) {
+    let entries;
+    try { entries = fs.readdirSync(absDir, { withFileTypes: true }); }
+    catch (_) { return; }
+    entries.sort((a, b) => a.name.localeCompare(b.name, "en"));
+    for (const ent of entries) {
+      const absChild = path.join(absDir, ent.name);
+      const relChild = (relDir ? relDir + "/" : "") + ent.name;
+      const relPosix = relChild.replace(/\\/g, "/");
+
+      if (ent.isSymbolicLink()) {
+        let realTarget;
+        try { realTarget = fs.realpathSync(absChild); } catch (_) { continue; }
+        const relReal = path.relative(rootAbs, realTarget);
+        if (relReal.startsWith("..") || path.isAbsolute(relReal)) continue;
+        let st;
+        try { st = fs.statSync(realTarget); } catch (_) { continue; }
+        if (st.isDirectory()) continue;
+        if (!st.isFile()) continue;
+        if (matches(excludeRes, relPosix)) continue;
+        if (!matches(includeRes, relPosix)) continue;
+        files.push({ rel: relPosix, abs: realTarget, size: st.size });
+        totalBytes += st.size;
+      } else if (ent.isDirectory()) {
+        if (matches(excludeRes, relPosix) || matches(excludeRes, relPosix + "/**")) continue;
+        descend(absChild, relPosix);
+      } else if (ent.isFile()) {
+        if (matches(excludeRes, relPosix)) continue;
+        if (!matches(includeRes, relPosix)) continue;
+        let st;
+        try { st = fs.statSync(absChild); } catch (_) { continue; }
+        files.push({ rel: relPosix, abs: absChild, size: st.size });
+        totalBytes += st.size;
+      }
+    }
+  }
+
+  descend(rootAbs, "");
+
+  if (files.length > maxFiles) {
+    throw new Error(`directory expansion selected ${files.length} files; exceeds maxFiles=${maxFiles}. Narrow include or raise the limit.`);
+  }
+  if (totalBytes > maxBytes) {
+    throw new Error(`directory expansion selected ${totalBytes} bytes; exceeds maxBytes=${maxBytes}. Narrow include or raise the limit.`);
+  }
+
+  files.sort((a, b) => a.rel.localeCompare(b.rel, "en"));
+  return { files, totalBytes };
+}
+
+module.exports = { matchPattern, matchAny, rejectBackslashes, compile, walk };
