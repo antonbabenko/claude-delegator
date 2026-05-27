@@ -71,10 +71,13 @@ it can read context to advise but cannot mutate the real workspace, even under
 
 A bundled zero-dependency Node bridge over the xAI Responses API
 (`/v1/responses`). It is advisory-only (it cannot edit files) but it can read
-attached files: pass `files: [{ path | file_id | file_url }]` and the bridge
-uploads to the xAI Files API and references them. Uploads are tagged
-`claude-delegator-*` and carry an `expires_after` (default 7 days); prune early
-with `/grok-files`. See [Grok files and cleanup](#grok-files-and-cleanup).
+attached files: pass `files: [{ path | file_id | file_url | dir }]` and the
+bridge uploads to the xAI Files API (or expands directories via the bundled
+glob walker) and references them. Resolution is against the top-level
+`roots: string[]` (first-root-wins) or `cwd` when `roots` is omitted. Uploads
+are SHA-256 dedup-cached locally and carry an `expires_after` (default 7 days);
+manage with `/grok-files` (`list` / `prune` / `gc`). See
+[Grok files and cleanup](#grok-files-and-cleanup).
 
 The bridge default model is `grok-4.3`. It needs `XAI_API_KEY` in its environment;
 a missing key surfaces `errorKind: "missing-auth"`.
@@ -214,8 +217,10 @@ to enumerate every file by hand:
 
 ### Content-hash cache
 
-Uploads are deduplicated by SHA-256 content hash so the same bytes are never uploaded
-twice across calls:
+Uploads are deduplicated by SHA-256 content hash. A reuse hit requires the SAME content
+**plus** the same API key, the same normalised `apiBase`, and the same effective filename
+(see cache-key below); identical bytes uploaded under a different filename or a different
+key produce separate cache rows:
 
 - Cache file: `~/.claude/cache/claude-delegator/grok-files.json`
 - Cache key: `sha256(bytes)@sha256(XAI_API_KEY)[:16]@normalize(apiBase)@effectiveFilename`

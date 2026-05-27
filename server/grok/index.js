@@ -18,7 +18,8 @@
  *     scopes by content + API key + normalised apiBase + effective filename.
  *   - Cross-process cache safety via mkdir-based lock with token-specific
  *     owner markers and heartbeat (./lock.js).
- *   - 404 mid-/v1/responses triggers evict + re-upload + retry once.
+ *   - 4xx mid-/v1/responses whose body names a known file_/file- id triggers
+ *     evict + re-upload + retry once.
  *
  * Auth: XAI_API_KEY (env). Model: GROK_DEFAULT_MODEL (env) or grok-4.3.
  * Endpoint: XAI_API_BASE (env) or https://api.x.ai/v1.

@@ -243,7 +243,7 @@ test("runWithFiles with cached fileId that's gone on xAI evicts and retries", as
     fetchImpl: fakeFetch,
   });
   assert.equal(result.text, "ok");
-  assert.equal(responsesCalls, 2, "retried once after 404");
+  assert.equal(responsesCalls, 2, "retried once after stale-file 4xx");
   assert.equal(uploadCalls, 1, "re-uploaded the stale file");
   assert.ok(result.ownedIds.includes("file_FRESH"), "fresh re-uploaded id surfaces in ownedIds for MCP response");
 });
