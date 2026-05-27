@@ -113,6 +113,36 @@ async function prune({ olderThanSec, prefix = DEFAULT_PREFIX, apiKey, apiBase, f
   return { candidates, deleted, failed };
 }
 
+const cacheModule = require("./cache.js");
+
+async function gc({ cacheFile, apiKey, apiBase, fetchImpl, allKeys = false, forceLocalPrune = false }) {
+  let files;
+  try {
+    files = await listFiles({ apiKey, apiBase, fetchImpl });
+  } catch (e) {
+    const err = new Error(`gc aborted: failed to list xAI files (${(e && e.message) || e}); local cache unchanged`);
+    err.exitCode = 2;
+    throw err;
+  }
+  const remoteIds = new Set(files.map((f) => f.id));
+  const currentKeyFp = require("node:crypto").createHash("sha256").update(String(apiKey)).digest("hex").slice(0, 16);
+  const apiBaseNorm = cacheModule.normalize(apiBase);
+
+  const data = cacheModule.readCache(cacheFile);
+  let prunedLocal = 0;
+  for (const k of Object.keys(data.entries)) {
+    const e = data.entries[k];
+    const isMine = e.keyFp === currentKeyFp && e.apiBase === apiBaseNorm;
+    if (!isMine && !allKeys) continue;
+    if (remoteIds.has(e.fileId)) continue;
+    if (!isMine && !forceLocalPrune) continue;
+    delete data.entries[k];
+    prunedLocal += 1;
+  }
+  cacheModule.writeCache(cacheFile, data);
+  return { prunedLocal };
+}
+
 // --- CLI ---
 
 function parseArgs(argv) {
@@ -179,4 +209,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseOlderThan, selectPrunable, listFiles, deleteFile, prune, parseArgs, DEFAULT_PREFIX };
+module.exports = { parseOlderThan, selectPrunable, listFiles, deleteFile, prune, gc, parseArgs, DEFAULT_PREFIX };
