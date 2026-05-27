@@ -744,7 +744,7 @@ const FILES_SCHEMA = {
       maxFiles: { type: "number", description: "Hard cap on files per dir expansion. Default 50." },
       maxBytes: { type: "number", description: "Hard cap on bytes per dir expansion. Default 134217728 (128 MB)." },
       filename: { type: "string", description: "Override stored filename for a path upload" },
-      mode: { type: "string", enum: ["auto", "inline", "upload"], default: "upload", description: "How to deliver this file to Grok. 'upload' (default) uses the xAI Files API (input_file); 'inline' embeds the file content directly as input_text (best for source code so Grok reads line-by-line); 'auto' inlines when the file is probably text and <= GROK_INLINE_MAX_BYTES (default 256 KB), otherwise uploads. For {dir} entries the mode is inherited by every walked file. Ignored for file_id/file_url entries (those bypass the upload path)." },
+      mode: { type: "string", enum: ["auto", "inline", "upload"], default: "upload", description: "How to deliver this file to Grok. 'upload' (default) uses the xAI Files API (input_file); 'inline' embeds the file content directly as input_text (best for source code so Grok reads line-by-line); 'auto' inlines when the file is probably text and <= GROK_INLINE_MAX_BYTES (default 256 KB), otherwise uploads. For {dir} entries the mode is inherited by every walked file. Must NOT be set on file_id/file_url entries (those bypass the upload path; setting mode there returns -32602)." },
     },
   },
 };

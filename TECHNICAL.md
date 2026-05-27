@@ -238,10 +238,11 @@ files: [
   non-printable bytes in the first 4 KB) AND its size is at or below
   `GROK_INLINE_MAX_BYTES` (default 262144 = 256 KB). Otherwise uploads.
 
-For `{dir}` entries the `mode` is inherited by every walked file. `mode` is
-ignored for `file_id` / `file_url` entries (they don't go through the upload
-path). Override the inline ceiling with `GROK_INLINE_MAX_BYTES=<bytes>` in the
-bridge environment.
+For `{dir}` entries the `mode` is inherited by every walked file. `mode` must
+NOT be set on `file_id` / `file_url` entries (those bypass the upload path
+entirely; setting `mode` on them returns `-32602` from `validateFiles`).
+Override the inline ceiling with `GROK_INLINE_MAX_BYTES=<bytes>` in the bridge
+environment.
 
 ### Content-hash cache
 
