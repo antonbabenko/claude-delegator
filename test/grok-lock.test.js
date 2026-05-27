@@ -83,3 +83,13 @@ test("heartbeat keeps mtime fresh so live lock is not reclaimed", () => {
   assert.ok(Date.now() - st.mtimeMs < 1000, "mtime refreshed by heartbeat");
   lock.release(handle);
 });
+
+test("acquire creates parent dirs when missing", () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "grok-lockparent-"));
+  // basePath points into a NESTED dir that does not exist yet.
+  const base = path.join(baseDir, "nested", "deeper", "cache.json");
+  const handle = lock.acquire(base, { maxWaitMs: 200 });
+  assert.ok(handle, "lock acquired despite missing parent dirs");
+  assert.ok(fs.existsSync(path.dirname(handle.lockDir)), "parent dir was created");
+  lock.release(handle);
+});

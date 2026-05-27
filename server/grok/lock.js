@@ -17,6 +17,13 @@ function acquire(basePath, { maxWaitMs = 1000 } = {}) {
   const markerName = `owner.${token}.txt`;
   const deadline = Date.now() + maxWaitMs;
 
+  // Ensure parent dir exists before trying to create lockDir
+  try {
+    fs.mkdirSync(path.dirname(lockDir), { recursive: true });
+  } catch (_) {
+    /* parent already exists or unreadable */
+  }
+
   while (true) {
     try {
       fs.mkdirSync(lockDir);
