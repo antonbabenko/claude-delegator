@@ -246,3 +246,79 @@ test("runWithFiles with cached fileId that's gone on xAI evicts and retries", as
   assert.equal(responsesCalls, 2, "retried once after 404");
   assert.equal(uploadCalls, 1, "re-uploaded the stale file");
 });
+
+test("same content + two different filenames produces two cache rows and two uploads", async () => {
+  const idx = require("../server/grok/index.js");
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-thrash-"));
+  fs.writeFileSync(path.join(root, "a.tf"), "shared");
+  fs.writeFileSync(path.join(root, "b.tf"), "shared");
+  const cacheFile = tmpCachePath();
+
+  let uploadCount = 0;
+  const fakeFetch = async (url) => {
+    const s = String(url);
+    if (s.endsWith("/files")) {
+      uploadCount += 1;
+      return { ok: true, text: async () => JSON.stringify({ id: `file_${uploadCount}` }) };
+    }
+    if (s.endsWith("/responses")) {
+      return { ok: true, text: async () => JSON.stringify({ output: [{ content: [{ type: "output_text", text: "done" }] }] }) };
+    }
+    return { ok: true, text: async () => "{}" };
+  };
+
+  await idx.runWithFiles({
+    prompt: "go",
+    files: [{ path: "a.tf" }, { path: "b.tf" }],
+    apiKey: "xai-A",
+    apiBase: "https://api.x.ai/v1",
+    roots: [root],
+    cacheFile, fetchImpl: fakeFetch,
+  });
+  assert.equal(uploadCount, 2, "two uploads (different filenames)");
+
+  await idx.runWithFiles({
+    prompt: "go again",
+    files: [{ path: "a.tf" }, { path: "b.tf" }],
+    apiKey: "xai-A",
+    apiBase: "https://api.x.ai/v1",
+    roots: [root],
+    cacheFile, fetchImpl: fakeFetch,
+  });
+  assert.equal(uploadCount, 2, "no new uploads on second call (all cached)");
+});
+
+test("apiBase port difference produces separate cache rows for same bytes", async () => {
+  const idx = require("../server/grok/index.js");
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-port-"));
+  fs.writeFileSync(path.join(root, "a.tf"), "content");
+  const cacheFile = tmpCachePath();
+
+  let uploadCount = 0;
+  const fakeFetch = async (url) => {
+    const s = String(url);
+    if (s.includes("/files")) {
+      uploadCount += 1;
+      return { ok: true, text: async () => JSON.stringify({ id: `file_${uploadCount}` }) };
+    }
+    if (s.includes("/responses")) {
+      return { ok: true, text: async () => JSON.stringify({ output: [{ content: [{ type: "output_text", text: "ok" }] }] }) };
+    }
+    return { ok: true, text: async () => "{}" };
+  };
+
+  await idx.runWithFiles({
+    prompt: "p", files: [{ path: "a.tf" }],
+    apiKey: "xai-A", apiBase: "http://localhost:8080",
+    roots: [root], cacheFile, fetchImpl: fakeFetch,
+  });
+  await idx.runWithFiles({
+    prompt: "p", files: [{ path: "a.tf" }],
+    apiKey: "xai-A", apiBase: "https://localhost:9000",
+    roots: [root], cacheFile, fetchImpl: fakeFetch,
+  });
+
+  assert.equal(uploadCount, 2, "different apiBase ports → separate uploads");
+});
