@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 
 /**
- * Claude Delegator - Grok file storage admin (cleanup)
+ * Claude Delegator - Grok file storage admin
  *
- * Zero-dependency CLI to list and prune xAI files uploaded by the Grok bridge.
- * The bridge tags every upload with the filename prefix `claude-delegator-`, so
- * prune ONLY ever targets those - the user's own xAI files are never touched.
+ * Two cleanup paths, complementary:
  *
- *   node server/grok/files-admin.js list
- *   node server/grok/files-admin.js prune --older-than 24h [--yes] [--prefix claude-delegator-]
+ *   prune  - deletes REMOTE xAI files by filename prefix + created_at cutoff.
+ *            Safe without the local cache.
+ *   gc     - syncs the LOCAL cache (~/.claude/cache/claude-delegator/grok-files.json)
+ *            with the remote file list via ONE paginated GET /v1/files. Prunes
+ *            local rows whose fileId no longer exists remotely. Default scope:
+ *            current XAI_API_KEY + XAI_API_BASE rows only. --all-keys widens;
+ *            --force-local-prune required to drop ambiguous foreign rows.
  *
  * Auth: XAI_API_KEY (env). Endpoint: XAI_API_BASE (env) or https://api.x.ai/v1.
- * Without --yes, prune is a dry run (prints what it WOULD delete).
  */
 
 const DEFAULT_API_BASE = process.env.XAI_API_BASE || "https://api.x.ai/v1";
@@ -146,12 +148,14 @@ async function gc({ cacheFile, apiKey, apiBase, fetchImpl, allKeys = false, forc
 // --- CLI ---
 
 function parseArgs(argv) {
-  const out = { _: [], "older-than": null, yes: false, prefix: DEFAULT_PREFIX };
+  const out = { _: [], "older-than": null, yes: false, prefix: DEFAULT_PREFIX, "all-keys": false, "force-local-prune": false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--yes" || a === "-y") out.yes = true;
     else if (a === "--older-than") out["older-than"] = argv[++i];
     else if (a === "--prefix") out.prefix = argv[++i];
+    else if (a === "--all-keys") out["all-keys"] = true;
+    else if (a === "--force-local-prune") out["force-local-prune"] = true;
     else out._.push(a);
   }
   return out;
@@ -198,7 +202,36 @@ async function main() {
     return;
   }
 
-  console.error("Usage:\n  files-admin.js list\n  files-admin.js prune --older-than <30m|24h|7d|seconds> [--yes] [--prefix claude-delegator-]");
+  if (cmd === "gc") {
+    const cacheFile = require("./cache.js").CACHE_FILE;
+    const apiBase = DEFAULT_API_BASE;
+    try {
+      const result = await gc({
+        cacheFile,
+        apiKey,
+        apiBase,
+        allKeys: args["all-keys"],
+        forceLocalPrune: args["force-local-prune"],
+      });
+      console.log(`gc: pruned ${result.prunedLocal} local cache row(s).`);
+    } catch (e) {
+      console.error(e.message);
+      process.exitCode = e.exitCode || 1;
+    }
+    return;
+  }
+
+  console.error(
+    "Usage:\n" +
+    "  files-admin.js list\n" +
+    "  files-admin.js prune --older-than <30m|24h|7d|seconds> [--yes] [--prefix claude-delegator-]\n" +
+    "  files-admin.js gc [--all-keys] [--force-local-prune]\n" +
+    "\n" +
+    "gc syncs the local cache with xAI: one paginated GET /v1/files; rows whose\n" +
+    "fileId is absent remotely are pruned locally. Default scope is the current\n" +
+    "XAI_API_KEY + XAI_API_BASE; --all-keys widens; --force-local-prune required\n" +
+    "to drop ambiguous foreign rows.\n",
+  );
   process.exitCode = 2;
 }
 
