@@ -74,15 +74,19 @@ User question or topic: $ARGUMENTS
 
    **Files:** when local files are referenced, keep the prompt text identical
    across all three providers but deliver the file per provider: pass `files:[{path}]`
-   (or `{dir}` for whole directories) to **Grok**. Resolution is against `roots[]`
-   (first-root-wins, supports cross-repo when multiple absolute dirs are passed) or
-   `cwd` when `roots` is omitted. Uploads are SHA-256 dedup-cached locally so repeated
-   `/ask-all` calls on the same files upload nothing on subsequent runs. For **GPT**
-   and **Gemini**, name the file path in the shared prompt so they read it directly
-   from `cwd` (optionally add its directory to the Gemini call's `include-directories`).
-   A Grok `file-read` / `file-too-large` / `missing-auth` only degrades Grok's section
-   (UNAVAILABLE) - the others still answer. Full reference: `TECHNICAL.md` § "Grok
-   files and cleanup".
+   (or `{dir}` for whole directories) to **Grok**. Path/dir entries accept `mode:
+   "auto" | "inline" | "upload"` (default `"upload"`); use `mode: "auto"` for
+   source-code review so Grok reads text files line-by-line via `input_text` instead
+   of treating them as searchable `input_file` attachments. Resolution is against
+   `roots[]` (first-root-wins, supports cross-repo when multiple absolute dirs are
+   passed) or `cwd` when `roots` is omitted. Uploaded files are SHA-256 dedup-cached
+   locally so repeated `/ask-all` calls on the same files upload nothing on subsequent
+   runs (inline files always cost prompt tokens but are always fully read). For
+   **GPT** and **Gemini**, name the file path in the shared prompt so they read it
+   directly from `cwd` (optionally add its directory to the Gemini call's
+   `include-directories`). A Grok `file-read` / `file-too-large` / `missing-auth`
+   only degrades Grok's section (UNAVAILABLE) - the others still answer. Full
+   reference: `TECHNICAL.md` § "Grok files and cleanup".
 
    **Grok context parity (CRITICAL):** GPT (Codex) and Gemini (agy) both walk the
    filesystem at `cwd` via `sandbox: "read-only"` - they can `ls`, glob, and read any
@@ -98,10 +102,11 @@ User question or topic: $ARGUMENTS
       `pyproject.toml`, etc.), and any module the question is clearly about. For a
       whole directory, prefer a `{ dir }` entry over enumerating files (defaults skip
       `.git`, `node_modules`, etc; hard caps `maxFiles=50` / `maxBytes=128MB`).
-   2. Pass them as `files: [{ path: "CLAUDE.md" }, { path: "main.tf" }, { dir: "src", include: ["**/*.ts"] }, ...]`
-      with `cwd` = repo root. For cross-repo questions, pass `roots: [repoA, repoB]`
-      and either relative paths (first-root-wins) or absolute paths (must resolve
-      under one of the roots).
+   2. Pass them as `files: [{ path: "CLAUDE.md", mode: "auto" }, { path: "main.tf", mode: "auto" }, { dir: "src", include: ["**/*.ts"], mode: "auto" }, ...]`
+      with `cwd` = repo root. `mode: "auto"` is strongly recommended for source-code
+      review (inlines small text files for line-by-line reading). For cross-repo
+      questions, pass `roots: [repoA, repoB]` and either relative paths
+      (first-root-wins) or absolute paths (must resolve under one of the roots).
    3. Stay under 48 MB per file. `{ dir }` enforces its own `maxFiles` / `maxBytes`
       caps - raise them on the entry if the default is too tight, or narrow `include`.
    4. State the attached set in the prompt so Grok knows what evidence it has

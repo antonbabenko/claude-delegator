@@ -324,6 +324,177 @@ test("apiBase port difference produces separate cache rows for same bytes", asyn
   assert.equal(uploadCount, 2, "different apiBase ports → separate uploads");
 });
 
+test("mode:inline embeds file content as input_text, never hits /files", async () => {
+  const idx = require("../server/grok/index.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-inline-"));
+  const body = "line one\nline two\nline three\n";
+  fs.writeFileSync(path.join(root, "routes.py"), body);
+  const cacheFile = tmpCachePath();
+
+  let filesHits = 0;
+  let lastResponsesInput = null;
+  const fakeFetch = async (url, init) => {
+    const s = String(url);
+    if (s.endsWith("/files")) {
+      filesHits += 1;
+      return { ok: true, text: async () => JSON.stringify({ id: "file_should_not_appear" }) };
+    }
+    if (s.endsWith("/responses")) {
+      lastResponsesInput = JSON.parse(init.body).input;
+      return { ok: true, text: async () => JSON.stringify({ output: [{ content: [{ type: "output_text", text: "ok" }] }] }) };
+    }
+    return { ok: true, text: async () => "{}" };
+  };
+
+  const result = await idx.runWithFiles({
+    prompt: "review",
+    files: [{ path: "routes.py", mode: "inline" }],
+    apiKey: "xai-A",
+    apiBase: "https://api.x.ai/v1",
+    roots: [root],
+    cacheFile, fetchImpl: fakeFetch,
+  });
+
+  assert.equal(result.text, "ok");
+  assert.equal(filesHits, 0, "inline path must not touch xAI Files API");
+
+  const userTurn = lastResponsesInput.find((t) => t.role === "user");
+  const inlinePart = userTurn.content.find((p) => p.type === "input_text" && p.text.includes("=== routes.py ==="));
+  assert.ok(inlinePart, "inline content present as input_text part");
+  assert.ok(inlinePart.text.includes("line one"), "full file body inlined");
+  assert.ok(inlinePart.text.includes("line three"), "no truncation");
+
+  assert.deepEqual(result.ownedIds, [], "inline mode produces no uploads → empty ownedIds");
+});
+
+test("mode:auto inlines small text files and uploads binary content", async () => {
+  const idx = require("../server/grok/index.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-auto-"));
+  fs.writeFileSync(path.join(root, "small.tf"), "resource \"x\" {}\n".repeat(3000));
+  const binBuf = Buffer.concat([Buffer.from([0, 1, 2, 3]), Buffer.from("padding".repeat(200))]);
+  fs.writeFileSync(path.join(root, "blob.bin"), binBuf);
+  const cacheFile = tmpCachePath();
+
+  let filesHits = 0;
+  let lastInput = null;
+  const fakeFetch = async (url, init) => {
+    const s = String(url);
+    if (s.endsWith("/files")) { filesHits += 1; return { ok: true, text: async () => JSON.stringify({ id: `file_${filesHits}` }) }; }
+    if (s.endsWith("/responses")) {
+      lastInput = JSON.parse(init.body).input;
+      return { ok: true, text: async () => JSON.stringify({ output: [{ content: [{ type: "output_text", text: "ok" }] }] }) };
+    }
+    return { ok: true, text: async () => "{}" };
+  };
+
+  await idx.runWithFiles({
+    prompt: "audit",
+    files: [
+      { path: "small.tf", mode: "auto" },
+      { path: "blob.bin", mode: "auto" },
+    ],
+    apiKey: "xai-A",
+    apiBase: "https://api.x.ai/v1",
+    roots: [root],
+    cacheFile, fetchImpl: fakeFetch,
+  });
+
+  assert.equal(filesHits, 1, "auto: only binary uploaded; text inlined");
+  const userTurn = lastInput.find((t) => t.role === "user");
+  const parts = userTurn.content;
+  assert.ok(parts.some((p) => p.type === "input_text" && p.text.includes("=== small.tf ===")), "text file inlined");
+  assert.ok(parts.some((p) => p.type === "input_file" && p.file_id === "file_1"), "binary file uploaded");
+});
+
+test("inline dedup is order-independent — {dir} before {path} does not duplicate", async () => {
+  const idx = require("../server/grok/index.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-dedup-"));
+  fs.mkdirSync(path.join(root, "src"));
+  fs.writeFileSync(path.join(root, "src", "a.ts"), "export const a = 1;\n");
+  fs.writeFileSync(path.join(root, "src", "b.ts"), "export const b = 2;\n");
+  const cacheFile = tmpCachePath();
+
+  let lastInput = null;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/responses")) {
+      lastInput = JSON.parse(init.body).input;
+      return { ok: true, text: async () => JSON.stringify({ output: [{ content: [{ type: "output_text", text: "ok" }] }] }) };
+    }
+    return { ok: true, text: async () => "{}" };
+  };
+
+  await idx.runWithFiles({
+    prompt: "go",
+    files: [
+      { dir: "src", include: ["**/*.ts"], maxFiles: 10, mode: "inline" },
+      { path: "src/a.ts", mode: "inline" }, // duplicate of one of the walked files
+    ],
+    apiKey: "xai-A",
+    apiBase: "https://api.x.ai/v1",
+    roots: [root],
+    cacheFile, fetchImpl: fakeFetch,
+  });
+
+  const userTurn = lastInput.find((t) => t.role === "user");
+  const aParts = userTurn.content.filter((p) => p.type === "input_text" && p.text.includes("=== a.ts ==="));
+  assert.equal(aParts.length, 1, "a.ts inlined exactly once despite dir + path overlap");
+});
+
+test("mode:auto falls back to upload when text file exceeds GROK_INLINE_MAX_BYTES", async () => {
+  const idx = require("../server/grok/index.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-thresh-"));
+  // Force a low threshold to exercise the fallback without writing a huge file.
+  const prev = process.env.GROK_INLINE_MAX_BYTES;
+  process.env.GROK_INLINE_MAX_BYTES = "1024"; // 1 KB
+
+  // 2 KB of plain text — text + over threshold → must upload.
+  fs.writeFileSync(path.join(root, "big.txt"), "a".repeat(2048));
+  const cacheFile = tmpCachePath();
+
+  let filesHits = 0;
+  const fakeFetch = async (url) => {
+    const s = String(url);
+    if (s.endsWith("/files")) {
+      filesHits += 1;
+      return { ok: true, text: async () => JSON.stringify({ id: "file_big" }) };
+    }
+    if (s.endsWith("/responses")) {
+      return { ok: true, text: async () => JSON.stringify({ output: [{ content: [{ type: "output_text", text: "ok" }] }] }) };
+    }
+    return { ok: true, text: async () => "{}" };
+  };
+
+  try {
+    const result = await idx.runWithFiles({
+      prompt: "audit",
+      files: [{ path: "big.txt", mode: "auto" }],
+      apiKey: "xai-A",
+      apiBase: "https://api.x.ai/v1",
+      roots: [root],
+      cacheFile, fetchImpl: fakeFetch,
+    });
+    assert.equal(filesHits, 1, "auto: text >threshold falls back to upload");
+    assert.deepEqual(result.ownedIds, ["file_big"], "uploaded id surfaces in ownedIds");
+  } finally {
+    if (prev === undefined) delete process.env.GROK_INLINE_MAX_BYTES;
+    else process.env.GROK_INLINE_MAX_BYTES = prev;
+  }
+});
+
+test("validateFiles rejects mode on file_id/file_url entries", () => {
+  const idx = require("../server/grok/index.js");
+  const err1 = idx.validateFiles([{ file_id: "file_xyz", mode: "inline" }]);
+  assert.match(err1 || "", /applies only to path\/dir/);
+  const err2 = idx.validateFiles([{ file_url: "https://example.com/x", mode: "auto" }]);
+  assert.match(err2 || "", /applies only to path\/dir/);
+});
+
+test("validateFiles rejects unknown mode values", () => {
+  const idx = require("../server/grok/index.js");
+  const err = idx.validateFiles([{ path: "x.tf", mode: "yolo" }]);
+  assert.match(err || "", /one of: auto, inline, upload/);
+});
+
 test("evict is a no-op when cacheFile is null (XAI_DISABLE_FILE_CACHE path)", async () => {
   // Should not throw.
   await cache.evict(null, "file_x");

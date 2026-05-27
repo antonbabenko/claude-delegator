@@ -85,7 +85,7 @@ Every expert can operate in **advisory** (`sandbox: read-only`) or **implementat
 
 ## Grok file access
 
-Grok reads attached files via `files[]` and resolves them under `roots[]` (top-level array of absolute directories) or `cwd`. Uploads are SHA-256 dedup-cached locally so repeated calls with the same content + API key + apiBase + filename skip the upload step. Directory expansion via `{dir}` entries. See **[TECHNICAL.md: Grok files and cleanup](TECHNICAL.md#grok-files-and-cleanup)** for parameters, cross-repo usage, cache layout, and the `gc` cleanup subcommand.
+Grok reads attached files via `files[]` and resolves them under `roots[]` (top-level array of absolute directories) or `cwd`. Each entry takes an optional `mode: "auto" | "inline" | "upload"` — inline embeds the file as `input_text` so Grok reads it line-by-line (best for source code); upload routes through the xAI Files API and is SHA-256 dedup-cached locally. Directory expansion via `{dir}` entries. See **[TECHNICAL.md: Grok files and cleanup](TECHNICAL.md#grok-files-and-cleanup)** for parameters, the inline-vs-upload tradeoff, cross-repo usage, cache layout, and the `gc` cleanup subcommand.
 
 ## Key Design Decisions
 

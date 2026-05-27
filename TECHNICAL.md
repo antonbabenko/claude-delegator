@@ -215,6 +215,34 @@ to enumerate every file by hand:
 - Patterns are POSIX (`/` separator). Backslash escape sequences are rejected at
   validation; literal `path`/`dir` values **may** contain backslashes (Windows OK).
 
+### Inline vs upload delivery (`mode`)
+
+xAI's `input_file` references are searchable attachments; for large source files
+the model may enumerate them rather than read line-by-line. To force a full
+line-by-line read, deliver the content as `input_text` instead:
+
+```js
+files: [
+  { path: "app/apps/api/routes.py", mode: "inline" },   // forced inline
+  { path: "modules/web.tm.hcl",     mode: "auto" },     // text + small → inline
+  { path: "design.pdf",             mode: "auto" },     // binary or big → upload
+  { dir:  "src", include: ["**/*.ts"], mode: "auto" },  // each walked file decides
+]
+```
+
+- `"upload"` (default) - always uses the xAI Files API. Back-compat with v2.0.
+- `"inline"` - embeds the file content directly as a separate `input_text` part
+  with a `=== {filename} ===` header. No `/files` call, no cache row, no
+  `uploadedFileIds` entry. Best for source code review.
+- `"auto"` - inlines when the file is probably text (no NUL byte; <5%
+  non-printable bytes in the first 4 KB) AND its size is at or below
+  `GROK_INLINE_MAX_BYTES` (default 262144 = 256 KB). Otherwise uploads.
+
+For `{dir}` entries the `mode` is inherited by every walked file. `mode` is
+ignored for `file_id` / `file_url` entries (they don't go through the upload
+path). Override the inline ceiling with `GROK_INLINE_MAX_BYTES=<bytes>` in the
+bridge environment.
+
 ### Content-hash cache
 
 Uploads are deduplicated by SHA-256 content hash. A reuse hit requires the SAME content

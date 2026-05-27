@@ -179,7 +179,13 @@ function turnsToInput(turns) {
     }
     const content = [{ type: "input_text", text: turn.text }];
     for (const ref of turn.fileRefs || []) {
-      if (ref.file_id) content.push({ type: "input_file", file_id: ref.file_id });
+      if (ref.inline_text != null) {
+        // Inline file content as input_text so Grok reads it fully line-by-line.
+        // input_file references are treated as searchable attachments and may not
+        // be fully expanded into the model's working context.
+        const name = ref.inline_filename || "file";
+        content.push({ type: "input_text", text: `=== ${name} ===\n${ref.inline_text}` });
+      } else if (ref.file_id) content.push({ type: "input_file", file_id: ref.file_id });
       else if (ref.file_url) content.push({ type: "input_file", file_url: ref.file_url });
     }
     input.push({ role: "user", content });
@@ -216,6 +222,44 @@ function parseResponsesOutput(data) {
 
 // --- xAI Files API ---
 
+// Inline vs upload heuristics. xAI's input_file references are treated as
+// searchable attachments and may not be fully expanded into the model's working
+// context; for source code review at line level, prefer input_text (inline).
+const INLINE_MAX_BYTES_DEFAULT = 256 * 1024; // 256 KB
+function resolveInlineMaxBytes() {
+  const raw = Number(process.env.GROK_INLINE_MAX_BYTES);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : INLINE_MAX_BYTES_DEFAULT;
+}
+
+// Cheap text vs binary sniff. Checks the first 4 KB: any NUL byte → binary;
+// >5% non-printable (outside tab/LF/CR/printable ASCII/UTF-8 continuations) → binary.
+function isProbablyText(buf) {
+  if (!buf || buf.length === 0) return true;
+  const slice = buf.subarray(0, Math.min(buf.length, 4096));
+  if (slice.includes(0)) return false;
+  let np = 0;
+  for (const b of slice) {
+    if (b === 0x09 || b === 0x0a || b === 0x0d) continue;
+    if (b >= 0x20 && b <= 0x7e) continue;
+    if (b >= 0x80) continue;
+    np++;
+  }
+  return np / slice.length < 0.05;
+}
+
+// Decide whether a (already-read) file buffer should be inlined as input_text
+// rather than uploaded via the Files API. `mode` is one of:
+//   "upload" - never inline (default; preserves legacy behavior)
+//   "inline" - always inline (caller asserts the content is fit for input_text)
+//   "auto"   - inline when buffer is probably text AND size <= INLINE_MAX_BYTES
+function shouldInline(buf, mode) {
+  if (mode === "inline") return true;
+  if (mode === "auto") {
+    return buf.length <= resolveInlineMaxBytes() && isProbablyText(buf);
+  }
+  return false;
+}
+
 // Upload one local file and return its file object. Errors carry `.code`
 // (file-too-large/file-read/file-upload/missing-auth) and/or `.status`.
 // `fetchImpl` is injectable for tests.
@@ -224,7 +268,9 @@ function parseResponsesOutput(data) {
 // Cache integration: checks cache.js before uploading; on miss wraps upload in
 // withInflight for concurrent dedup and writes the result to the cache.
 // Set XAI_DISABLE_FILE_CACHE=1 to bypass the cache layer entirely.
-async function uploadFile({ filePath, filename, apiKey, apiBase, ttl, roots, cwd, fetchImpl, cacheFile }) {
+// `mode` controls inline-vs-upload (see shouldInline). Inline refs skip the
+// Files API entirely and are emitted as input_text by turnsToInput.
+async function uploadFile({ filePath, filename, apiKey, apiBase, ttl, roots, cwd, fetchImpl, cacheFile, mode }) {
   if (!isNonEmptyString(apiKey)) {
     const e = new Error("XAI_API_KEY is not set; cannot upload files.");
     e.code = "missing-auth";
@@ -263,6 +309,22 @@ async function uploadFile({ filePath, filename, apiKey, apiBase, ttl, roots, cwd
   const cacheMod = require("./cache.js");
   const baseName = require("node:path").basename(filename || resolved.abs);
   const effectiveFilename = baseName;
+
+  // Inline branch: render the file as input_text instead of uploading. No xAI
+  // network call, no cache row (sha256 dedup is meaningless without a fileId).
+  // Returned shape is { _inline: true, inline_text, inline_filename, ... } — the
+  // caller routes this into refs and turnsToInput emits an input_text part.
+  if (shouldInline(buf, mode)) {
+    return {
+      _inline: true,
+      inline_text: buf.toString("utf8"),
+      inline_filename: effectiveFilename,
+      _sourcePath: resolved.abs,
+      _sourceRoot: resolved.root,
+      _bytes: buf.length,
+    };
+  }
+
   const apiBaseNorm = cacheMod.normalize(base);
   const cacheKey = cacheMod.buildCacheKey({ bytes: buf, apiKey, apiBase: base, filename: effectiveFilename });
   const keyFp = require("node:crypto").createHash("sha256").update(apiKey).digest("hex").slice(0, 16);
@@ -337,20 +399,42 @@ async function uploadFile({ filePath, filename, apiKey, apiBase, ttl, roots, cwd
 async function resolveFiles(files, opts) {
   const refs = [];
   const ownedIds = [];
-  const seenCacheKeys = new Set();
+  // Dedup keyed by cacheKey for uploaded files, or absolute sourcePath for
+  // inline files (which have no cacheKey). Same file appearing in both an
+  // explicit {path} and a {dir} expansion is only attached once.
+  const seen = new Set();
+  const dedupKey = (single) => single._cacheKey || `inline:${single._sourcePath}`;
 
   async function handlePath(entry) {
     const uploaded = await uploadFile({
       filePath: entry.path,
       filename: entry.filename,
+      mode: entry.mode,
       ...opts,
     });
+    if (uploaded && uploaded._inline) {
+      const k = dedupKey(uploaded);
+      // Order-independent dedup: if this content was already attached by a
+      // prior {dir} expansion (or another {path}), skip the duplicate push.
+      if (seen.has(k)) return;
+      seen.add(k);
+      refs.push({
+        inline_text: uploaded.inline_text,
+        inline_filename: uploaded.inline_filename,
+        sourcePath: uploaded._sourcePath,
+        sourceRoot: uploaded._sourceRoot,
+      });
+      return;
+    }
     if (!isNonEmptyString(uploaded && uploaded.id)) {
       const e = new Error("File upload returned no file id");
       e.code = "parse";
       throw e;
     }
-    if (uploaded._cacheKey) seenCacheKeys.add(uploaded._cacheKey);
+    if (uploaded._cacheKey) {
+      if (seen.has(uploaded._cacheKey)) return;
+      seen.add(uploaded._cacheKey);
+    }
     refs.push({
       file_id: uploaded.id,
       sourcePath: uploaded._sourcePath,
@@ -374,6 +458,7 @@ async function resolveFiles(files, opts) {
 
     let cached = 0, uploaded = 0, skipped = 0;
     const queue = [...walked];
+    let inlined = 0;
     async function worker() {
       while (queue.length) {
         const f = queue.shift();
@@ -385,10 +470,24 @@ async function resolveFiles(files, opts) {
           roots: [resolved.root],
           fetchImpl: opts.fetchImpl,
           cacheFile: opts.cacheFile,
+          mode: entry.mode,
         });
+        if (single && single._inline) {
+          const k = dedupKey(single);
+          if (seen.has(k)) { skipped += 1; continue; }
+          seen.add(k);
+          inlined += 1;
+          refs.push({
+            inline_text: single.inline_text,
+            inline_filename: single.inline_filename,
+            sourcePath: single._sourcePath,
+            sourceRoot: single._sourceRoot,
+          });
+          continue;
+        }
         if (!isNonEmptyString(single && single.id)) continue;
-        if (seenCacheKeys.has(single._cacheKey)) { skipped += 1; continue; }
-        seenCacheKeys.add(single._cacheKey);
+        if (seen.has(single._cacheKey)) { skipped += 1; continue; }
+        seen.add(single._cacheKey);
         if (single._fromCache) cached += 1;
         else { uploaded += 1; ownedIds.push(single.id); }
         refs.push({
@@ -402,7 +501,7 @@ async function resolveFiles(files, opts) {
     const N = Math.max(1, Math.min(DIR_UPLOAD_CONCURRENCY, walked.length));
     await Promise.all(Array.from({ length: N }, () => worker()));
 
-    process.stderr.write(`[grok] ${opts.cid || "-"} expanded dir=${entry.dir} count=${walked.length} cached=${cached} uploaded=${uploaded} skipped=${skipped}\n`);
+    process.stderr.write(`[grok] ${opts.cid || "-"} expanded dir=${entry.dir} count=${walked.length} cached=${cached} uploaded=${uploaded} inlined=${inlined} skipped=${skipped}\n`);
   }
 
   for (const entry of files || []) {
@@ -645,6 +744,7 @@ const FILES_SCHEMA = {
       maxFiles: { type: "number", description: "Hard cap on files per dir expansion. Default 50." },
       maxBytes: { type: "number", description: "Hard cap on bytes per dir expansion. Default 134217728 (128 MB)." },
       filename: { type: "string", description: "Override stored filename for a path upload" },
+      mode: { type: "string", enum: ["auto", "inline", "upload"], default: "upload", description: "How to deliver this file to Grok. 'upload' (default) uses the xAI Files API (input_file); 'inline' embeds the file content directly as input_text (best for source code so Grok reads line-by-line); 'auto' inlines when the file is probably text and <= GROK_INLINE_MAX_BYTES (default 256 KB), otherwise uploads. For {dir} entries the mode is inherited by every walked file. Ignored for file_id/file_url entries (those bypass the upload path)." },
     },
   },
 };
@@ -671,6 +771,11 @@ function validateFiles(files) {
     if (keys.length !== 1) return "each 'files' entry needs exactly one of path, file_id, file_url, or dir";
     if (!isNonEmptyString(entry[keys[0]])) return `'files' entry ${keys[0]} must be a non-empty string`;
     if (entry.filename !== undefined && !isNonEmptyString(entry.filename)) return "'files' entry filename must be a non-empty string when provided";
+    if (entry.mode !== undefined) {
+      if (typeof entry.mode !== "string") return "'files' entry mode must be a string when provided";
+      if (!["auto", "inline", "upload"].includes(entry.mode)) return `'files' entry mode "${entry.mode}" must be one of: auto, inline, upload`;
+      if (entry.file_id !== undefined || entry.file_url !== undefined) return "'files' entry mode applies only to path/dir entries (not file_id/file_url)";
+    }
     if (entry.dir !== undefined) {
       for (const list of [entry.include, entry.exclude]) {
         if (list === undefined) continue;
