@@ -45,9 +45,10 @@ User question or topic: $ARGUMENTS
    })
    ```
    **Files:** attach the local files Grok should read by default in `files`. Each entry
-   is EXACTLY ONE of `{ path }` (local file the bridge uploads to xAI Files API),
-   `{ file_id }` (already uploaded), `{ file_url }` (public URL), or `{ dir, include?,
-   exclude?, maxFiles?, maxBytes? }` (recursive directory expansion via the bundled glob
+   is EXACTLY ONE of `{ path }` (local file; delivery controlled by `mode` — default
+   uploads to the xAI Files API), `{ file_id }` (already uploaded), `{ file_url }`
+   (public URL), or `{ dir, include?, exclude?, maxFiles?, maxBytes? }`
+   (recursive directory expansion via the bundled glob
    walker; defaults skip `.git`, `node_modules`, `dist`, `build`, `.venv`, lock files,
    framework build dirs; hard caps `maxFiles=50` / `maxBytes=128MB`). Path/dir entries
    also accept `mode: "auto" | "inline" | "upload"` (default `"upload"`): **`"inline"`

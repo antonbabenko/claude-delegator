@@ -72,12 +72,13 @@ it can read context to advise but cannot mutate the real workspace, even under
 A bundled zero-dependency Node bridge over the xAI Responses API
 (`/v1/responses`). It is advisory-only (it cannot edit files) but it can read
 attached files: pass `files: [{ path | file_id | file_url | dir }]` and the
-bridge uploads to the xAI Files API (or expands directories via the bundled
-glob walker) and references them. Resolution is against the top-level
-`roots: string[]` (first-root-wins) or `cwd` when `roots` is omitted. Uploads
-are SHA-256 dedup-cached locally and carry an `expires_after` (default 7 days);
-manage with `/grok-files` (`list` / `prune` / `gc`). See
-[Grok files and cleanup](#grok-files-and-cleanup).
+bridge delivers them per the `mode` setting — uploaded to the xAI Files API
+(default), inlined as `input_text` (for line-by-line reading of source files),
+or expanded via the bundled glob walker for directories. Resolution is against
+the top-level `roots: string[]` (first-root-wins) or `cwd` when `roots` is
+omitted. Uploaded files are SHA-256 dedup-cached locally and carry an
+`expires_after` (default 7 days); manage with `/grok-files`
+(`list` / `prune` / `gc`). See [Grok files and cleanup](#grok-files-and-cleanup).
 
 The bridge default model is `grok-4.3`. It needs `XAI_API_KEY` in its environment;
 a missing key surfaces `errorKind: "missing-auth"`.
@@ -174,10 +175,11 @@ budget is exhausted, the call fails with `errorKind: "timeout"` (still
 
 Grok reads attached files via the `files[]` parameter. Each entry has EXACTLY ONE of:
 
-- `path` - a local file the bridge uploads to the xAI Files API, then references.
+- `path` - a local file. Delivery is controlled by `mode` (default `"upload"` — bridge uploads to the xAI Files API; `"inline"` embeds as `input_text`; `"auto"` picks per heuristic — see "Inline vs upload delivery" below).
 - `file_id` - an already-uploaded xAI file id (passed through, no upload).
 - `file_url` - a public URL (passed through).
-- `dir` - a local directory expanded recursively (see below).
+- `dir` - a local directory expanded recursively. Same `mode` rules; the walker
+  applies the chosen mode to every selected file (see below).
 
 A `path` or `dir` resolves against the top-level `roots[]` array (absolute directories,
 first-root-wins for relative entries) or, when `roots` is omitted, against `cwd`. A
