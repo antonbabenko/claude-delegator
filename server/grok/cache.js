@@ -4,6 +4,7 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 const { mkdirSync, readFileSync, writeFileSync, renameSync } = require("node:fs");
+const lock = require("./lock.js");
 
 const CACHE_DIR = path.join(os.homedir(), ".claude", "cache", "claude-delegator");
 const CACHE_FILE = path.join(CACHE_DIR, "grok-files.json");
@@ -67,4 +68,44 @@ function withInflight(key, worker) {
   return p;
 }
 
-module.exports = { normalize, buildCacheKey, readCache, writeCache, withInflight, CACHE_DIR, CACHE_FILE, CACHE_VERSION };
+function lookup(file, key, { apiBase, keyFp } = {}) {
+  const data = readCache(file);
+  const entry = data.entries[key];
+  if (!entry) return null;
+  const now = Math.floor(Date.now() / 1000);
+  if (entry.expiresAt - now < 60) return null;
+  if (apiBase && entry.apiBase !== apiBase) return null;
+  if (keyFp && entry.keyFp !== keyFp) return null;
+  return entry;
+}
+
+async function store(file, key, entry) {
+  const handle = lock.acquire(file, { maxWaitMs: 1000 });
+  if (!handle) {
+    process.stderr.write("[grok] cache lock contention; skipping persist\n");
+    return;
+  }
+  try {
+    const data = readCache(file);
+    data.entries[key] = entry;
+    writeCache(file, data);
+  } finally {
+    lock.release(handle);
+  }
+}
+
+async function evict(file, fileId) {
+  const handle = lock.acquire(file, { maxWaitMs: 1000 });
+  if (!handle) return;
+  try {
+    const data = readCache(file);
+    for (const k of Object.keys(data.entries)) {
+      if (data.entries[k].fileId === fileId) delete data.entries[k];
+    }
+    writeCache(file, data);
+  } finally {
+    lock.release(handle);
+  }
+}
+
+module.exports = { normalize, buildCacheKey, readCache, writeCache, withInflight, lookup, store, evict, CACHE_DIR, CACHE_FILE, CACHE_VERSION };

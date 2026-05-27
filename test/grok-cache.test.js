@@ -106,3 +106,57 @@ test("withInflight removes the entry on rejection so next call retries", async (
   assert.equal(ok, "ok");
   assert.equal(attempts, 2);
 });
+
+test("lookup returns null on cache miss", () => {
+  const p = tmpCachePath();
+  const hit = cache.lookup(p, "missing-key");
+  assert.equal(hit, null);
+});
+
+test("lookup returns entry on hit when not stale and apiBase+keyFp match", () => {
+  const p = tmpCachePath();
+  const entry = { fileId: "file_1", size: 5, filename: "a.tf", uploadedAt: 1, expiresAt: Math.floor(Date.now() / 1000) + 3600, apiBase: "https://api.x.ai/v1", keyFp: "abcd" };
+  cache.writeCache(p, { version: 1, entries: { "K": entry } });
+  const hit = cache.lookup(p, "K", { apiBase: "https://api.x.ai/v1", keyFp: "abcd" });
+  assert.deepEqual(hit, entry);
+});
+
+test("lookup returns null when expiresAt is within 60s of now (stale)", () => {
+  const p = tmpCachePath();
+  const entry = { fileId: "file_1", size: 5, filename: "a.tf", uploadedAt: 1, expiresAt: Math.floor(Date.now() / 1000) + 30, apiBase: "https://api.x.ai/v1", keyFp: "abcd" };
+  cache.writeCache(p, { version: 1, entries: { "K": entry } });
+  const hit = cache.lookup(p, "K", { apiBase: "https://api.x.ai/v1", keyFp: "abcd" });
+  assert.equal(hit, null);
+});
+
+test("lookup returns null when apiBase mismatches", () => {
+  const p = tmpCachePath();
+  const entry = { fileId: "file_1", size: 5, filename: "a.tf", uploadedAt: 1, expiresAt: Math.floor(Date.now() / 1000) + 3600, apiBase: "https://api.x.ai/v1", keyFp: "abcd" };
+  cache.writeCache(p, { version: 1, entries: { "K": entry } });
+  const hit = cache.lookup(p, "K", { apiBase: "https://other.example.com/v1", keyFp: "abcd" });
+  assert.equal(hit, null);
+});
+
+test("store writes an entry under lock", async () => {
+  const p = tmpCachePath();
+  await cache.store(p, "K2", { fileId: "file_2", size: 8, filename: "b.tf", uploadedAt: 2, expiresAt: 999, apiBase: "https://api.x.ai/v1", keyFp: "abcd" });
+  const data = cache.readCache(p);
+  assert.equal(data.entries["K2"].fileId, "file_2");
+});
+
+test("evict removes all rows holding a given fileId", async () => {
+  const p = tmpCachePath();
+  cache.writeCache(p, {
+    version: 1,
+    entries: {
+      "K1": { fileId: "file_X", size: 1, filename: "a", uploadedAt: 1, expiresAt: 9, apiBase: "x", keyFp: "y" },
+      "K2": { fileId: "file_X", size: 1, filename: "b", uploadedAt: 1, expiresAt: 9, apiBase: "x", keyFp: "y" },
+      "K3": { fileId: "file_OTHER", size: 1, filename: "c", uploadedAt: 1, expiresAt: 9, apiBase: "x", keyFp: "y" },
+    },
+  });
+  await cache.evict(p, "file_X");
+  const data = cache.readCache(p);
+  assert.ok(!data.entries["K1"]);
+  assert.ok(!data.entries["K2"]);
+  assert.ok(data.entries["K3"]);
+});
