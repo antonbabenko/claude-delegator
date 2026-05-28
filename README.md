@@ -150,16 +150,51 @@ Claude: "I found 3 issues..." (synthesizes, applies judgment)
 
 For the bridge internals, retry behavior, and recovery paths, see [TECHNICAL.md](TECHNICAL.md).
 
-## Bias hardening (`/consensus` + `/ask-*`)
+## How /consensus and /ask-* keep models honest
 
-`/consensus` has a built-in conflict of interest: Claude writes the review prompt, casts a vote, decides which objections are real, and runs the loop. Left alone, an orchestrator like that can quietly rubber-stamp its own plan. Four guards stop that:
+`/ask-gpt`, `/ask-gemini`, `/ask-grok`, and `/ask-all` are the quick commands: each dispatches one or three external models, Claude reads the output, and you get one synthesized answer. Single shot, no loop, no peer round.
 
-- **Blind verdict.** Claude posts its own verdict (APPROVE / REQUEST CHANGES / REJECT) in a message sent *before* the one that calls the models. The pre-commitment is right there in the transcript, so Claude cannot reshape its opinion after seeing the panel.
-- **Arbiter-mediated, not majority vote.** The external models vote; Claude adjudicates and rewrites the plan between rounds. The command says so plainly instead of dressing it up as a democratic tally.
+`/consensus` is the heavy one. Same parallel dispatch, but with a peer-review round and a multi-round loop that stops only when the models agree. The cost: the orchestrator (Claude) writes the review prompt, casts a vote, decides which objections are real, and runs the loop. Left alone, that setup can quietly rubber-stamp its own plan. Four guards stop that.
+
+![/consensus 3-stage flow](assets/consensus-flow-simple.png)
+
+[See the detailed diagram with bias guards and per-model flow](assets/consensus-flow.png)
+
+The four guards:
+
+- **Blind verdict.** Claude posts its own verdict (APPROVE / REQUEST CHANGES / REJECT) in a message sent *before* the one that calls the panel. The pre-commitment sits in the transcript, so Claude cannot reshape its opinion after seeing the others.
+- **Peer review.** Stage 2: each external model rates the OTHER models' answers blind, with identity stripped best-effort. Not-viable votes become candidate critical issues for the arbiter to weigh. Pattern adapted from [karpathy/llm-council](https://github.com/karpathy/llm-council).
 - **No self-approval.** A round converges only when every responding external approves and at least one external actually answered. Claude's own approval never carries a round by itself. A provider that errors (an unconfigured Grok returning `missing-auth`, for example) drops out of the count instead of jamming the loop.
 - **No silent dismissal.** Every critical issue that gets dismissed or deferred ships with a one-line reason in the final report, including the times Claude walks back one of its own blind objections.
 
-The single and parallel commands carry a lighter version of the same rule. `/ask-gpt`, `/ask-gemini`, `/ask-grok`, and `/ask-all` each state that the external model only advises: Claude reads the output, applies its own judgment, and owns the synthesized answer. When the models agree, that is input, not a verdict.
+The `/ask-*` commands carry a lighter version of the same rule. The external model only advises: Claude reads the output, applies its own judgment, and owns the synthesized answer. When the models agree, that is input, not a verdict.
+
+### The 3-stage flow in detail
+
+Each `/consensus` round runs three stages:
+
+1. **Stage 1 - parallel verdicts.** Claude commits a blind verdict first; GPT, Gemini, and Grok review the plan in parallel and emit APPROVE / REQUEST CHANGES / REJECT plus a list of critical issues.
+2. **Stage 2 - blind cross-review (conditional).** Each external reviewer rates the OTHER reviewers' anonymized answers as viable or not-viable, with a one-line reason and a category. Reviewer identity is stripped best-effort (preamble plus self-references). House styles may still leak, so reviewers are instructed to score substance, not style. Not-viable votes become candidate critical issues for Stage 3.
+3. **Stage 3 - arbiter adjudication.** Claude reconciles Stage 1 verdicts, Stage 2 candidate issues, and its own blind verdict. For each issue it picks accept, dismiss (with reason), or defer. Then it revises the plan for the next round.
+
+The loop stops when all responding externals approve, zero critical issues remain accepted, and Claude adjudicates APPROVE. Hard cap at 5 rounds.
+
+**Stage 2 trigger.** Round 1 always. Round 2 onwards, Stage 2 fires only when Stage 1 has divergence OR the previous Stage 2 surfaced an arbiter-accepted not-viable issue (a one-round lookback that catches rubber-stamp convergence after a divergent round).
+
+**Stage 2 scoring vocabulary** (the same closed taxonomy `/consensus` uses for all critical-issue categories):
+
+- `security` - auth, secrets, injection, data exposure, privilege boundary
+- `correctness` - wrong behaviour, broken invariant, missing case, race condition
+- `scope` - undefined boundary, missing acceptance criteria, deliverable unclear
+- `ambiguity` - reference too vague to act on, contradictory steps, missing context
+- `performance` - latency, throughput, resource use, scaling limit
+- `ops` - rollback, observability, deploy, migration, on-call surface
+
+**Stage 2 activation boundary.** Stage 2 is SKIPPED when `/consensus` runs with `sandbox: workspace-write` (Claude making code changes via consensus). Anonymization leaks too much on raw patches. Plan reviews that merely contain embedded diff text as prose still run Stage 2.
+
+**Cost ceiling.** Stage 2 adds at most about 60% to the call count in the worst case (5 rounds, Stage 2 firing every round). Typical convergence (2 to 3 rounds with partial Stage 2 fires) adds 25 to 50%.
+
+**Operator-visible debug.** The final report logs a Stage 2 shuffle mapping per round so you can audit which model said what about which.
 
 ## Configuration
 
@@ -177,32 +212,6 @@ Common defaults:
 - Grok defaults to `grok-4.3` and needs `XAI_API_KEY`; override with `GROK_DEFAULT_MODEL`.
 
 For the full environment-variable reference and manual MCP setup, see [TECHNICAL.md](TECHNICAL.md#environment-variables).
-
-## How /consensus works (3-stage flow)
-
-`/consensus` runs a multi-round arbiter-mediated convergence loop. Each round has three stages:
-
-1. **Stage 1 - parallel verdicts.** Claude commits a blind verdict first; GPT, Gemini, and Grok review the plan in parallel and emit APPROVE / REQUEST CHANGES / REJECT + critical issues.
-2. **Stage 2 - blind cross-review (conditional).** Each external reviewer rates the OTHER reviewers' anonymized answers as viable or not-viable. Pattern adapted from [karpathy/llm-council](https://github.com/karpathy/llm-council). Reviewer identity is stripped best-effort (preamble + self-references); house styles may still leak, so reviewers are instructed to score substance, not style. Not-viable votes become candidate critical issues that flow into Stage 3's adjudication.
-3. **Stage 3 - arbiter adjudication.** Claude reconciles Stage 1 verdicts + Stage 2 candidate issues + its own blind verdict, decides which issues to accept, dismiss, or defer (each dismissal carries a recorded reason), and revises the plan for the next round.
-
-The loop stops when all responding externals approve, zero critical issues remain accepted, and Claude adjudicates APPROVE. Hard cap at 5 rounds.
-
-**Stage 2 trigger:** runs in round 1 always; in subsequent rounds only when Stage 1 has divergence OR the previous Stage 2 surfaced any arbiter-accepted not-viable issue (lookback confirmation - catches "rubber-stamp" convergence after a divergent round).
-
-**Stage 2 scoring vocabulary** (the same closed taxonomy `/consensus` uses for all critical-issue categories):
-- `security` - auth, secrets, injection, data exposure, privilege boundary
-- `correctness` - wrong behaviour, broken invariant, missing case, race condition
-- `scope` - undefined boundary, missing acceptance criteria, deliverable unclear
-- `ambiguity` - reference too vague to act on, contradictory steps, missing context
-- `performance` - latency, throughput, resource use, scaling limit
-- `ops` - rollback, observability, deploy, migration, on-call surface
-
-**Stage 2 activation boundary:** Stage 2 is SKIPPED when `/consensus` is invoked with `sandbox: workspace-write` (Claude making code changes via consensus). Anonymization leaks too much on raw patches. Plan reviews that merely contain embedded diff text as prose still run Stage 2.
-
-**Cost ceiling:** Stage 2 adds at most ~60% to /consensus call count in the worst case (5 rounds, Stage 2 firing every round). Typical convergence (2-3 rounds, partial Stage 2 fires) adds ~25-50%.
-
-**Operator-visible debug:** the final report logs a Stage 2 shuffle mapping per round so you can audit which model said what about which.
 
 ## Updating the plugin
 
@@ -252,4 +261,4 @@ Expert prompts are adapted from [oh-my-openagent](https://github.com/code-yeongy
 
 ## License
 
-MIT - see [LICENSE](LICENSE)
+[MIT](LICENSE)
