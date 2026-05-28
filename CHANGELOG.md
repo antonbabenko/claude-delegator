@@ -1,3 +1,12 @@
+# [1.16.0](https://github.com/antonbabenko/claude-delegator/compare/v1.15.2...v1.16.0) (2026-05-28)
+
+
+### Features
+
+* **consensus:** add llm-council Stage 2 blind cross-review ([#35](https://github.com/antonbabenko/claude-delegator/issues/35)) ([55229d9](https://github.com/antonbabenko/claude-delegator/commit/55229d9b6a43ee1c15899a712cc11c689f92edbb))
+
+
+
 ## [1.15.2](https://github.com/antonbabenko/claude-delegator/compare/v1.15.1...v1.15.2) (2026-05-28)
 
 
@@ -31,15 +40,6 @@
 ### Features
 
 * **consensus:** confidence label + issue category signals ([#27](https://github.com/antonbabenko/claude-delegator/issues/27)) ([60a91f9](https://github.com/antonbabenko/claude-delegator/commit/60a91f95cc6094faeb1e9d3b2527553cb727c871))
-
-
-
-## [1.13.1](https://github.com/antonbabenko/claude-delegator/compare/v1.13.0...v1.13.1) (2026-05-26)
-
-
-### Bug Fixes
-
-* correct stale "five experts" wording to reflect 7 ([#25](https://github.com/antonbabenko/claude-delegator/issues/25)) ([46f9d68](https://github.com/antonbabenko/claude-delegator/commit/46f9d687587f027d22343930b2625699938421ca)), closes [#22](https://github.com/antonbabenko/claude-delegator/issues/22)
 
 
 
