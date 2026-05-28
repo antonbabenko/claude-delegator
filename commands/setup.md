@@ -68,7 +68,7 @@ claude mcp add --transport stdio --scope user codex -- codex -m gpt-5.3-codex mc
 ```bash
 # Idempotent: safe to rerun setup
 claude mcp remove gemini >/dev/null 2>&1 || true
-claude mcp add --transport stdio --scope user gemini -- node ${CLAUDE_PLUGIN_ROOT}/server/gemini/index.js
+claude mcp add --transport stdio --scope user gemini -- node '${CLAUDE_PLUGIN_ROOT}/server/gemini/index.js'
 ```
 
 ### Grok (xAI)
@@ -77,7 +77,7 @@ claude mcp add --transport stdio --scope user gemini -- node ${CLAUDE_PLUGIN_ROO
 # written to ~/.claude.json. The bridge inherits XAI_API_KEY from the environment
 # that launches Claude Code, so export it in your shell profile to persist it.
 claude mcp remove grok >/dev/null 2>&1 || true
-claude mcp add --transport stdio --scope user grok -- node ${CLAUDE_PLUGIN_ROOT}/server/grok/index.js
+claude mcp add --transport stdio --scope user grok -- node '${CLAUDE_PLUGIN_ROOT}/server/grok/index.js'
 if [ -z "$XAI_API_KEY" ]; then
   echo "Note: XAI_API_KEY not set in this environment; Grok calls return missing-auth until you export it (add it to your shell profile) and restart Claude Code."
 fi
@@ -261,6 +261,7 @@ Next steps:
    - Codex: Run `codex login`
    - Gemini: Run `agy` once and complete sign-in (or set the model in ~/.gemini/settings.json)
    - Grok: export XAI_API_KEY=xai-... (get a key at https://console.x.ai) in your shell profile, then restart Claude Code
+3. After editing plugin code or upgrading the plugin version: run `/mcp` in your Claude Code session and press `Reconnect` on `gemini` and `grok` to load the new code without restarting Claude Code. See README → "Updating the plugin".
 
 Seven experts available:
 
