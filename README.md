@@ -178,6 +178,32 @@ Common defaults:
 
 For the full environment-variable reference and manual MCP setup, see [TECHNICAL.md](TECHNICAL.md#environment-variables).
 
+## How /consensus works (3-stage flow)
+
+`/consensus` runs a multi-round arbiter-mediated convergence loop. Each round has three stages:
+
+1. **Stage 1 - parallel verdicts.** Claude commits a blind verdict first; GPT, Gemini, and Grok review the plan in parallel and emit APPROVE / REQUEST CHANGES / REJECT + critical issues.
+2. **Stage 2 - blind cross-review (conditional).** Each external reviewer rates the OTHER reviewers' anonymized answers as viable or not-viable. Pattern adapted from [karpathy/llm-council](https://github.com/karpathy/llm-council). Reviewer identity is stripped best-effort (preamble + self-references); house styles may still leak, so reviewers are instructed to score substance, not style. Not-viable votes become candidate critical issues that flow into Stage 3's adjudication.
+3. **Stage 3 - arbiter adjudication.** Claude reconciles Stage 1 verdicts + Stage 2 candidate issues + its own blind verdict, decides which issues to accept, dismiss, or defer (each dismissal carries a recorded reason), and revises the plan for the next round.
+
+The loop stops when all responding externals approve, zero critical issues remain accepted, and Claude adjudicates APPROVE. Hard cap at 5 rounds.
+
+**Stage 2 trigger:** runs in round 1 always; in subsequent rounds only when Stage 1 has divergence OR the previous Stage 2 surfaced any arbiter-accepted not-viable issue (lookback confirmation - catches "rubber-stamp" convergence after a divergent round).
+
+**Stage 2 scoring vocabulary** (the same closed taxonomy `/consensus` uses for all critical-issue categories):
+- `security` - auth, secrets, injection, data exposure, privilege boundary
+- `correctness` - wrong behaviour, broken invariant, missing case, race condition
+- `scope` - undefined boundary, missing acceptance criteria, deliverable unclear
+- `ambiguity` - reference too vague to act on, contradictory steps, missing context
+- `performance` - latency, throughput, resource use, scaling limit
+- `ops` - rollback, observability, deploy, migration, on-call surface
+
+**Stage 2 activation boundary:** Stage 2 is SKIPPED when `/consensus` is invoked with `sandbox: workspace-write` (Claude making code changes via consensus). Anonymization leaks too much on raw patches. Plan reviews that merely contain embedded diff text as prose still run Stage 2.
+
+**Cost ceiling:** Stage 2 adds at most ~60% to /consensus call count in the worst case (5 rounds, Stage 2 firing every round). Typical convergence (2-3 rounds, partial Stage 2 fires) adds ~25-50%.
+
+**Operator-visible debug:** the final report logs a Stage 2 shuffle mapping per round so you can audit which model said what about which.
+
 ## Updating the plugin
 
 After editing plugin code or upgrading the plugin version:
