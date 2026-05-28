@@ -1,3 +1,12 @@
+## [1.15.2](https://github.com/antonbabenko/claude-delegator/compare/v1.15.1...v1.15.2) (2026-05-28)
+
+
+### Bug Fixes
+
+* **setup:** quote ${CLAUDE_PLUGIN_ROOT} so MCP bridges resolve current plugin version per spawn ([#33](https://github.com/antonbabenko/claude-delegator/issues/33)) ([ed7ba2f](https://github.com/antonbabenko/claude-delegator/commit/ed7ba2f14bced0105d7b5f1b51152a90ba73f963))
+
+
+
 ## [1.15.1](https://github.com/antonbabenko/claude-delegator/compare/v1.15.0...v1.15.1) (2026-05-27)
 
 
@@ -31,15 +40,6 @@
 ### Bug Fixes
 
 * correct stale "five experts" wording to reflect 7 ([#25](https://github.com/antonbabenko/claude-delegator/issues/25)) ([46f9d68](https://github.com/antonbabenko/claude-delegator/commit/46f9d687587f027d22343930b2625699938421ca)), closes [#22](https://github.com/antonbabenko/claude-delegator/issues/22)
-
-
-
-# [1.13.0](https://github.com/antonbabenko/claude-delegator/compare/v1.12.0...v1.13.0) (2026-05-26)
-
-
-### Features
-
-* add Debugger expert + severity grading and SUMMARY blocks across reviewers ([#22](https://github.com/antonbabenko/claude-delegator/issues/22)) ([a22d436](https://github.com/antonbabenko/claude-delegator/commit/a22d436de6cd6a49094c75bf5a3d5bdb113ef0a9))
 
 
 
