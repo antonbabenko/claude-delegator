@@ -178,6 +178,18 @@ Common defaults:
 
 For the full environment-variable reference and manual MCP setup, see [TECHNICAL.md](TECHNICAL.md#environment-variables).
 
+## Updating the plugin
+
+After editing plugin code or upgrading the plugin version:
+
+1. `/mcp`
+2. `gemini` → `Reconnect`
+3. `grok` → `Reconnect`
+
+No `claude` restart needed. Session context is preserved.
+
+Do NOT use `/reload-plugins` - it only applies a manifest diff and ignores source edits.
+
 ## Requirements
 
 You need at least one provider:
