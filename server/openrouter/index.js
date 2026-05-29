@@ -278,8 +278,11 @@ async function processLine(line) {
 }
 
 if (require.main === module) {
-  let buffer = ""; let chain = Promise.resolve();
-  const enqueue = (line) => { chain = chain.then(() => processLine(line)); };
+  let buffer = "";
+  // Dispatch each request CONCURRENTLY (do not await/chain). processLine awaits its handler
+  // and catches internally; JSON-RPC correlates replies by id and Node serializes stdout
+  // writes, so parallel tool calls overlap without reordering or frame-interleaving hazard.
+  const enqueue = (line) => { void processLine(line); };
   process.stdin.on("data", (chunk) => { buffer += chunk.toString(); const lines = buffer.split("\n"); buffer = lines.pop(); for (const l of lines) enqueue(l); });
   process.stdin.on("end", () => { if (buffer) { enqueue(buffer); buffer = ""; } });
   if (typeof globalThis.fetch !== "function") { console.error("OpenRouter bridge requires Node 18+ (global fetch unavailable)."); process.exit(1); }

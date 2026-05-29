@@ -254,3 +254,31 @@ test("O13: openrouter-list returns object with error (not error envelope) on bad
     assert.ok(payload.error, "error field set");
   } finally { child.kill(); }
 });
+
+test("O14: concurrent tools/call to one bridge run in parallel, not serialized", async () => {
+  const DELAY = 300;
+  let inFlight = 0, maxInFlight = 0;
+  const { server, base } = await startMock((req, res) => {
+    inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+    setTimeout(() => { inFlight--; reply(res, 200, { choices: [{ message: { content: "ok" } }] }); }, DELAY);
+  });
+  const file = writeConfig({ version: 1, openrouter: { enabled: true, apiBase: base, models: [
+    { alias: "m1", model: "a/m1" }, { alias: "m2", model: "a/m2" },
+  ] } });
+  const child = startBridge({ CLAUDE_DELEGATOR_CONFIG: file });
+  const c = rpc(child);
+  try {
+    await c.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const t0 = Date.now();
+    // Fire both without awaiting the first - a serialized bridge would run them back-to-back.
+    const [a, b] = await Promise.all([
+      c.request({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "openrouter", arguments: { alias: "m1", prompt: "q" } } }),
+      c.request({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "openrouter", arguments: { alias: "m2", prompt: "q" } } }),
+    ]);
+    const elapsed = Date.now() - t0;
+    assert.equal(a.result.content[0].text, "ok");
+    assert.equal(b.result.content[0].text, "ok");
+    assert.equal(maxInFlight, 2, "both requests should be in flight at the mock simultaneously");
+    assert.ok(elapsed < DELAY * 2, `expected overlap (<${DELAY * 2}ms), got ${elapsed}ms`);
+  } finally { child.kill(); server.close(); }
+});

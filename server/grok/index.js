@@ -1059,11 +1059,11 @@ async function processLine(line) {
 
 if (require.main === module) {
   let buffer = "";
-  let chain = Promise.resolve();
 
-  // Serialize processing so responses are emitted in request order even when a
-  // chunk carries multiple messages.
-  const enqueue = (line) => { chain = chain.then(() => processLine(line)); };
+  // Dispatch each request CONCURRENTLY (do not await/chain) so parallel tool calls overlap.
+  // processLine awaits its handler and catches internally; JSON-RPC correlates replies by id
+  // and Node serializes stdout writes, so there is no reordering or frame-interleaving hazard.
+  const enqueue = (line) => { void processLine(line); };
 
   process.stdin.on("data", (chunk) => {
     buffer += chunk.toString();
