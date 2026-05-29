@@ -58,7 +58,7 @@ test("C4: unknown expert key is rejected", () => {
 });
 
 test("C5: non-integer or <1 maxFanout is rejected", () => {
-  for (const bad of [0, -1, 2.5, "3", null]) {
+  for (const bad of [0, -1, 2.5, "3", null, NaN, Infinity, true]) {
     const c = base();
     c.openrouter.maxFanout = bad;
     const { ok } = validateConfig(c);
@@ -74,6 +74,15 @@ test("C6: unknown major version is rejected", () => {
   assert.match(error, /version/i);
 });
 
+test("C6b: version 0 or negative is rejected", () => {
+  for (const v of [0, -1]) {
+    const c = base();
+    c.version = v;
+    const { ok } = validateConfig(c);
+    assert.equal(ok, false, `version ${v} should be invalid`);
+  }
+});
+
 test("C7: bad alias characters are rejected", () => {
   const c = base();
   c.openrouter.models[0].alias = "GPT_55";
@@ -87,4 +96,13 @@ test("C8: omitted openrouter block resolves to disabled, no error", () => {
   assert.equal(ok, true);
   assert.equal(resolved.openrouter.enabled, false);
   assert.deepEqual(resolved.openrouter.models, []);
+});
+
+test("C12: invalid per-model override types are rejected", () => {
+  for (const bad of [{ reasoning_effort: 5 }, { timeout: -1 }, { timeout: 2.5 }, { temperature: "hot" }, { apiBase: "" }]) {
+    const c = base();
+    Object.assign(c.openrouter.models[0], bad);
+    const { ok } = validateConfig(c);
+    assert.equal(ok, false, `override ${JSON.stringify(bad)} should be invalid`);
+  }
 });

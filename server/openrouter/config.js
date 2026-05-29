@@ -22,7 +22,7 @@ function validateConfig(raw) {
   if (!isObject(raw)) return fail("config root must be a JSON object");
 
   const version = raw.version === undefined ? 1 : raw.version;
-  if (!Number.isInteger(version) || version > SUPPORTED_MAJOR) {
+  if (!Number.isInteger(version) || version < 1 || version > SUPPORTED_MAJOR) {
     return fail(`unsupported config version ${version}; this build supports version <= ${SUPPORTED_MAJOR}`);
   }
 
@@ -40,7 +40,7 @@ function validateConfig(raw) {
 
   const maxFanout = orRaw.maxFanout === undefined ? DEFAULT_MAX_FANOUT : orRaw.maxFanout;
   if (!Number.isInteger(maxFanout) || maxFanout < 1) {
-    return fail(`maxFanout must be an integer >= 1 (got ${JSON.stringify(maxFanout)})`);
+    return fail(`maxFanout must be an integer >= 1 (got ${String(maxFanout)})`);
   }
 
   const defaultModel = typeof orRaw.defaultModel === "string" && orRaw.defaultModel.trim()
@@ -70,6 +70,18 @@ function validateConfig(raw) {
         if (!EXPERT_KEYS.has(e)) return fail(`models[${i}] (${m.alias}) unknown expert "${e}"`);
       }
       experts = m.experts.slice();
+    }
+    if (m.reasoning_effort !== undefined && typeof m.reasoning_effort !== "string") {
+      return fail(`models[${i}] (${m.alias}) reasoning_effort must be a string`);
+    }
+    if (m.timeout !== undefined && !(Number.isInteger(m.timeout) && m.timeout > 0)) {
+      return fail(`models[${i}] (${m.alias}) timeout must be a positive integer`);
+    }
+    if (m.temperature !== undefined && !(typeof m.temperature === "number" && Number.isFinite(m.temperature))) {
+      return fail(`models[${i}] (${m.alias}) temperature must be a finite number`);
+    }
+    if (m.apiBase !== undefined && !(typeof m.apiBase === "string" && m.apiBase.trim())) {
+      return fail(`models[${i}] (${m.alias}) apiBase must be a non-empty string`);
     }
     models.push({
       alias: m.alias,
