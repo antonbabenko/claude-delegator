@@ -103,7 +103,10 @@ const CONFIG_PATH = process.env.CLAUDE_DELEGATOR_CONFIG
   || require("node:path").join(require("node:os").homedir(), ".claude", "claude-delegator", "config.json");
 const configReader = makeConfigReader(CONFIG_PATH);
 
-// threadId -> { turns, model, apiBase, reasoningEffort, temperature }
+// threadId -> { turns, model, apiBase, reasoningEffort, temperature }. In-memory,
+// process-lifetime only (lost on restart; openrouter-reply then returns unknown-thread).
+// Grows unbounded across distinct threads - acceptable: advisory sessions are short-lived
+// and the bridge is restarted on plugin upgrade. Mirrors server/grok/index.js sessions.
 const sessions = new Map();
 
 function sendResponse(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n"); }
@@ -197,6 +200,10 @@ const handlers = {
     if (!isNonEmptyString(args.prompt)) { if (respond) sendError(id, -32602, "Invalid params: 'prompt' is required"); return; }
     if (args.timeout !== undefined && (typeof args.timeout !== "number" || args.timeout <= 0 || args.timeout > MAX_MS)) { if (respond) sendError(id, -32602, "Invalid params: 'timeout' must be 1..600000"); return; }
     if (args.alias !== undefined && args.model !== undefined) { if (respond) sendResponse(id, errorResult(id, { code: "config", message: "pass at most one of alias/model" }, name, startedAt)); return; }
+    if (args.roots !== undefined && (!Array.isArray(args.roots) || args.roots.some((r) => typeof r !== "string"))) {
+      if (respond) sendError(id, -32602, "Invalid params: 'roots' must be an array of strings");
+      return;
+    }
 
     let delegate = null, priorSession = null, threadId;
     if (name === "openrouter-reply") {

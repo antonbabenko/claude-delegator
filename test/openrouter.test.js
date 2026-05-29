@@ -163,3 +163,14 @@ test("O10: end-to-end openrouter call via alias against a mock endpoint", async 
     assert.ok(isNonEmptyString(r.result.threadId));
   } finally { child.kill(); server.close(); }
 });
+
+test("O12: non-array roots is rejected with -32602", async () => {
+  const file = writeConfig({ version: 1, openrouter: { enabled: true, models: [{ alias: "m1", model: "a/b" }] } });
+  const child = startBridge({ CLAUDE_DELEGATOR_CONFIG: file, OPENROUTER_API_KEY: "k" });
+  const c = rpc(child);
+  try {
+    await c.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const r = await c.request({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "openrouter", arguments: { prompt: "q", alias: "m1", roots: "not-an-array" } } });
+    assert.ok(r.error && r.error.code === -32602, "expected -32602 JSON-RPC error for non-array roots");
+  } finally { child.kill(); }
+});
