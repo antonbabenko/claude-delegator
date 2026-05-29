@@ -1,7 +1,7 @@
 ---
 name: ask-all
 description: Ask GPT, Gemini, and Grok in parallel for independent second opinions, then synthesize and compare. Zero cross-contamination.
-allowed-tools: mcp__codex__codex, mcp__gemini__gemini, mcp__grok__grok, Read, Bash
+allowed-tools: mcp__codex__codex, mcp__gemini__gemini, mcp__grok__grok, mcp__openrouter__openrouter, mcp__openrouter__openrouter-list, Read, Bash
 timeout: 300000
 ---
 
@@ -33,6 +33,16 @@ User question or topic: $ARGUMENTS
 
 5. **Set cwd** (Gemini path) - use `process.cwd()` as the MCP `cwd`; agy print mode needs no folder-trust pre-check. Grok and Codex have no trusted-directory concept either.
 
+5b. **Build the active delegate set from config:**
+   - Read `~/.claude/claude-delegator/config.json` (if present). For each built-in
+     (`codex`/`gemini`/`grok`), include it ONLY if `providers.<name>.enabled` is not
+     `false` (missing = enabled) AND its MCP tool is available; otherwise skip it.
+   - Call `mcp__openrouter__openrouter-list`. If unavailable or its `error` is set, the
+     OpenRouter delegate set is EMPTY. Otherwise select delegates where `askAll != false`
+     and the delegate is eligible for the chosen expert (`experts` absent = all; `[]` =
+     none; else must include the expert), in list order, truncated to `maxFanout`. NOTE any
+     delegates omitted by the cap in the final synthesis (no silent truncation).
+
 6. **Parallel dispatch** - fire all three MCP calls in a **single message with three tool blocks** so they run concurrently:
    ```
    mcp__codex__codex({
@@ -58,6 +68,20 @@ User question or topic: $ARGUMENTS
      files: [{ path: "path/relative/to/cwd" }]   // attach referenced local files by default
    })
    ```
+   For EACH selected OpenRouter delegate, add one more parallel tool block:
+   ```
+   mcp__openrouter__openrouter({
+     prompt: "[identical 7-section prompt]",
+     "developer-instructions": "[expert prompt]",
+     alias: "[delegate alias]",
+     sandbox: "read-only",
+     cwd: "[repo root]",
+     files: [ /* SAME orientation bundle passed to Grok, e.g. {path|dir, mode:"auto"} */ ]
+   })
+   ```
+   OpenRouter delegates obey the same "provider failure does not kill the command" rule; an
+   errored delegate renders as `OpenRouter:<alias> bottom line: UNAVAILABLE (...)`.
+
    **Provider failure does not kill the command** (mirrors `consensus.md`): for ANY of the three providers, if the call returns `result.isError` or an MCP/transport error, do not abort. Render that provider's section as:
    ```
    **<Provider> bottom line:** UNAVAILABLE (<errorKind|"error">: <message truncated to 200 chars>)
@@ -129,6 +153,7 @@ User question or topic: $ARGUMENTS
    **GPT bottom line:** [1-2 sentences]
    **Gemini bottom line:** [1-2 sentences]
    **Grok bottom line:** [1-2 sentences]
+   **OpenRouter:<alias> bottom line:** [1-2 sentences]   (one line per selected delegate)
 
    **Agreement:** [where they converge]
    **Disagreement:** [where they diverge - call out specifics]
