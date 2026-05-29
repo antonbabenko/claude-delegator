@@ -102,7 +102,7 @@ For each round R:
    ```
    This is the orchestrator's PEER vote. Emitting it in an earlier message than the dispatch makes the pre-commitment visible in the transcript. Claude must NOT edit the blind verdict after seeing reviewers; it appears verbatim in the final report. (Claude's *adjudication* in step 7 is a separate, arbiter-role decision, recorded distinctly.)
 
-4. **Parallel dispatch** - in the NEXT message, all three calls in ONE message with three tool blocks. Identical prompt body, identical expert prompt:
+4. **Parallel dispatch** - in the NEXT message, all three calls in ONE message with three tool blocks. Identical prompt body, identical expert prompt. On **round 1 only**, print the delegate status block first (see "Report as you go" for the format and sources) so the panel's exact models and reasoning efforts are visible before any dispatch; the panel is stable across rounds, so later rounds reuse the per-round status line only:
    ```
    mcp__codex__codex({
      prompt: "[identical 7-section prompt for round R]",
@@ -365,7 +365,14 @@ If there were zero fallbacks across the whole loop, render `**Parse fallbacks**:
 - **Claude cannot self-approve into consensus** - convergence requires every responding external to APPROVE and at least one external to respond; Claude's APPROVE alone never converges. Claude's blind verdict is a peer vote; its adjudication is a separate, accountable role.
 - **No silent dismissal** - every `dismiss`/`defer` of a critical issue (from a reviewer OR from Claude's own blind verdict) carries a one-line reason that appears in the final report. Repeated cross-source issues are accepted by default.
 - **Hard cap at 5 rounds** - even if one reviewer is being stubborn, terminate. Diverging too many rounds usually means the plan has an unresolved ambiguity, not that the reviewer is wrong.
-- **Report as you go** - print a status line after each round dispatch and after each return. Long silences look like a hang.
+- **Report as you go** - before the round-1 dispatch, print a per-delegate status block (one line per voting member: provider, exact model, reasoning effort), then print a status line after each round dispatch and after each return. Long silences look like a hang. Resolve each member's model + effort from its real source, never invent: Codex from `~/.codex/config.toml` (`model` / `model_reasoning_effort`, missing = `default`); Gemini model from `~/.gemini/settings.json` (`model.name`, default `auto-gemini-3`) with effort `n/a` (agy has no knob); Grok = `$GROK_DEFAULT_MODEL` else `grok-4.3` / `$GROK_REASONING_EFFORT` else `high`; OpenRouter voting delegates straight from `openrouter-list` (`model` + resolved `reasoning_effort`, `null` prints as `default`). Print `unknown` for any field whose source can't be read. Example:
+  ```
+  Consensus panel (round 1, typical 30-60s/round):
+    - Codex (GPT)                   gpt-5.5                       reasoning: high
+    - Gemini                        auto-gemini-3                 reasoning: n/a
+    - Grok (xAI)                    grok-4.3                      reasoning: high
+    - OpenRouter / kimi-k2-thinking moonshotai/kimi-k2-thinking   reasoning: high
+  ```
 - **Synthesize, never paste raw** - reviewers' raw output never appears verbatim in the final report.
 - **Stage 2 is decision input only** - Stage 2 fires conditionally (step 6); its candidate issues feed step 7's existing adjudication. Stage 2 status (`fired`/`skipped`/`errored`) does NOT participate in the convergence rule. The convergence rule in step 8 reads only Stage 1 verdicts + Claude's adjudication + accepted critical issues (from any source, Stage 1 or Stage 2 alike).
 - **Stage 2 anonymization is best-effort** - identity stripping removes preambles and self-references but model house styles may still leak. Reviewers are explicitly instructed to score substance and ignore style. The operator-visible shuffle mapping in the final report records ground truth for post-hoc audit.

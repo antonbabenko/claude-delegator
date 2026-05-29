@@ -18,6 +18,16 @@ function isObject(v) {
   return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
+// Best-effort sanitize an alias to the [a-z0-9-]+ shape. Returns "" when nothing usable remains.
+function sanitizeAlias(raw) {
+  if (typeof raw !== "string") return "";
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 // Validate a parsed config object. Returns { ok, resolved, error }.
 // `resolved.openrouter` always exists (disabled when the block is absent).
 function validateConfig(raw) {
@@ -50,41 +60,78 @@ function validateConfig(raw) {
 
   const defaults = isObject(orRaw.defaults) ? orRaw.defaults : {};
 
+  // Per-entry partial validation: a single bad model entry no longer rejects the whole
+  // config. Valid entries are kept; bad ones are collected into `invalidModels` with a
+  // human-readable reason and (where a safe fix exists) a `suggestedAlias` the caller can
+  // apply to repair config.json. Top-level/schema errors above still hard-fail.
   const modelsRaw = Array.isArray(orRaw.models) ? orRaw.models : [];
   const models = [];
-  const seen = new Set();
+  const invalidModels = [];
+  const seen = new Set();           // aliases of entries that fully validated (for duplicate detection)
+  const taken = new Set([RESERVED_ALIAS]); // every existing alias + reserved + suggestions already made
+  for (const m of modelsRaw) {
+    if (isObject(m) && typeof m.alias === "string") taken.add(m.alias);
+  }
+
+  // Pick a free alias near `candidate`, reserving it so two repairs cannot collide.
+  function suggestFree(candidate) {
+    if (!candidate || candidate === RESERVED_ALIAS) return undefined;
+    let chosen = candidate;
+    if (taken.has(chosen)) {
+      chosen = undefined;
+      for (let n = 2; n <= 99; n++) {
+        if (!taken.has(`${candidate}-${n}`)) { chosen = `${candidate}-${n}`; break; }
+      }
+      if (!chosen) return undefined;
+    }
+    taken.add(chosen);
+    return chosen;
+  }
+
+  function addInvalid(i, alias, reason, suggestedAlias) {
+    const entry = { index: i, alias: alias === undefined ? null : alias, reason };
+    if (suggestedAlias) entry.suggestedAlias = suggestedAlias;
+    invalidModels.push(entry);
+  }
+
   for (let i = 0; i < modelsRaw.length; i++) {
     const m = modelsRaw[i];
-    if (!isObject(m)) return fail(`models[${i}] must be an object`);
+    if (!isObject(m)) { addInvalid(i, null, `models[${i}] must be an object`); continue; }
+    const rawAlias = typeof m.alias === "string" ? m.alias : null;
     if (typeof m.alias !== "string" || !ALIAS_RE.test(m.alias)) {
-      return fail(`models[${i}] alias must match [a-z0-9-]+ (got ${JSON.stringify(m.alias)})`);
+      const sanitized = sanitizeAlias(m.alias);
+      addInvalid(i, rawAlias, `models[${i}] alias must match [a-z0-9-]+ (got ${JSON.stringify(m.alias)})`,
+        sanitized ? suggestFree(sanitized) : undefined);
+      continue;
     }
-    if (m.alias === RESERVED_ALIAS) return fail(`alias "${RESERVED_ALIAS}" is reserved`);
-    if (seen.has(m.alias)) return fail(`duplicate alias "${m.alias}"`);
-    seen.add(m.alias);
+    if (m.alias === RESERVED_ALIAS) { addInvalid(i, m.alias, `alias "${RESERVED_ALIAS}" is reserved`); continue; }
+    if (seen.has(m.alias)) { addInvalid(i, m.alias, `duplicate alias "${m.alias}"`, suggestFree(m.alias)); continue; }
     if (typeof m.model !== "string" || !m.model.trim()) {
-      return fail(`models[${i}] (${m.alias}) needs a non-empty model slug`);
+      addInvalid(i, m.alias, `models[${i}] (${m.alias}) needs a non-empty model slug`); continue;
     }
     let experts = null;
     if (m.experts !== undefined) {
-      if (!Array.isArray(m.experts)) return fail(`models[${i}] (${m.alias}) experts must be an array`);
+      if (!Array.isArray(m.experts)) { addInvalid(i, m.alias, `models[${i}] (${m.alias}) experts must be an array`); continue; }
+      let badExpert = null;
       for (const e of m.experts) {
-        if (!EXPERT_KEYS.has(e)) return fail(`models[${i}] (${m.alias}) unknown expert "${e}"`);
+        if (!EXPERT_KEYS.has(e)) { badExpert = e; break; }
       }
+      if (badExpert !== null) { addInvalid(i, m.alias, `models[${i}] (${m.alias}) unknown expert "${badExpert}"`); continue; }
       experts = m.experts.slice();
     }
     if (m.reasoning_effort !== undefined && typeof m.reasoning_effort !== "string") {
-      return fail(`models[${i}] (${m.alias}) reasoning_effort must be a string`);
+      addInvalid(i, m.alias, `models[${i}] (${m.alias}) reasoning_effort must be a string`); continue;
     }
     if (m.timeout !== undefined && !(Number.isInteger(m.timeout) && m.timeout > 0)) {
-      return fail(`models[${i}] (${m.alias}) timeout must be a positive integer`);
+      addInvalid(i, m.alias, `models[${i}] (${m.alias}) timeout must be a positive integer`); continue;
     }
     if (m.temperature !== undefined && !(typeof m.temperature === "number" && Number.isFinite(m.temperature))) {
-      return fail(`models[${i}] (${m.alias}) temperature must be a finite number`);
+      addInvalid(i, m.alias, `models[${i}] (${m.alias}) temperature must be a finite number`); continue;
     }
     if (m.apiBase !== undefined && !(typeof m.apiBase === "string" && m.apiBase.trim())) {
-      return fail(`models[${i}] (${m.alias}) apiBase must be a non-empty string`);
+      addInvalid(i, m.alias, `models[${i}] (${m.alias}) apiBase must be a non-empty string`); continue;
     }
+    seen.add(m.alias);
     models.push({
       alias: m.alias,
       model: m.model.trim(),
@@ -103,7 +150,7 @@ function validateConfig(raw) {
     error: null,
     resolved: {
       version, providers,
-      openrouter: { enabled, apiKeyEnv, apiBase, allowRawModel, maxFanout, defaultModel, defaults, models },
+      openrouter: { enabled, apiKeyEnv, apiBase, allowRawModel, maxFanout, defaultModel, defaults, models, invalidModels },
     },
   };
 }
@@ -111,7 +158,7 @@ function validateConfig(raw) {
 function disabledOpenRouter() {
   return {
     enabled: false, apiKeyEnv: DEFAULT_API_KEY_ENV, apiBase: DEFAULT_API_BASE,
-    allowRawModel: false, maxFanout: DEFAULT_MAX_FANOUT, defaultModel: null, defaults: {}, models: [],
+    allowRawModel: false, maxFanout: DEFAULT_MAX_FANOUT, defaultModel: null, defaults: {}, models: [], invalidModels: [],
   };
 }
 

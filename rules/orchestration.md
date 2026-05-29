@@ -137,7 +137,7 @@ For example, for Architect: `Read ${CLAUDE_PLUGIN_ROOT}/prompts/architect.md`
 Status line is owned by each command file (see ask-gpt.md, ask-gemini.md, ask-grok.md, ask-all.md, consensus.md). Commands print exactly one line immediately before the MCP tool dispatch:
 
 - single-provider: `Codex working (typical 30-60s)...` or `Gemini working (typical 30-60s)...`
-- parallel: `Codex + Gemini working in parallel (typical 30-60s)...`
+- parallel: a per-delegate status block (one line per dispatched delegate: provider, exact model, reasoning effort) instead of a single line - see `ask-all.md` / `consensus.md`.
 
 This rule file no longer defines the wording. The command files are the source of truth.
 

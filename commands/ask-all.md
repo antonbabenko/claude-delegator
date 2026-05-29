@@ -29,7 +29,22 @@ User question or topic: $ARGUMENTS
    - Relevant code snippets / file paths from current conversation context
    - Any specific constraints user has mentioned this session
 
-4. **Print status line**: `Codex + Gemini + Grok working in parallel (typical 30-60s)...`
+4. **Print status block** (after building the delegate set in 5b, immediately before the dispatch in step 6): one line per delegate that is actually being dispatched, showing the exact model and the reasoning effort each will run with. Do not print a generic single line, and do not list providers that are skipped or fanout-capped.
+
+   ```
+   Working in parallel (typical 30-60s):
+     - Codex (GPT)                   gpt-5.5                       reasoning: high
+     - Gemini                        auto-gemini-3                 reasoning: n/a
+     - Grok (xAI)                    grok-4.3                      reasoning: high
+     - OpenRouter / deepseek-v4-pro  deepseek/deepseek-v4-pro      reasoning: medium
+     - OpenRouter / kimi-k2-thinking moonshotai/kimi-k2-thinking   reasoning: high
+   ```
+
+   Resolve each field from its real source - never invent a value (print `unknown` if a source cannot be read):
+   - **Codex**: model + effort from `~/.codex/config.toml` (`model`, `model_reasoning_effort`), or a `-c model=` / `-c model_reasoning_effort=` override on the MCP registration. Label a missing key `default`.
+   - **Gemini**: model from `~/.gemini/settings.json` (`model.name`, default `auto-gemini-3`). Reasoning effort is always `n/a` - agy exposes no reasoning knob.
+   - **Grok**: model = `$GROK_DEFAULT_MODEL` else `grok-4.3`; effort = `$GROK_REASONING_EFFORT` else `high`.
+   - **OpenRouter**: model and `reasoning_effort` come straight from each delegate in the `mcp__openrouter__openrouter-list` result (the list already resolves per-model override > `defaults` > `null`). A `null` effort prints as `default`.
 
 5. **Set cwd** (Gemini path) - use `process.cwd()` as the MCP `cwd`; agy print mode needs no folder-trust pre-check. Grok and Codex have no trusted-directory concept either.
 

@@ -127,6 +127,35 @@ test("O7: openrouter-list returns delegates object in config order", async () =>
   } finally { child.kill(); }
 });
 
+test("O7b: openrouter-list resolves reasoning_effort (per-model > defaults > null)", async () => {
+  // With defaults: per-model override wins; otherwise inherit defaults.
+  const withDefaults = writeConfig({ version: 1, openrouter: { enabled: true, defaultModel: "d/m",
+    defaults: { reasoning_effort: "medium" },
+    models: [
+      { alias: "override", model: "a/x", reasoning_effort: "high" },
+      { alias: "inherit", model: "a/y" },
+    ] } });
+  let child = startBridge({ CLAUDE_DELEGATOR_CONFIG: withDefaults });
+  let c = rpc(child);
+  try {
+    await c.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const r = await c.request({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "openrouter-list", arguments: {} } });
+    const byAlias = Object.fromEntries(JSON.parse(r.result.content[0].text).delegates.map((d) => [d.alias, d.reasoning_effort]));
+    assert.equal(byAlias.override, "high");
+    assert.equal(byAlias.inherit, "medium");
+  } finally { child.kill(); }
+
+  // No defaults and no per-model value => null (always present).
+  const noDefaults = writeConfig({ version: 1, openrouter: { enabled: true, models: [{ alias: "bare", model: "a/z" }] } });
+  child = startBridge({ CLAUDE_DELEGATOR_CONFIG: noDefaults });
+  c = rpc(child);
+  try {
+    await c.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const r = await c.request({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "openrouter-list", arguments: {} } });
+    assert.equal(JSON.parse(r.result.content[0].text).delegates[0].reasoning_effort, null);
+  } finally { child.kill(); }
+});
+
 test("O8: openrouter call with unknown alias => model-not-allowed", async () => {
   const file = writeConfig({ version: 1, openrouter: { enabled: true, models: [{ alias: "m1", model: "a/b" }] } });
   const child = startBridge({ CLAUDE_DELEGATOR_CONFIG: file, OPENROUTER_API_KEY: "k" });

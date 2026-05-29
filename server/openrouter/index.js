@@ -196,8 +196,15 @@ const handlers = {
     if (name === "openrouter-list") {
       if (!respond) return;
       const payload = {
-        delegates: or.models.map((m) => ({ alias: m.alias, model: m.model, experts: m.experts, askAll: m.askAll, consensus: m.consensus })),
+        delegates: or.models.map((m) => ({
+          alias: m.alias, model: m.model, experts: m.experts, askAll: m.askAll, consensus: m.consensus,
+          // Resolved effort the bridge would use absent a per-call override: per-model > defaults > null.
+          reasoning_effort: pick(undefined, m.reasoning_effort, or.defaults.reasoning_effort) ?? null,
+        })),
         defaultModelSet: !!or.defaultModel, maxFanout: or.maxFanout, maxFanoutHigh: or.maxFanout > 10,
+        // Per-entry validation failures (kept-valid delegates above; these were skipped).
+        // Each: { index, alias, reason, suggestedAlias? }. Empty when the config is clean.
+        invalidModels: or.invalidModels || [],
       };
       sendResponse(id, { content: [{ type: "text", text: JSON.stringify(payload) }] });
       logCall(id, name, "ok", Date.now() - startedAt);
