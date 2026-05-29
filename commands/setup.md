@@ -122,7 +122,8 @@ claude mcp remove openrouter >/dev/null 2>&1 || true
 if [ "$OR_ON" = "1" ]; then
   claude mcp add --transport stdio --scope user openrouter -- node '${CLAUDE_PLUGIN_ROOT}/server/openrouter/index.js'
   KEYENV=$(node -e 'try{const c=require(process.argv[1]);process.stdout.write((c.openrouter&&c.openrouter.apiKeyEnv)||"OPENROUTER_API_KEY")}catch(e){process.stdout.write("OPENROUTER_API_KEY")}' "$CFG" 2>/dev/null || echo OPENROUTER_API_KEY)
-  if [ -z "${!KEYENV}" ]; then echo "Note: \$$KEYENV is empty; OpenRouter calls to openrouter.ai will return auth errors until you export it."; fi
+  KEYVAL=$(printenv "$KEYENV" 2>/dev/null)
+  if [ -z "$KEYVAL" ]; then echo "Note: \$$KEYENV is empty; OpenRouter calls to openrouter.ai will return auth errors until you export it."; fi
 fi
 ```
 
@@ -296,7 +297,7 @@ Gemini Bridge:   [status from check 4]
 Gemini model:    [value from check 4a]
 Grok MCP:        [status + model from check 4b]
 Rules:           ✓ [N] files in ~/.claude/rules/delegator/
-Codex Auth:      [status from check 6]
+Codex Auth:      [status from check 7]
 Grok Auth:       [XAI_API_KEY status from check 4b]
 ───────────────────────────────────────────────────
 ```
