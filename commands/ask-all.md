@@ -43,7 +43,7 @@ User question or topic: $ARGUMENTS
      none; else must include the expert), in list order, truncated to `maxFanout`. NOTE any
      delegates omitted by the cap in the final synthesis (no silent truncation).
 
-6. **Parallel dispatch** - fire all three MCP calls in a **single message with three tool blocks** so they run concurrently:
+6. **Parallel dispatch** - fire ALL selected provider calls in a **single message** (the enabled built-ins plus each selected OpenRouter delegate from 5b), as **parallel tool blocks** so they run concurrently:
    ```
    mcp__codex__codex({
      prompt: "[identical 7-section prompt]",
