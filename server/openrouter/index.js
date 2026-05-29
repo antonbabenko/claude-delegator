@@ -94,4 +94,173 @@ async function callOpenRouter({ apiBase, apiKey, model, messages, reasoningEffor
   return { text: parseCompletion(data) };
 }
 
-module.exports = { buildMessages, classifyError, parseCompletion, callOpenRouter, DEFAULT_TIMEOUT_MS, MAX_MS, isNonEmptyString, truncate };
+const crypto = require("node:crypto");
+const { makeConfigReader } = require("./config.js");
+const { resolveAlias, RESERVED_ALIAS } = require("./routing.js");
+const { inlineFiles } = require("./files.js");
+
+const CONFIG_PATH = process.env.CLAUDE_DELEGATOR_CONFIG
+  || require("node:path").join(require("node:os").homedir(), ".claude", "claude-delegator", "config.json");
+const configReader = makeConfigReader(CONFIG_PATH);
+
+// threadId -> { turns, model, apiBase, reasoningEffort, temperature }
+const sessions = new Map();
+
+function sendResponse(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n"); }
+function sendError(id, code, message) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }) + "\n"); }
+function isObject(v) { return v !== null && typeof v === "object" && !Array.isArray(v); }
+function hasRequestId(r) { return isObject(r) && Object.prototype.hasOwnProperty.call(r, "id"); }
+function logCall(cid, tool, outcome, ms) { process.stderr.write(`[openrouter] ${cid} ${tool} -> ${outcome} in ${ms}ms\n`); }
+
+// Precedence chain (spec 3.5): explicit call arg > per-model override > defaults.
+function pick(callArg, modelOverride, defaultsVal) {
+  if (callArg !== undefined) return callArg;
+  if (modelOverride !== undefined) return modelOverride;
+  return defaultsVal;
+}
+
+function errorResult(id, e, tool, startedAt) {
+  const { errorKind, retryable } = classifyError(e && e.status, e && e.code);
+  logCall(id, tool, errorKind, Date.now() - startedAt);
+  return { content: [{ type: "text", text: `Error: ${(e && e.message) || String(e)}` }], isError: true, errorKind, retryable };
+}
+
+function buildInitialTurns(developerInstructions, prompt, blocks) {
+  const turns = [];
+  if (isNonEmptyString(developerInstructions)) turns.push({ role: "system", text: developerInstructions });
+  turns.push({ role: "user", text: prompt, inlineBlocks: blocks || [] });
+  return turns;
+}
+
+// Resolve args -> delegate {model, ...overrides} or { _error: 'model-not-allowed' }.
+function resolveDelegate(or, args) {
+  if (isNonEmptyString(args.alias)) {
+    return resolveAlias(or, args.alias) || { _error: "model-not-allowed" };
+  }
+  if (isNonEmptyString(args.model)) {
+    if (!or.allowRawModel) return { _error: "model-not-allowed" };
+    return { model: args.model.trim() };
+  }
+  return resolveAlias(or, RESERVED_ALIAS) || { _error: "model-not-allowed" };
+}
+
+const TOOL_PROPS = {
+  prompt: { type: "string", description: "The delegation prompt" },
+  "developer-instructions": { type: "string", description: "Expert system instructions" },
+  alias: { type: "string", description: "Configured delegate alias (preferred)" },
+  model: { type: "string", description: "Raw OpenRouter model slug; honored only when allowRawModel:true" },
+  reasoning_effort: { type: "string", description: "low|medium|high (provider-dependent)" },
+  temperature: { type: "number" },
+  timeout: { type: "number", description: "Soft timeout ms, 1..600000" },
+  files: { type: "array", description: "Text-inline files: each item has path or dir (file_id/file_url rejected)" },
+  roots: { type: "array", items: { type: "string" }, description: "Absolute dirs to resolve files[].path/dir" },
+  cwd: { type: "string" },
+  sandbox: { type: "string", description: "Accepted for parity; ignored." },
+};
+
+const handlers = {
+  initialize: (id, _p, respond) => {
+    if (!respond) return;
+    sendResponse(id, { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "claude-delegator-openrouter", version: "1.0.0" } });
+  },
+  "notifications/initialized": () => {},
+  "tools/list": (id, _p, respond) => {
+    if (!respond) return;
+    sendResponse(id, { tools: [
+      { name: "openrouter", description: "Start an OpenRouter expert session (advisory only). Pick a configured `alias`.", inputSchema: { type: "object", properties: TOOL_PROPS, required: ["prompt"] } },
+      { name: "openrouter-reply", description: "Continue an OpenRouter session by threadId (in-memory; lost on restart).", inputSchema: { type: "object", properties: { threadId: { type: "string" }, prompt: { type: "string" }, files: TOOL_PROPS.files, roots: TOOL_PROPS.roots, alias: TOOL_PROPS.alias, model: TOOL_PROPS.model, reasoning_effort: TOOL_PROPS.reasoning_effort, temperature: TOOL_PROPS.temperature, timeout: TOOL_PROPS.timeout, cwd: TOOL_PROPS.cwd }, required: ["threadId", "prompt"] } },
+      { name: "openrouter-list", description: "List configured OpenRouter delegates and settings.", inputSchema: { type: "object", properties: {} } },
+    ] });
+  },
+  "tools/call": async (id, params, respond) => {
+    const startedAt = Date.now();
+    if (!isObject(params) || !isNonEmptyString(params.name)) { if (respond) sendError(id, -32602, "Invalid params"); return; }
+    const { name, arguments: args } = params;
+    if (!isObject(args)) { if (respond) sendError(id, -32602, "Invalid params: arguments must be an object"); return; }
+
+    const cfg = configReader.get();
+    if (!cfg.ok) { if (respond) sendResponse(id, errorResult(id, { code: "config", message: cfg.error }, name, startedAt)); return; }
+    const or = cfg.resolved.openrouter;
+
+    if (name === "openrouter-list") {
+      if (!respond) return;
+      const payload = {
+        delegates: or.models.map((m) => ({ alias: m.alias, model: m.model, experts: m.experts, askAll: m.askAll, consensus: m.consensus })),
+        defaultModelSet: !!or.defaultModel, maxFanout: or.maxFanout, maxFanoutHigh: or.maxFanout > 10,
+      };
+      sendResponse(id, { content: [{ type: "text", text: JSON.stringify(payload) }] });
+      logCall(id, name, "ok", Date.now() - startedAt);
+      return;
+    }
+
+    if (name !== "openrouter" && name !== "openrouter-reply") { if (respond) sendError(id, -32601, `Tool not found: ${name}`); return; }
+    if (!isNonEmptyString(args.prompt)) { if (respond) sendError(id, -32602, "Invalid params: 'prompt' is required"); return; }
+    if (args.timeout !== undefined && (typeof args.timeout !== "number" || args.timeout <= 0 || args.timeout > MAX_MS)) { if (respond) sendError(id, -32602, "Invalid params: 'timeout' must be 1..600000"); return; }
+    if (args.alias !== undefined && args.model !== undefined) { if (respond) sendResponse(id, errorResult(id, { code: "config", message: "pass at most one of alias/model" }, name, startedAt)); return; }
+
+    let delegate = null, priorSession = null, threadId;
+    if (name === "openrouter-reply") {
+      if (!isNonEmptyString(args.threadId)) { if (respond) sendError(id, -32602, "Invalid params: 'threadId' required"); return; }
+      threadId = args.threadId.trim();
+      priorSession = sessions.get(threadId);
+      if (!priorSession) { if (respond) sendResponse(id, errorResult(id, { code: "unknown-thread", message: `unknown threadId "${threadId}"` }, name, startedAt)); return; }
+      delegate = (args.alias || args.model) ? resolveDelegate(or, args) : { model: priorSession.model };
+    } else {
+      threadId = crypto.randomUUID();
+      delegate = resolveDelegate(or, args);
+    }
+    if (delegate && delegate._error) { if (respond) sendResponse(id, errorResult(id, { code: delegate._error, message: "alias/model not in allowlist" }, name, startedAt)); return; }
+    if (!delegate || !delegate.model) { if (respond) sendResponse(id, errorResult(id, { code: "model-not-allowed", message: "no alias/model resolved and no defaultModel set" }, name, startedAt)); return; }
+
+    let blocks = [], notes = [];
+    if (args.files) {
+      try {
+        const roots = Array.isArray(args.roots) && args.roots.length ? args.roots : [args.cwd || process.cwd()];
+        ({ blocks, notes } = inlineFiles(args.files, { roots }));
+      } catch (e) { if (respond) sendResponse(id, errorResult(id, { code: "config", message: e.message }, name, startedAt)); return; }
+    }
+
+    const reasoningEffort = pick(args.reasoning_effort, delegate.reasoning_effort, or.defaults.reasoning_effort);
+    const temperature = pick(args.temperature, delegate.temperature, or.defaults.temperature);
+    const timeoutMs = pick(args.timeout, delegate.timeout, or.defaults.timeout);
+    const apiBase = delegate.apiBase || or.apiBase;
+    const apiKey = process.env[or.apiKeyEnv] || "";
+
+    const turns = priorSession
+      ? [...priorSession.turns, { role: "user", text: args.prompt, inlineBlocks: blocks }]
+      : buildInitialTurns(args["developer-instructions"], args.prompt, blocks);
+
+    try {
+      const out = await callOpenRouter({ apiBase, apiKey, model: delegate.model, messages: buildMessages(turns), reasoningEffort, temperature, timeoutMs });
+      sessions.set(threadId, { turns: [...turns, { role: "assistant", text: out.text }], model: delegate.model, apiBase, reasoningEffort, temperature });
+      if (respond) {
+        const text = notes.length ? `${out.text}\n\n[files] ${notes.join("; ")}` : out.text;
+        sendResponse(id, { content: [{ type: "text", text }], threadId });
+      }
+      logCall(id, name, "ok", Date.now() - startedAt);
+    } catch (e) {
+      if (respond) sendResponse(id, errorResult(id, e, name, startedAt));
+    }
+  },
+};
+
+async function processLine(line) {
+  if (!line.trim()) return;
+  let request; try { request = JSON.parse(line); } catch (_) { return; }
+  const respond = hasRequestId(request);
+  if (!isObject(request) || typeof request.method !== "string") { if (respond) sendError(request.id, -32600, "Invalid Request"); return; }
+  const handler = handlers[request.method];
+  if (!handler) { if (respond) sendError(request.id, -32601, `Method not found: ${request.method}`); return; }
+  try { await handler(request.id, request.params, respond); }
+  catch (e) { if (respond) sendError(request.id, -32603, `Internal error: ${e.message}`); }
+}
+
+if (require.main === module) {
+  let buffer = ""; let chain = Promise.resolve();
+  const enqueue = (line) => { chain = chain.then(() => processLine(line)); };
+  process.stdin.on("data", (chunk) => { buffer += chunk.toString(); const lines = buffer.split("\n"); buffer = lines.pop(); for (const l of lines) enqueue(l); });
+  process.stdin.on("end", () => { if (buffer) { enqueue(buffer); buffer = ""; } });
+  if (typeof globalThis.fetch !== "function") { console.error("OpenRouter bridge requires Node 18+ (global fetch unavailable)."); process.exit(1); }
+}
+
+module.exports = { buildMessages, classifyError, parseCompletion, callOpenRouter, buildInitialTurns, resolveDelegate, DEFAULT_TIMEOUT_MS, MAX_MS, isNonEmptyString, truncate };

@@ -74,3 +74,92 @@ test("O5: non-2xx surfaces a status-tagged error", async () => {
     );
   } finally { server.close(); }
 });
+
+const { spawn } = require("node:child_process");
+const fsx = require("node:fs");
+const osx = require("node:os");
+const pathx = require("node:path");
+const BRIDGE = pathx.join(__dirname, "..", "server", "openrouter", "index.js");
+
+function writeConfig(obj) {
+  const dir = fsx.mkdtempSync(pathx.join(osx.tmpdir(), "cdg-orcfg-"));
+  const file = pathx.join(dir, "config.json");
+  fsx.writeFileSync(file, JSON.stringify(obj));
+  return file;
+}
+function startBridge(env) {
+  return spawn(process.execPath, [BRIDGE], { env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"] });
+}
+function rpc(child) {
+  let buf = ""; const waiters = new Map();
+  child.stdout.on("data", (d) => {
+    buf += d.toString(); const lines = buf.split("\n"); buf = lines.pop();
+    for (const line of lines) { if (!line.trim()) continue; let m; try { m = JSON.parse(line); } catch (_) { continue; } if (m.id !== undefined && waiters.has(m.id)) { waiters.get(m.id)(m); waiters.delete(m.id); } }
+  });
+  return { request(o) { return new Promise((r) => { waiters.set(o.id, r); child.stdin.write(JSON.stringify(o) + "\n"); }); } };
+}
+
+test("O6: tools/list advertises openrouter, -reply, -list", async () => {
+  const file = writeConfig({ version: 1, openrouter: { enabled: true, models: [{ alias: "m1", model: "a/b" }] } });
+  const child = startBridge({ CLAUDE_DELEGATOR_CONFIG: file });
+  const c = rpc(child);
+  try {
+    await c.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const list = await c.request({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+    const names = list.result.tools.map((t) => t.name).sort();
+    assert.deepEqual(names, ["openrouter", "openrouter-list", "openrouter-reply"]);
+  } finally { child.kill(); }
+});
+
+test("O7: openrouter-list returns delegates object in config order", async () => {
+  const file = writeConfig({ version: 1, openrouter: { enabled: true, maxFanout: 4, defaultModel: "d/m", models: [
+    { alias: "x", model: "a/x" }, { alias: "y", model: "a/y", experts: [] },
+  ] } });
+  const child = startBridge({ CLAUDE_DELEGATOR_CONFIG: file });
+  const c = rpc(child);
+  try {
+    await c.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const r = await c.request({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "openrouter-list", arguments: {} } });
+    const payload = JSON.parse(r.result.content[0].text);
+    assert.deepEqual(payload.delegates.map((d) => d.alias), ["x", "y"]);
+    assert.equal(payload.defaultModelSet, true);
+    assert.equal(payload.maxFanout, 4);
+  } finally { child.kill(); }
+});
+
+test("O8: openrouter call with unknown alias => model-not-allowed", async () => {
+  const file = writeConfig({ version: 1, openrouter: { enabled: true, models: [{ alias: "m1", model: "a/b" }] } });
+  const child = startBridge({ CLAUDE_DELEGATOR_CONFIG: file, OPENROUTER_API_KEY: "k" });
+  const c = rpc(child);
+  try {
+    await c.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const r = await c.request({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "openrouter", arguments: { prompt: "q", alias: "ghost" } } });
+    assert.equal(r.result.isError, true);
+    assert.equal(r.result.errorKind, "model-not-allowed");
+  } finally { child.kill(); }
+});
+
+test("O9: allowRawModel:false rejects a raw model param", async () => {
+  const file = writeConfig({ version: 1, openrouter: { enabled: true, allowRawModel: false, models: [{ alias: "m1", model: "a/b" }] } });
+  const child = startBridge({ CLAUDE_DELEGATOR_CONFIG: file, OPENROUTER_API_KEY: "k" });
+  const c = rpc(child);
+  try {
+    await c.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const r = await c.request({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "openrouter", arguments: { prompt: "q", model: "raw/slug" } } });
+    assert.equal(r.result.isError, true);
+    assert.equal(r.result.errorKind, "model-not-allowed");
+  } finally { child.kill(); }
+});
+
+test("O10: end-to-end openrouter call via alias against a mock endpoint", async () => {
+  const { server, base } = await startMock((req, res) => reply(res, 200, { choices: [{ message: { content: "delegated answer" } }] }));
+  const file = writeConfig({ version: 1, openrouter: { enabled: true, apiBase: base, models: [{ alias: "m1", model: "a/b" }] } });
+  const child = startBridge({ CLAUDE_DELEGATOR_CONFIG: file, OPENROUTER_API_KEY: "k" });
+  const c = rpc(child);
+  try {
+    await c.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const r = await c.request({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "openrouter", arguments: { prompt: "q", alias: "m1" } } });
+    assert.equal(r.result.content[0].text, "delegated answer");
+    assert.ok(isNonEmptyString(r.result.threadId));
+  } finally { child.kill(); server.close(); }
+});
