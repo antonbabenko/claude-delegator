@@ -14,6 +14,7 @@ function eligibleForExpert(model, expert) {
 // Returns { selected, omitted }.
 function askAllDelegates(or, expert) {
   const pool = (or.models || []).filter((m) => m.askAll !== false && eligibleForExpert(m, expert));
+  // Fallback to 3 is defensive only: the config validator already rejects maxFanout<1, so validated configs never hit it.
   const cap = Number.isInteger(or.maxFanout) && or.maxFanout >= 1 ? or.maxFanout : 3;
   return { selected: pool.slice(0, cap), omitted: pool.slice(cap) };
 }
@@ -25,6 +26,9 @@ function consensusDelegates(or, expert) {
 
 // Resolve an alias to a delegate-like object, or null.
 // openrouter-default resolves to the configured defaultModel (null if unset).
+// The synthetic object for openrouter-default intentionally carries ONLY { alias, model, experts }:
+// it is a single-shot fallback delegate and deliberately omits askAll/consensus because
+// openrouter-default never participates in /ask-all or /consensus fan-out.
 function resolveAlias(or, alias) {
   if (alias === RESERVED_ALIAS) {
     return or.defaultModel ? { alias: RESERVED_ALIAS, model: or.defaultModel, experts: null } : null;

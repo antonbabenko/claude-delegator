@@ -55,3 +55,14 @@ test("R6: resolveAlias openrouter-default returns null when defaultModel unset",
   c.defaultModel = null;
   assert.equal(resolveAlias(c, "openrouter-default"), null);
 });
+
+test("R7: invalid maxFanout (0/negative/non-int) falls back to a cap of 3", () => {
+  const c = cfg();
+  // add 2 more eligible-for-architect models so a cap of 3 is observable
+  c.models.push({ alias: "x4", model: "a/4", experts: null, askAll: true, consensus: false });
+  c.models.push({ alias: "x5", model: "a/5", experts: null, askAll: true, consensus: false });
+  for (const bad of [0, -1, 2.5]) {
+    c.maxFanout = bad;
+    assert.equal(askAllDelegates(c, "architect").selected.length, 3, `maxFanout=${bad} should fall back to 3`);
+  }
+});
