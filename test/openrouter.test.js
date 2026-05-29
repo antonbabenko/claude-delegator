@@ -164,6 +164,21 @@ test("O10: end-to-end openrouter call via alias against a mock endpoint", async 
   } finally { child.kill(); server.close(); }
 });
 
+test("O11: openrouter-reply reuses the session model (no drift to default)", async () => {
+  const seen = [];
+  const { server, base } = await startMock((req, res, body) => { seen.push(JSON.parse(body).model); return reply(res, 200, { choices: [{ message: { content: "ok" } }] }); });
+  const file = writeConfig({ version: 1, openrouter: { enabled: true, apiBase: base, defaultModel: "default/model", models: [{ alias: "llama", model: "meta/llama" }] } });
+  const child = startBridge({ CLAUDE_DELEGATOR_CONFIG: file, OPENROUTER_API_KEY: "k" });
+  const c = rpc(child);
+  try {
+    await c.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const r1 = await c.request({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "openrouter", arguments: { prompt: "q1", alias: "llama" } } });
+    const tid = r1.result.threadId;
+    await c.request({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "openrouter-reply", arguments: { threadId: tid, prompt: "q2" } } });
+    assert.deepEqual(seen, ["meta/llama", "meta/llama"]); // reply stayed on llama, not default/model
+  } finally { child.kill(); server.close(); }
+});
+
 test("O12: non-array roots is rejected with -32602", async () => {
   const file = writeConfig({ version: 1, openrouter: { enabled: true, models: [{ alias: "m1", model: "a/b" }] } });
   const child = startBridge({ CLAUDE_DELEGATOR_CONFIG: file, OPENROUTER_API_KEY: "k" });
