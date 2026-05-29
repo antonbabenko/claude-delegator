@@ -1,3 +1,12 @@
+## [1.16.1](https://github.com/antonbabenko/claude-delegator/compare/v1.16.0...v1.16.1) (2026-05-29)
+
+
+### Bug Fixes
+
+* **codex:** inherit model from ~/.codex/config.toml instead of hardcoding ([#37](https://github.com/antonbabenko/claude-delegator/issues/37)) ([c06ba37](https://github.com/antonbabenko/claude-delegator/commit/c06ba375ef2a99cf5cbd84b7cdab129772821629))
+
+
+
 # [1.16.0](https://github.com/antonbabenko/claude-delegator/compare/v1.15.2...v1.16.0) (2026-05-28)
 
 
@@ -31,15 +40,6 @@
 ### Features
 
 * **grok:** file access v2 — content-hash cache, multi-root, dir expansion, gc ([#29](https://github.com/antonbabenko/claude-delegator/issues/29)) ([da15906](https://github.com/antonbabenko/claude-delegator/commit/da15906553b7e06bcbdd0922de45d139b56073c1))
-
-
-
-# [1.14.0](https://github.com/antonbabenko/claude-delegator/compare/v1.13.1...v1.14.0) (2026-05-26)
-
-
-### Features
-
-* **consensus:** confidence label + issue category signals ([#27](https://github.com/antonbabenko/claude-delegator/issues/27)) ([60a91f9](https://github.com/antonbabenko/claude-delegator/commit/60a91f95cc6094faeb1e9d3b2527553cb727c871))
 
 
 
