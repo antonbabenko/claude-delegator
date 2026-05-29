@@ -1,6 +1,6 @@
 # Claude Delegator
 
-Get a second opinion in Claude Code from GPT, Gemini, and Grok - plus 300+ more models through OpenRouter, including Qwen, Kimi, and DeepSeek. Pick the minds you trust. Seven domain experts (Architect, Code Reviewer, Security Analyst, and four more) review your plans, find bugs, and debate edge cases until they agree.
+Get a second opinion in Claude Code from GPT, Gemini, and Grok - plus 300+ more models through OpenRouter, including Qwen, Kimi, and DeepSeek. Seven domain experts (Architect, Code Reviewer, Security Analyst, and four more) review your plans, find bugs, and debate edge cases until they agree.
 
 [![Four chairs at the table: Claude, GPT, Gemini, Grok - one verdict you can ship](assets/agents.png)<br>One model is a guess. Three that agree is a plan. → read the blog post](https://builder.aws.com/content/3DtBiR4ua0qy7ybZMPzPmQ2SDMj/one-model-is-a-guess-three-that-agree-is-a-plan)
 
@@ -249,7 +249,7 @@ the `model` field takes any slug listed there.
 `reasoning_effort` (`low` / `medium` / `high`) sets how hard a reasoning model
 thinks. Put it on `openrouter.defaults` to cover every model, or on a single model
 entry to override the default for that one. Precedence runs call argument over
-per-model override over `defaults`. `temperature` follows the same precedence.
+per-model override over `defaults`.
 
 `/ask-all` includes models where `askAll !== false`, capped to `maxFanout`.
 `/consensus` includes models where `consensus === true`, with no fanout cap (a warning

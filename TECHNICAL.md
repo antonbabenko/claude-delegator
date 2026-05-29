@@ -363,8 +363,6 @@ is a hard safety invariant on both paths - your own xAI files are never touched.
 
 ## OpenRouter bridge
 
-Full specification: [`docs/multi-providers/openrouter-spec.md`](docs/multi-providers/openrouter-spec.md).
-
 The OpenRouter bridge (`server/openrouter/index.js`) is a zero-dependency Node MCP server
 that calls any OpenAI-compatible `POST {apiBase}/chat/completions` endpoint.
 It is **advisory-only** - it cannot edit files or run shell commands.
@@ -428,6 +426,13 @@ Config file schema (strict JSON, version must be `1`):
 | `timeout` | number (ms) | from `defaults` | Per-model override |
 | `temperature` | number | from `defaults` | Per-model override |
 | `apiBase` | string | from `openrouter.apiBase` | Per-model override (use for mixing endpoints) |
+
+**On `temperature`:** most delegator work is analytical - code review, debugging,
+security audits, architecture and plan verdicts - where you want focused, repeatable
+answers. Leave `temperature` unset (the bridge default is low) for those. Raise it
+(roughly `0.6`-`0.9`) only for generative fan-out where spread across models is the
+point: brainstorming, naming, "give me 20 options". Keep it low for `/consensus`
+rounds; you want the models reasoning, not improvising.
 
 ### Routing
 
