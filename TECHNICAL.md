@@ -142,8 +142,12 @@ This is the single source of truth for the bridge environment variables.
 | `GROK_REASONING_EFFORT` | Grok | `high` | `low`/`medium`/`high`; `none` or `off` omits the field |
 | `GROK_FILE_TTL_SECONDS` | Grok | `604800` (7 days) | Upload lifetime, clamped 1h..30d |
 
-Codex reads its own config from `~/.codex/config.toml` (see
-[Configuration in the README](README.md#configuration)).
+Codex has no bridge environment variables: it ships its own native MCP server and
+reads `~/.codex/config.toml` directly. The **model** comes from the `model` key in
+that file by default (the Codex analog of `GEMINI_DEFAULT_MODEL` /
+`GROK_DEFAULT_MODEL`). Override it on the server with `-c model=<id>` on the
+`claude mcp add ... codex` registration, or per call with the `model` parameter of
+`mcp__codex__codex(...)`. See [Configuration in the README](README.md#configuration).
 
 ## Manual MCP setup
 
@@ -151,9 +155,10 @@ If `/setup` does not work, register the MCP servers manually. Each command is
 idempotent (safe to rerun):
 
 ```bash
-# Codex (GPT)
+# Codex (GPT) - inherits its model from ~/.codex/config.toml.
+# Pin a model on the server with `-c model=<id>` (e.g. `codex mcp-server -c model=gpt-5.5`).
 claude mcp remove codex >/dev/null 2>&1 || true
-claude mcp add --transport stdio --scope user codex -- codex -m gpt-5.3-codex mcp-server
+claude mcp add --transport stdio --scope user codex -- codex mcp-server
 
 # Gemini
 claude mcp remove gemini >/dev/null 2>&1 || true

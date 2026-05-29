@@ -161,12 +161,16 @@ Every expert can operate in two modes:
 | `developer-instructions` | string | Expert prompt injection (from `prompts/*.md`) |
 | `sandbox` | `read-only`, `workspace-write`, `danger-full-access` | Controls file access. Default from `~/.codex/config.toml` |
 | `approval-policy` | `untrusted`, `on-failure`, `on-request`, `never` | Controls shell command approval. Default from config |
-| `model` | e.g. `gpt-5.3-codex` | Override the default model |
+| `model` | e.g. `gpt-5.5` | Override the model for this call only |
 | `config` | key-value object | Override `config.toml` settings per-call |
 | `cwd` | path | Working directory for the task |
 | `base-instructions` | string | Override default system instructions |
 | `compact-prompt` | string | Prompt used when compacting conversation |
 | `profile` | string | Configuration profile from config.toml |
+
+**Default model:** Codex is registered without a model flag, so the default comes
+from the `model` key in `~/.codex/config.toml` (or a `-c model=<id>` override on
+the MCP registration). The `model` parameter above overrides it for a single call.
 
 ### `mcp__codex__codex-reply` (Continue Session)
 

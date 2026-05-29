@@ -59,9 +59,12 @@ Register your preferred provider(s) as MCP servers using Claude Code's native co
 
 ### Codex (GPT)
 ```bash
-# Idempotent: safe to rerun setup
+# Idempotent: safe to rerun setup.
+# No model flag: Codex inherits its model from ~/.codex/config.toml. To pin a
+# model on the server regardless of config.toml, append `-c model=<id>` (see the
+# Codex model note below).
 claude mcp remove codex >/dev/null 2>&1 || true
-claude mcp add --transport stdio --scope user codex -- codex -m gpt-5.3-codex mcp-server
+claude mcp add --transport stdio --scope user codex -- codex mcp-server
 ```
 
 ### Gemini
@@ -100,8 +103,18 @@ reference: [TECHNICAL.md § Grok files and cleanup](../TECHNICAL.md#grok-files-a
 `--env GROK_REASONING_EFFORT=<low|medium|high|none>` on the `grok` registration, or set it per
 call with the `reasoning_effort` parameter; `none` omits the field so the model uses its default.
 
-**Note:** To customise Codex behaviour, add CLI flags before `mcp-server`.
-- For Codex: `-p nosandbox`
+**Codex model (optional):** by default Codex inherits its model, sandbox, and
+approval policy from `~/.codex/config.toml` (the `model` key) - change it there
+and every provider that reads that file follows. To pin a model on the MCP server
+regardless of config.toml, append `-c model=<id>` to the registration, e.g.
+`claude mcp add --transport stdio --scope user codex -- codex mcp-server -c model=gpt-5.5`.
+To override for a single call, pass `model:` to `mcp__codex__codex(...)`. This
+mirrors the Gemini/Grok model-override pattern. (Codex has no bridge env var like
+`GROK_DEFAULT_MODEL` because it ships its own native MCP server and reads
+`~/.codex/config.toml` directly.)
+
+**Note:** To customise other Codex behaviour, add CLI flags before `mcp-server`,
+e.g. `-p nosandbox`.
 
 ## Step 3: Install Orchestration Rules
 
@@ -163,10 +176,16 @@ codex --version 2>&1 | head -1 || echo "Not installed"
 agy --help 2>&1 | head -1 || echo "Not installed"
 
 # Check 2: Codex MCP server
+# Model is no longer hardcoded on the registration; resolve it from a `-c model=`
+# server override if present, else the `model` key in ~/.codex/config.toml.
 CODEX_CONFIG=$(claude mcp get codex 2>/dev/null)
 if echo "$CODEX_CONFIG" | grep -q "codex"; then
-  MODEL=$(echo "$CODEX_CONFIG" | grep -oE 'gpt-[0-9]+\.[0-9]+-?[a-z]*' | head -1)
-  echo "Codex: OK (model: ${MODEL:-unknown})"
+  MODEL=$(echo "$CODEX_CONFIG" | grep -oE 'model=[^ ]+' | head -1 | cut -d= -f2)
+  if [ -z "$MODEL" ]; then
+    MODEL=$(grep -oE '^[[:space:]]*model[[:space:]]*=[[:space:]]*"[^"]+"' ~/.codex/config.toml 2>/dev/null | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+    MODEL="${MODEL:+$MODEL (from ~/.codex/config.toml)}"
+  fi
+  echo "Codex: OK (model: ${MODEL:-default from ~/.codex/config.toml})"
 else
   echo "Codex: NOT CONFIGURED"
 fi
