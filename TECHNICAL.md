@@ -499,7 +499,7 @@ token count. There is no hard spend cap - the warning is informational only.
 | `parse` | Response body could not be parsed |
 | `upstream` | Non-2xx from the endpoint (other than auth/rate-limit) |
 | `config` | Config file missing, invalid JSON, or schema violation |
-| `model-not-allowed` | Alias not found or expert not in the model's `experts` list |
+| `model-not-allowed` | Requested alias is not in the config, or a raw `model` was passed with `allowRawModel:false`, or no alias/model was given and no `defaultModel` is set |
 | `unknown-thread` | `-reply` called with a threadId that does not exist |
 | `unknown` | Catch-all for unclassified errors |
 

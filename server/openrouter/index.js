@@ -182,7 +182,15 @@ const handlers = {
     if (!isObject(args)) { if (respond) sendError(id, -32602, "Invalid params: arguments must be an object"); return; }
 
     const cfg = configReader.get();
-    if (!cfg.ok) { if (respond) sendResponse(id, errorResult(id, { code: "config", message: cfg.error }, name, startedAt)); return; }
+    if (!cfg.ok) {
+      if (name === "openrouter-list") {
+        if (respond) sendResponse(id, { content: [{ type: "text", text: JSON.stringify({ delegates: [], defaultModelSet: false, maxFanout: 3, maxFanoutHigh: false, error: cfg.error }) }] });
+        logCall(id, name, "config", Date.now() - startedAt);
+        return;
+      }
+      if (respond) sendResponse(id, errorResult(id, { code: "config", message: cfg.error }, name, startedAt));
+      return;
+    }
     const or = cfg.resolved.openrouter;
 
     if (name === "openrouter-list") {

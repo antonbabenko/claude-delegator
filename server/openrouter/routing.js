@@ -1,5 +1,11 @@
 "use strict";
 
+// NOTE: askAllDelegates/consensusDelegates/eligibleForExpert are the canonical
+// selection semantics for fan-out. The bridge runtime does not call them - /ask-all
+// and /consensus reimplement this selection in command prose over openrouter-list
+// output. These exports are the reference (and unit-tested) source of truth; if the
+// command prose changes, keep it consistent with this file (and vice versa).
+
 const RESERVED_ALIAS = "openrouter-default";
 
 // A model is eligible for expert E iff experts is null/undefined (all), OR (non-empty and includes E).

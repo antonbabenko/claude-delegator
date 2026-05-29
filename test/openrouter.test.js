@@ -189,3 +189,19 @@ test("O12: non-array roots is rejected with -32602", async () => {
     assert.ok(r.error && r.error.code === -32602, "expected -32602 JSON-RPC error for non-array roots");
   } finally { child.kill(); }
 });
+
+test("O13: openrouter-list returns object with error (not error envelope) on bad config", async () => {
+  const dir = fsx.mkdtempSync(pathx.join(osx.tmpdir(), "cdg-orbad-"));
+  const file = pathx.join(dir, "config.json");
+  fsx.writeFileSync(file, "{ not json ");
+  const child = startBridge({ CLAUDE_DELEGATOR_CONFIG: file });
+  const c = rpc(child);
+  try {
+    await c.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const r = await c.request({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "openrouter-list", arguments: {} } });
+    assert.ok(!r.result.isError, "should not be an error envelope");
+    const payload = JSON.parse(r.result.content[0].text);
+    assert.deepEqual(payload.delegates, []);
+    assert.ok(payload.error, "error field set");
+  } finally { child.kill(); }
+});
