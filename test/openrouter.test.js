@@ -124,6 +124,26 @@ test("O7: openrouter-list returns delegates object in config order", async () =>
     assert.deepEqual(payload.delegates.map((d) => d.alias), ["x", "y"]);
     assert.equal(payload.defaultModelSet, true);
     assert.equal(payload.maxFanout, 4);
+    assert.deepEqual(payload.invalidModels, []);
+  } finally { child.kill(); }
+});
+
+test("O7e: openrouter-list keeps valid delegates and reports a broken entry with a suggestion", async () => {
+  const file = writeConfig({ version: 1, openrouter: { enabled: true, defaultModel: "d/m", models: [
+    { alias: "good", model: "a/good" },
+    { alias: "qwen3.7-max", model: "qwen/qwen3.7-max" }, // illegal '.' in alias
+  ] } });
+  const child = startBridge({ CLAUDE_DELEGATOR_CONFIG: file });
+  const c = rpc(child);
+  try {
+    await c.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const r = await c.request({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "openrouter-list", arguments: {} } });
+    const payload = JSON.parse(r.result.content[0].text);
+    assert.equal(payload.error, undefined, "partial config must not set the hard error field");
+    assert.deepEqual(payload.delegates.map((d) => d.alias), ["good"]);
+    assert.equal(payload.invalidModels.length, 1);
+    assert.equal(payload.invalidModels[0].index, 1);
+    assert.equal(payload.invalidModels[0].suggestedAlias, "qwen3-7-max");
   } finally { child.kill(); }
 });
 

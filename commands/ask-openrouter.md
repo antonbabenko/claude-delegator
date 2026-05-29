@@ -43,7 +43,12 @@ is used.
    })
    ```
 7. On `result.isError`, report the `errorKind` (`model-not-allowed` => bad alias; `auth` =>
-   the env var named by `apiKeyEnv` is empty; `config` => fix `config.json`).
+   the env var named by `apiKeyEnv` is empty; `config` => a hard config failure, fix
+   `config.json`). A single bad model entry no longer breaks the whole config: this
+   single-shot call still works as long as the requested alias is valid. To see which
+   entries the bridge skipped (and their `suggestedAlias` repairs), run
+   `mcp__openrouter__openrouter-list` and check `invalidModels`, then either hand-edit
+   `config.json` or run `/ask-all` or `/consensus`, which offer a Fix & proceed prompt.
 8. Synthesize the answer; never paste raw output. For a follow-up turn, reuse the returned
    `threadId` via `mcp__openrouter__openrouter-reply`.
 

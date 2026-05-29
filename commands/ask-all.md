@@ -52,11 +52,26 @@ User question or topic: $ARGUMENTS
    - Read `~/.claude/claude-delegator/config.json` (if present). For each built-in
      (`codex`/`gemini`/`grok`), include it ONLY if `providers.<name>.enabled` is not
      `false` (missing = enabled) AND its MCP tool is available; otherwise skip it.
-   - Call `mcp__openrouter__openrouter-list`. If unavailable or its `error` is set, the
-     OpenRouter delegate set is EMPTY. Otherwise select delegates where `askAll != false`
-     and the delegate is eligible for the chosen expert (`experts` absent = all; `[]` =
-     none; else must include the expert), in list order, truncated to `maxFanout`. NOTE any
-     delegates omitted by the cap in the final synthesis (no silent truncation).
+   - Call `mcp__openrouter__openrouter-list`. If unavailable or its `error` is set (a hard
+     config failure - bad JSON, schema, version, or maxFanout), the OpenRouter delegate set
+     is EMPTY. Otherwise the returned `delegates` are the valid models; `invalidModels` (if
+     present and non-empty) are entries the bridge skipped because of a per-entry problem
+     (each `{ index, alias, reason, suggestedAlias? }`).
+   - **If `invalidModels` is non-empty, do NOT silently drop them.** PRINT a short report -
+     one line per entry: `alias|index` + `reason` + `-> suggestedAlias` when present - then
+     ask with `AskUserQuestion` (first option is the pre-selected default):
+     1. **Fix & proceed (Recommended)** - for each invalid entry that has a `suggestedAlias`,
+        `Edit` `~/.claude/claude-delegator/config.json` to apply it (rename the `alias`);
+        drop (and note) any entry with no `suggestedAlias` since it cannot be auto-repaired
+        (e.g. missing `model`, unknown expert). Then re-call `openrouter-list` and use the
+        resulting valid set.
+     2. **Run valid only** - leave `config.json` untouched; use the returned `delegates`
+        as-is and note the skipped entries in the synthesis.
+     3. **Skip all OpenRouter** - empty OpenRouter set for this run.
+   - From the valid set, select delegates where `askAll != false` and the delegate is
+     eligible for the chosen expert (`experts` absent = all; `[]` = none; else must include
+     the expert), in list order, truncated to `maxFanout`. NOTE any delegates omitted by the
+     cap in the final synthesis (no silent truncation).
 
 6. **Parallel dispatch** - fire ALL selected provider calls in a **single message** (the enabled built-ins plus each selected OpenRouter delegate from 5b), as **parallel tool blocks** so they run concurrently:
    ```

@@ -56,10 +56,22 @@ Plan, design, spec, or proposal to refine: $ARGUMENTS
 6. **Build the OpenRouter voting panel:**
    - Read `~/.claude/claude-delegator/config.json` for `providers.*.enabled` (a built-in
      with `enabled:false` is excluded from this run even if registered).
-   - Call `mcp__openrouter__openrouter-list`. If unavailable / `error` set, there are no
-     OpenRouter voices. Otherwise the voting panel = delegates with `consensus == true`
-     eligible for the chosen expert (`experts` absent = all; `[]` = none; else must include
-     the expert). NOT bounded by `maxFanout`.
+   - Call `mcp__openrouter__openrouter-list`. If unavailable / `error` set (a hard config
+     failure - bad JSON, schema, version, or maxFanout), there are no OpenRouter voices.
+     Otherwise the returned `delegates` are the valid models; `invalidModels` (if non-empty)
+     are entries the bridge skipped per-entry (each `{ index, alias, reason, suggestedAlias? }`).
+   - **If `invalidModels` is non-empty, do NOT silently drop them.** PRINT a short report
+     (one line per entry: `alias|index` + `reason` + `-> suggestedAlias` when present), then
+     ask with `AskUserQuestion` (first option is the pre-selected default):
+     1. **Fix & proceed (Recommended)** - apply each `suggestedAlias` by `Edit`ing
+        `~/.claude/claude-delegator/config.json`; drop + note entries with no safe fix;
+        re-call `openrouter-list` and use the resulting valid set.
+     2. **Run valid only** - leave config untouched; use the returned `delegates` as-is, note
+        the skipped entries.
+     3. **Skip all OpenRouter** - no OpenRouter voices this run.
+   - The voting panel = valid delegates with `consensus == true` eligible for the chosen
+     expert (`experts` absent = all; `[]` = none; else must include the expert). NOT bounded
+     by `maxFanout`.
    - If the OpenRouter voting panel size is > 3, PRINT before the first dispatch:
      `Warning: N OpenRouter voting models x up to 5 rounds x the inlined repo bundle = significant token cost AND a stricter convergence bar (every responding voice must APPROVE).`
 

@@ -31,30 +31,44 @@ test("C1: a valid config resolves with defaults applied", () => {
   assert.equal(resolved.openrouter.models[1].consensus, false);
   assert.equal(resolved.openrouter.models[0].consensus, true);
   assert.deepEqual(resolved.openrouter.models[2].experts, []);
+  assert.deepEqual(resolved.openrouter.invalidModels, []);
 });
 
-test("C2: duplicate alias is rejected", () => {
+// Per-entry partial validation: a bad model entry is collected into invalidModels and
+// skipped; the remaining valid delegates are kept (config stays ok:true).
+
+test("C2: duplicate alias is reported as invalid, valid entries kept", () => {
   const c = base();
   c.openrouter.models[1].alias = "gpt55";
-  const { ok, error } = validateConfig(c);
-  assert.equal(ok, false);
-  assert.match(error, /duplicate alias/i);
+  const { ok, resolved } = validateConfig(c);
+  assert.equal(ok, true);
+  assert.equal(resolved.openrouter.models.length, 2);
+  assert.equal(resolved.openrouter.invalidModels.length, 1);
+  assert.equal(resolved.openrouter.invalidModels[0].index, 1);
+  assert.match(resolved.openrouter.invalidModels[0].reason, /duplicate alias/i);
+  assert.equal(resolved.openrouter.invalidModels[0].suggestedAlias, "gpt55-2");
 });
 
-test("C3: reserved alias openrouter-default is rejected", () => {
+test("C3: reserved alias openrouter-default is reported as invalid, valid entries kept", () => {
   const c = base();
   c.openrouter.models[0].alias = "openrouter-default";
-  const { ok, error } = validateConfig(c);
-  assert.equal(ok, false);
-  assert.match(error, /reserved/i);
+  const { ok, resolved } = validateConfig(c);
+  assert.equal(ok, true);
+  assert.equal(resolved.openrouter.models.length, 2);
+  assert.equal(resolved.openrouter.invalidModels.length, 1);
+  assert.match(resolved.openrouter.invalidModels[0].reason, /reserved/i);
+  // reserved-alias collision has no safe auto-rename
+  assert.equal(resolved.openrouter.invalidModels[0].suggestedAlias, undefined);
 });
 
-test("C4: unknown expert key is rejected", () => {
+test("C4: unknown expert key is reported as invalid, valid entries kept", () => {
   const c = base();
   c.openrouter.models[0].experts = ["wizard"];
-  const { ok, error } = validateConfig(c);
-  assert.equal(ok, false);
-  assert.match(error, /unknown expert/i);
+  const { ok, resolved } = validateConfig(c);
+  assert.equal(ok, true);
+  assert.equal(resolved.openrouter.models.length, 2);
+  assert.equal(resolved.openrouter.invalidModels.length, 1);
+  assert.match(resolved.openrouter.invalidModels[0].reason, /unknown expert/i);
 });
 
 test("C5: non-integer or <1 maxFanout is rejected", () => {
@@ -83,12 +97,44 @@ test("C6b: version 0 or negative is rejected", () => {
   }
 });
 
-test("C7: bad alias characters are rejected", () => {
+test("C7: bad alias characters are reported as invalid with a sanitized suggestion", () => {
   const c = base();
   c.openrouter.models[0].alias = "GPT_55";
-  const { ok, error } = validateConfig(c);
-  assert.equal(ok, false);
-  assert.match(error, /alias/i);
+  const { ok, resolved } = validateConfig(c);
+  assert.equal(ok, true);
+  assert.equal(resolved.openrouter.models.length, 2);
+  assert.equal(resolved.openrouter.invalidModels.length, 1);
+  assert.match(resolved.openrouter.invalidModels[0].reason, /alias/i);
+  assert.equal(resolved.openrouter.invalidModels[0].suggestedAlias, "gpt-55");
+});
+
+test("C7b: dotted alias (qwen3.7-max) suggests qwen3-7-max", () => {
+  const c = base();
+  c.openrouter.models[0].alias = "qwen3.7-max";
+  const { ok, resolved } = validateConfig(c);
+  assert.equal(ok, true);
+  assert.equal(resolved.openrouter.invalidModels[0].suggestedAlias, "qwen3-7-max");
+});
+
+test("C7c: a single bad entry leaves the other delegates intact (partial)", () => {
+  const c = base();
+  c.openrouter.models[1].alias = "bad alias!"; // illegal chars
+  const { ok, resolved } = validateConfig(c);
+  assert.equal(ok, true);
+  assert.equal(resolved.openrouter.models.length, 2);
+  assert.deepEqual(resolved.openrouter.models.map((m) => m.alias), ["gpt55", "deep"]);
+  assert.equal(resolved.openrouter.invalidModels.length, 1);
+  assert.equal(resolved.openrouter.invalidModels[0].index, 1);
+  assert.equal(resolved.openrouter.invalidModels[0].suggestedAlias, "bad-alias");
+});
+
+test("C7d: suggested alias avoids colliding with an existing alias", () => {
+  // models[1] alias is invalid and would sanitize to "gpt55", which already exists -> suffix.
+  const c = base();
+  c.openrouter.models[1].alias = "GPT55";
+  const { ok, resolved } = validateConfig(c);
+  assert.equal(ok, true);
+  assert.equal(resolved.openrouter.invalidModels[0].suggestedAlias, "gpt55-2");
 });
 
 test("C8: omitted openrouter block resolves to disabled, no error", () => {
@@ -98,12 +144,15 @@ test("C8: omitted openrouter block resolves to disabled, no error", () => {
   assert.deepEqual(resolved.openrouter.models, []);
 });
 
-test("C12: invalid per-model override types are rejected", () => {
+test("C12: invalid per-model override types are reported as invalid, valid entries kept", () => {
   for (const bad of [{ reasoning_effort: 5 }, { timeout: -1 }, { timeout: 2.5 }, { temperature: "hot" }, { apiBase: "" }]) {
     const c = base();
     Object.assign(c.openrouter.models[0], bad);
-    const { ok } = validateConfig(c);
-    assert.equal(ok, false, `override ${JSON.stringify(bad)} should be invalid`);
+    const { ok, resolved } = validateConfig(c);
+    assert.equal(ok, true, `override ${JSON.stringify(bad)} should be partial, not fatal`);
+    assert.equal(resolved.openrouter.models.length, 2, `${JSON.stringify(bad)}: valid entries kept`);
+    assert.equal(resolved.openrouter.invalidModels.length, 1, `${JSON.stringify(bad)}: one invalid`);
+    assert.equal(resolved.openrouter.invalidModels[0].index, 0);
   }
 });
 

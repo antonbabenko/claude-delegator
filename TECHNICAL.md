@@ -445,6 +445,42 @@ rounds; you want the models reasoning, not improvising.
   and is never included in fan-out or consensus.
 - Implementation tasks always route to Codex or Gemini, never to OpenRouter.
 
+### Config validation (partial) and the `openrouter-list` contract
+
+Validation is **per-entry**, not all-or-nothing. A single malformed `models[]` entry
+(bad alias characters, duplicate alias, reserved alias, missing `model`, unknown expert,
+or a bad per-model override) no longer rejects the whole config - the bridge keeps every
+valid delegate and collects the bad ones into `invalidModels`. Only **top-level/schema**
+problems hard-fail the whole config: malformed JSON, a non-object root, an unsupported
+`version`, or a non-integer/`< 1` `maxFanout`.
+
+`mcp__openrouter__openrouter-list` returns:
+
+```jsonc
+{
+  "delegates": [ { "alias", "model", "experts", "askAll", "consensus", "reasoning_effort" } ],
+  "defaultModelSet": true,
+  "maxFanout": 3,
+  "maxFanoutHigh": false,
+  "invalidModels": [ { "index": 2, "alias": "qwen3.7-max",
+                       "reason": "models[2] alias must match [a-z0-9-]+ ...",
+                       "suggestedAlias": "qwen3-7-max" } ]
+}
+```
+
+- On a hard config failure the object instead carries `error: "<message>"` with
+  `delegates: []` (and `invalidModels` absent/empty). `/ask-all` and `/consensus` treat
+  the `error` form as "OpenRouter set EMPTY".
+- `invalidModels[].suggestedAlias` is present only when a safe deterministic repair exists:
+  alias-format errors are sanitized to `[a-z0-9-]+` (e.g. `qwen3.7-max` -> `qwen3-7-max`),
+  and duplicate aliases get a free `-N` suffix. Suggestions are collision-checked against
+  every existing alias and the reserved `openrouter-default`. Entries with no safe fix
+  (missing `model`, unknown expert, reserved-alias clash) have no `suggestedAlias`.
+- The bridge never edits `config.json`. The `/ask-all` and `/consensus` commands surface
+  `invalidModels` and offer **Fix & proceed** (default - apply each `suggestedAlias` to
+  `config.json`, drop the unrepairable, re-list), **Run valid only**, or **Skip all
+  OpenRouter**.
+
 ### Authentication (optional)
 
 The Authorization header is sent **only** when the key env var resolves to a non-empty
