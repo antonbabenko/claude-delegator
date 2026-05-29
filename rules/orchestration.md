@@ -12,8 +12,13 @@ You have access to GPT experts via MCP tools. Use them strategically based on th
 | `mcp__gemini__gemini-reply` | Gemini | Continue an existing session (multi-turn) |
 | `mcp__grok__grok` | Grok (xAI) | Start a new expert session (advisory-only; reads attached files) |
 | `mcp__grok__grok-reply` | Grok (xAI) | Continue a session (in-memory; lost on MCP restart) |
+| `mcp__openrouter__openrouter` | OpenRouter | Start a new advisory session (config-driven model alias) |
+| `mcp__openrouter__openrouter-reply` | OpenRouter | Continue a session (multi-turn via threadId) |
+| `mcp__openrouter__openrouter-list` | OpenRouter | List configured aliases and their eligibility flags |
 
 > **Grok notes:** the Grok bridge talks to the xAI HTTP API, so it is advisory-only (it cannot edit files). It reads attached files via `files:[{path|file_id|file_url}]` - attach referenced local files by default and set `cwd` to the repo root so paths resolve (a path outside `cwd` is refused). It needs `XAI_API_KEY`; a missing key surfaces `errorKind: "missing-auth"`.
+
+> **OpenRouter notes:** the OpenRouter bridge is advisory-only (it cannot edit files). Model aliases are declared in `~/.claude/claude-delegator/config.json` and hot-reload without restarting. File attachment is text-inline only (`{path}`/`{dir}`; 256 KB per file, 1 MB aggregate). `/ask-all` fan-out is capped by `maxFanout` (default 3); `/consensus` is uncapped (warn if >3 models). Implementation tasks must route to Codex or Gemini.
 
 ## Available Experts
 
@@ -89,13 +94,14 @@ Before handling any request, check if an expert would help:
 
 ## REACTIVE Delegation (Explicit User Request)
 
-When user explicitly requests GPT/Codex or Gemini:
+When user explicitly requests GPT/Codex, Gemini, Grok, or OpenRouter:
 
 | User Says | Action |
 |-----------|--------|
 | "ask GPT", "consult GPT", "ask codex" | Identify task type → route to appropriate expert |
 | "ask Gemini", "consult Gemini", "ask gemini" | Identify task type → route to appropriate expert |
 | "ask Grok", "consult Grok", "ask grox" | Identify task type → route to appropriate expert |
+| "ask OpenRouter", "use [alias]", "ask [alias]" | Advisory only - identify expert, call `mcp__openrouter__openrouter` with the named alias |
 | "ask GPT to review the architecture" | Delegate to Architect |
 | "have Gemini review this code" | Delegate to Code Reviewer |
 | "GPT security review" | Delegate to Security Analyst |
@@ -160,7 +166,17 @@ mcp__gemini__gemini({
   sandbox: "[read-only or workspace-write based on mode]",
   cwd: "[current working directory]"
 })
+
+// OR Using OpenRouter (advisory-only; alias from config)
+mcp__openrouter__openrouter({
+  prompt: "[your 7-section delegation prompt with FULL context]",
+  "developer-instructions": "[contents of the expert's prompt file]",
+  alias: "[model alias from ~/.claude/claude-delegator/config.json]",
+  cwd: "[current working directory]"
+})
 ```
+
+> OpenRouter is advisory-only. Never set sandbox to `workspace-write` for OpenRouter calls. For implementation tasks, always use Codex or Gemini.
 
 ### Step 7: Handle Response
 1. **Synthesize** - Never show raw output directly

@@ -44,6 +44,17 @@
       "experts": ["architect", "plan-reviewer", "scope-analyst", "code-reviewer", "security-analyst", "researcher", "debugger"],
       "strengths": ["reasoning", "architecture", "code-review", "security", "large context"],
       "avoid": ["simple-operations", "trivial-decisions", "research", "first-attempt-fixes", "file-editing"]
+    },
+    "openrouter": {
+      "name": "OpenRouter",
+      "description": "OpenAI-compatible gateway to 400+ models via a bundled MCP bridge - config-driven advisory delegates",
+      "cli": null,
+      "api": "https://openrouter.ai/api/v1/chat/completions",
+      "auth": "export OPENROUTER_API_KEY=sk-or-... (or the env var named by apiKeyEnv)",
+      "mcp": { "type": "stdio", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/server/openrouter/index.js"] },
+      "experts": ["architect", "plan-reviewer", "scope-analyst", "code-reviewer", "security-analyst", "researcher", "debugger"],
+      "strengths": ["model breadth", "consensus diversity", "advisory second opinions"],
+      "avoid": ["file-editing", "implementation tasks", "sandboxed work"]
     }
   }
 }

@@ -8,7 +8,7 @@ You MUST scan incoming messages for delegation triggers. This is NOT optional.
 
 **Behavior:**
 1. **PROACTIVE**: On every user message, check if semantic triggers match → delegate automatically
-2. **REACTIVE**: If user explicitly mentions GPT/Codex or Gemini → delegate immediately
+2. **REACTIVE**: If user explicitly mentions GPT/Codex, Gemini, Grok, or an OpenRouter alias → delegate immediately
 
 When a trigger matches:
 1. Identify the appropriate expert
@@ -38,6 +38,7 @@ User explicitly requests delegation:
 | "ask GPT", "consult GPT" | Route based on context |
 | "ask Gemini", "consult gemini" | Route based on context |
 | "ask Grok", "consult grok" | Route based on context |
+| "ask OpenRouter", "use [alias]", "ask [alias]" | Advisory only - route based on context; never implementation |
 | "review this architecture" | Architect |
 | "review this plan" | Plan Reviewer |
 | "analyze the scope" | Scope Analyst |
@@ -135,14 +136,15 @@ User explicitly requests delegation:
 
 ## Advisory vs Implementation Mode
 
-Any expert can operate in two modes:
+Any expert can operate in two modes, except OpenRouter which is always advisory:
 
-| Mode | Sandbox | When to Use |
-|------|---------|-------------|
-| **Advisory** | `read-only` | Analysis, recommendations, review verdicts |
-| **Implementation** | `workspace-write` | Actually making changes, fixing issues |
+| Mode | Sandbox | When to Use | Providers |
+|------|---------|-------------|-----------|
+| **Advisory** | `read-only` | Analysis, recommendations, review verdicts | All providers |
+| **Implementation** | `workspace-write` | Actually making changes, fixing issues | Codex, Gemini only |
 
 Set the sandbox based on what the task requires, not the expert type.
+OpenRouter and Grok are always advisory - never route implementation tasks to them.
 
 **Examples:**
 
@@ -159,13 +161,15 @@ mcp__gemini__gemini({
   sandbox: "workspace-write"
 })
 
-// Security Analyst reviewing (advisory via Gemini)
-mcp__gemini__gemini({
+// Security Analyst reviewing (advisory via OpenRouter)
+mcp__openrouter__openrouter({
   prompt: "Review this auth flow for vulnerabilities",
-  sandbox: "read-only"
+  alias: "gpt-4-or",
+  cwd: "/path/to/project"
+  // no sandbox parameter - OpenRouter is always advisory
 })
 
-// Security Analyst hardening (implementation via Codex)
+// Security Analyst hardening (implementation via Codex - not OpenRouter)
 mcp__codex__codex({
   prompt: "Fix the SQL injection vulnerability in user.ts",
   sandbox: "workspace-write"
