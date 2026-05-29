@@ -61,7 +61,7 @@ Plan, design, spec, or proposal to refine: $ARGUMENTS
      eligible for the chosen expert (`experts` absent = all; `[]` = none; else must include
      the expert). NOT bounded by `maxFanout`.
    - If the OpenRouter voting panel size is > 3, PRINT before the first dispatch:
-     `Warning: N OpenRouter voting models x up to 5 rounds x the inlined repo bundle = significant token cost.`
+     `Warning: N OpenRouter voting models x up to 5 rounds x the inlined repo bundle = significant token cost AND a stricter convergence bar (every responding voice must APPROVE).`
 
 ### Round loop (rounds 1..5)
 
@@ -292,7 +292,7 @@ For each round R:
 9. **If not converged**:
    - Compile the union of `accept`-ed critical issues from all responding reviewers plus any Claude found.
    - Revise the plan to address them. Be explicit about what changed and what was deliberately not changed.
-   - Record this round in `history` with: Claude blind verdict, GPT/Gemini/Grok verdicts (or ERRORED), Claude's per-issue decisions + reasons, the diff summary applied to the plan.
+   - Record this round in `history` with: Claude blind verdict, GPT/Gemini/Grok and each OpenRouter delegate verdict (or ERRORED), Claude's per-issue decisions + reasons, the diff summary applied to the plan.
    - Print the revised plan ONLY if it has changed materially (don't spam on small wording tweaks).
    - Continue to round R+1.
    - **Backoff after multi error**: if MORE THAN ONE provider errored in round R, wait 1-2 seconds before dispatching round R+1 to let transient API hiccups clear.
@@ -370,6 +370,7 @@ If there were zero fallbacks across the whole loop, render `**Parse fallbacks**:
 - **Stage 2 is decision input only** - Stage 2 fires conditionally (step 6); its candidate issues feed step 7's existing adjudication. Stage 2 status (`fired`/`skipped`/`errored`) does NOT participate in the convergence rule. The convergence rule in step 8 reads only Stage 1 verdicts + Claude's adjudication + accepted critical issues (from any source, Stage 1 or Stage 2 alike).
 - **Stage 2 anonymization is best-effort** - identity stripping removes preambles and self-references but model house styles may still leak. Reviewers are explicitly instructed to score substance and ignore style. The operator-visible shuffle mapping in the final report records ground truth for post-hoc audit.
 - **Stage 2 skips on workspace-write sandbox** - when `/consensus` is invoked with `sandbox: workspace-write` (Claude making code changes via consensus), step 6 sets `stage_2_status = "skip_sandbox"` and skips the entire Stage 2 sub-loop. Anonymization leaks too much on patches. Plan reviews that merely CONTAIN embedded diff text as prose still run Stage 2.
+- **Stage 2 cross-review covers the built-in externals only (v1)** - OpenRouter voting delegates count as voices in Stage 1 verdicts and in the convergence bar, but they do NOT enter the Stage 2 anonymization pool and are not dispatched as Stage 2 reviewers. When Stage 2 step 6b counts "Stage 1 responding externals" for quorum, count only the built-ins (GPT/Gemini/Grok). This is intentional for v1.
 
 ## Heuristics for Claude's per-issue decisions
 
