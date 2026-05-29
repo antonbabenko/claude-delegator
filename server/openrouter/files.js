@@ -48,17 +48,19 @@ function resolveUnderRoots(p, roots) {
 // blocks are "=== <name> ===\n<content>" text segments; notes record skips.
 function inlineFiles(files, opts = {}) {
   const roots = (opts.roots && opts.roots.length) ? opts.roots : [process.cwd()];
-  const perFileCap = opts.perFileCap || DEFAULT_PER_FILE_CAP;
-  const totalCap = opts.totalCap || DEFAULT_TOTAL_CAP;
+  const perFileCap = opts.perFileCap != null ? opts.perFileCap : DEFAULT_PER_FILE_CAP;
+  const totalCap = opts.totalCap != null ? opts.totalCap : DEFAULT_TOTAL_CAP;
   const blocks = [];
   const notes = [];
   let total = 0;
 
   function addFile(abs, label) {
+    let st;
+    try { st = fs.statSync(abs); } catch (e) { notes.push(`${label}: skipped (stat error: ${e.message})`); return; }
+    if (st.size > perFileCap) { notes.push(`${label}: skipped (${st.size} bytes > per-file cap ${perFileCap})`); return; }
     let buf;
     try { buf = fs.readFileSync(abs); } catch (e) { notes.push(`${label}: skipped (read error: ${e.message})`); return; }
     if (!isProbablyText(buf)) { notes.push(`${label}: skipped (binary)`); return; }
-    if (buf.length > perFileCap) { notes.push(`${label}: skipped (${buf.length} bytes > per-file cap ${perFileCap})`); return; }
     if (total + buf.length > totalCap) { notes.push(`${label}: omitted (aggregate inline budget ${totalCap} bytes exceeded)`); return; }
     total += buf.length;
     blocks.push(`=== ${label} ===\n${buf.toString("utf8")}`);
@@ -76,12 +78,18 @@ function inlineFiles(files, opts = {}) {
       const absDir = resolveUnderRoots(entry.dir, roots);
       if (!absDir) { notes.push(`${entry.dir}: skipped (dir not found under roots)`); continue; }
       const exclude = entry.excludeReset === true ? (entry.exclude || []) : [...DEFAULT_EXCLUDE, ...(entry.exclude || [])];
-      const { files: walked } = glob.walk(absDir, {
-        include: entry.include || ["**/*"],
-        exclude,
-        maxFiles: entry.maxFiles || 50,
-        maxBytes: entry.maxBytes || 128 * 1024 * 1024,
-      });
+      let walked;
+      try {
+        ({ files: walked } = glob.walk(absDir, {
+          include: entry.include || ["**/*"],
+          exclude,
+          maxFiles: entry.maxFiles || 50,
+          maxBytes: entry.maxBytes || 128 * 1024 * 1024,
+        }));
+      } catch (e) {
+        notes.push(`${entry.dir}: skipped (${e.message})`);
+        continue;
+      }
       for (const w of walked) addFile(w.abs, path.relative(absDir, w.abs) || path.basename(w.abs));
     }
   }

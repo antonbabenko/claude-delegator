@@ -53,3 +53,21 @@ test("F5: aggregate cap stops adding further files and notes the omission", () =
   assert.equal(blocks.length, 1);
   assert.ok(notes.some((n) => /omitted|aggregate|budget/i.test(n)));
 });
+
+test("F6: glob.walk maxFiles overflow becomes a note, not a throw", () => {
+  const dir = tmpDir();
+  fs.writeFileSync(path.join(dir, "a.txt"), "A");
+  fs.writeFileSync(path.join(dir, "b.txt"), "B");
+  fs.writeFileSync(path.join(dir, "c.txt"), "C");
+  let res;
+  assert.doesNotThrow(() => { res = inlineFiles([{ dir: ".", include: ["**/*.txt"], maxFiles: 1 }], { roots: [dir] }); });
+  assert.ok(res.notes.some((n) => /skipped/i.test(n)));
+});
+
+test("F7: over-cap {path} is skipped via stat without reading (size in note)", () => {
+  const dir = tmpDir();
+  fs.writeFileSync(path.join(dir, "big.txt"), "x".repeat(5000));
+  const { blocks, notes } = inlineFiles([{ path: "big.txt" }], { roots: [dir], perFileCap: 1000 });
+  assert.equal(blocks.length, 0);
+  assert.match(notes[0], /5000 bytes/);
+});
