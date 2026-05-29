@@ -24,12 +24,13 @@ is used.
 2. Parse `$ARGUMENTS`: if the first token equals a delegate `alias`, use it; else use no
    alias (the bridge falls back to `openrouter-default`; if `defaultModelSet` is false in
    the list output, tell the user to pass an explicit alias and stop).
-3. Identify the expert role from the question via `~/.claude/rules/delegator/triggers.md`
-   (default Architect) and load the expert prompt the same way `ask-all.md` does.
+3. Identify the expert role from the question via `~/.claude/rules/delegator/triggers.md` (default Architect). Then load that expert's prompt:
+   1. Glob `~/.claude/plugins/cache/*/claude-delegator/*/prompts/[expert].md` and pick the match with the highest semver version segment (the segment immediately after `claude-delegator/`, parsed as semver - not lexical compare).
+   2. If no match is found, abort with: `Error: claude-delegator plugin cache missing for expert "[Expert]". Run /plugin install claude-delegator or /reload-plugins.`
 4. Build the 7-section delegation prompt per `~/.claude/rules/delegator/delegation-format.md`.
    If the question references local files, attach them with
    `files: [{ path: "...", mode: "auto" }]` (text-inline; `{ dir: "..." }` also supported).
-5. Print: `OpenRouter (<alias>) working (typical 30-60s)...`
+5. Print: `OpenRouter (<alias-or-default>) working (typical 30-60s)...` where `<alias-or-default>` is the selected alias, or `openrouter-default` when no alias was given.
 6. Call:
    ```
    mcp__openrouter__openrouter({
