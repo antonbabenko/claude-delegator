@@ -223,6 +223,7 @@ Minimal example:
     "apiBase": "https://openrouter.ai/api/v1",
     "maxFanout": 3,
     "defaultModel": "openai/gpt-4.1-mini",
+    "defaults": { "reasoning_effort": "medium" },
     "models": [
       {
         "alias": "gpt-4-or",
@@ -234,12 +235,21 @@ Minimal example:
         "alias": "claude-haiku-or",
         "model": "anthropic/claude-haiku-4-5",
         "askAll": true,
-        "consensus": true
+        "consensus": true,
+        "reasoning_effort": "high"
       }
     ]
   }
 }
 ```
+
+Browse model slugs at [openrouter.ai/models](https://openrouter.ai/models?input_modalities=text);
+the `model` field takes any slug listed there.
+
+`reasoning_effort` (`low` / `medium` / `high`) sets how hard a reasoning model
+thinks. Put it on `openrouter.defaults` to cover every model, or on a single model
+entry to override the default for that one. Precedence runs call argument over
+per-model override over `defaults`. `temperature` follows the same precedence.
 
 `/ask-all` includes models where `askAll !== false`, capped to `maxFanout`.
 `/consensus` includes models where `consensus === true`, with no fanout cap (a warning
