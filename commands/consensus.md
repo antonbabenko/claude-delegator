@@ -35,7 +35,7 @@ Plan, design, spec, or proposal to refine: $ARGUMENTS
    - Security / threat modeling → Security Analyst
    - Code review of a concrete diff → Code Reviewer
 2. Read expert prompt ONCE via this resolution sequence:
-   1. Glob `~/.claude/plugins/cache/*/deliberation/*/prompts/[expert].md`. Pick the match with the highest semver version segment (the segment immediately after `deliberation/`, parsed as semver - not lexical string compare). If no match, fall back to `~/.claude/plugins/cache/*/claude-delegator/*/prompts/[expert].md` (legacy cache; same semver pick).
+   1. Glob `~/.claude/plugins/cache/*/deliberation/*/prompts/[expert].md`. Pick the match with the highest semver version segment (the segment immediately after `deliberation/`, parsed as semver - not lexical string compare).
    2. If no match, look up the inlined fallback under the heading `## Inlined fallback - [Expert]` in this command file (see end of this file).
    3. If neither found, abort with: `Error: deliberation plugin cache missing for expert "[Expert]". Run /plugin install deliberation or /reload-plugins.`
 

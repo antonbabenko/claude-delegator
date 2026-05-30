@@ -25,28 +25,26 @@ If cancelled, stop here.
 > Run the block below as ONE Bash call. Do NOT split it, and do NOT batch it with any other tool
 > call. Every removal is tolerant of absence (no error if already gone).
 
-It removes the namespaced `deliberation-*` servers, the unified `deliberation` server, any legacy
-bare registrations, both rules dirs (new + legacy), both Grok cache dirs (new + legacy), and only
-the aliases that are byte-identical to the bundled commands (a user-authored same-named command is
-left untouched).
+It removes the namespaced `deliberation-*` servers, the unified `deliberation` server, the rules
+dir, the Grok cache dir, and only the aliases that are byte-identical to the bundled commands (a
+user-authored same-named command is left untouched).
 
 ```bash
 set -u
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 
-# --- MCP registrations (namespaced + unified + legacy bare) ---
-for s in deliberation-codex deliberation-gemini deliberation-grok deliberation-openrouter deliberation \
-         codex gemini grok openrouter; do
+# --- MCP registrations (namespaced + unified) ---
+for s in deliberation deliberation-codex deliberation-gemini deliberation-grok deliberation-openrouter; do
   claude mcp remove --scope user "$s" >/dev/null 2>&1 || true
 done
 echo "Removed MCP registrations (user scope)."
 
-# --- rules dirs (new + legacy) ---
-rm -rf "$HOME/.claude/rules/deliberation/" "$HOME/.claude/rules/delegator/" 2>/dev/null || true
-echo "Removed rules dirs."
+# --- rules dir ---
+rm -rf "$HOME/.claude/rules/deliberation/" 2>/dev/null || true
+echo "Removed rules dir."
 
-# --- Grok dedup cache (new + legacy); metadata only, safe to drop ---
-rm -rf "$HOME/.claude/cache/deliberation/" "$HOME/.claude/cache/claude-delegator/" 2>/dev/null || true
+# --- Grok dedup cache; metadata only, safe to drop ---
+rm -rf "$HOME/.claude/cache/deliberation/" 2>/dev/null || true
 echo "Removed Grok file cache."
 
 # --- short command aliases: remove ONLY if byte-identical to the bundled command ---
@@ -64,7 +62,7 @@ done
 # Obsolete /ask-both (renamed to /ask-all in 1.7.0): remove only if it carries the bundled
 # fingerprint, so a user-authored ask-both.md is left untouched.
 ob="$HOME/.claude/commands/ask-both.md"
-if [ -e "$ob" ] && grep -q "name: ask-both" "$ob" 2>/dev/null && grep -qE "claude-delegator|deliberation" "$ob" 2>/dev/null; then
+if [ -e "$ob" ] && grep -q "name: ask-both" "$ob" 2>/dev/null && grep -q "deliberation" "$ob" 2>/dev/null; then
   rm -f "$ob" && removed="$removed /ask-both"
 elif [ -e "$ob" ]; then
   kept="$kept /ask-both"
@@ -85,5 +83,5 @@ only cleans up the user-scope MCP registrations, rules, cache, and copied aliase
 - Grok remote uploads: if you still have `XAI_API_KEY` and want to drain xAI-side uploads before
   uninstalling, run `/grok-files prune --older-than 0s --yes` (or `/grok-files gc` to see what is
   already gone) BEFORE Step 2.
-- Config (`~/.claude/deliberation/config.json` or the legacy path) is left in place - it holds your
-  OpenRouter model setup and API-key env names. Remove it manually if you want a full wipe.
+- Config (`~/.claude/deliberation/config.json`) is left in place - it holds your OpenRouter model
+  setup and API-key env names. Remove it manually if you want a full wipe.

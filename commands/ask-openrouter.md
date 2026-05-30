@@ -25,7 +25,7 @@ is used.
    alias (the bridge falls back to `openrouter-default`; if `defaultModelSet` is false in
    the list output, tell the user to pass an explicit alias and stop).
 3. Identify the expert role from the question via `~/.claude/rules/deliberation/triggers.md` (default Architect). Then load that expert's prompt:
-   1. Glob `~/.claude/plugins/cache/*/deliberation/*/prompts/[expert].md` and pick the match with the highest semver version segment (the segment immediately after `deliberation/`, parsed as semver - not lexical compare). If no match, fall back to `~/.claude/plugins/cache/*/claude-delegator/*/prompts/[expert].md` (legacy cache; same semver pick).
+   1. Glob `~/.claude/plugins/cache/*/deliberation/*/prompts/[expert].md` and pick the match with the highest semver version segment (the segment immediately after `deliberation/`, parsed as semver - not lexical compare).
    2. If no match is found, abort with: `Error: deliberation plugin cache missing for expert "[Expert]". Run /plugin install deliberation or /reload-plugins.`
 4. Build the 7-section delegation prompt per `~/.claude/rules/deliberation/delegation-format.md`.
    If the question references local files, attach them with

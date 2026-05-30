@@ -21,19 +21,15 @@ call with an AskUserQuestion, and do not split the main block.
 > with any other tool call. It is idempotent - safe to re-run.
 
 It does everything non-interactive: checks CLIs, reads `config.json` once, registers the enabled
-MCP servers at user scope (namespaced `deliberation-*`, removing any legacy bare registrations),
-installs the rules, and prints a status report.
+MCP servers at user scope (namespaced `deliberation-*`), installs the rules, and prints a status
+report.
 
 ```bash
 set -u
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT is required (run this via /deliberation:setup)}"
 
-# --- config path: new env > legacy env > new file > legacy file ---
-CFG="${DELIBERATION_CONFIG:-${CLAUDE_DELEGATOR_CONFIG:-}}"
-if [ -z "$CFG" ]; then
-  if [ -f "$HOME/.claude/deliberation/config.json" ]; then CFG="$HOME/.claude/deliberation/config.json"
-  else CFG="$HOME/.claude/claude-delegator/config.json"; fi
-fi
+# --- config path: env override > default deliberation path ---
+CFG="${DELIBERATION_CONFIG:-$HOME/.claude/deliberation/config.json}"
 
 json_eval() { node -e "$1" "$CFG" 2>/dev/null; }
 # providers.<name>.enabled: missing => enabled (returns 1); explicit false => 0.
@@ -59,15 +55,11 @@ command -v agy   >/dev/null 2>&1 && AGY_STATUS="installed" || AGY_STATUS="MISSIN
 # --- register servers (each gated on provider_enabled; missing config = all on) ---
 # Codex: inherits model from ~/.codex/config.toml. Pin with `-c model=<id>` (see notes below).
 if [ "$(provider_enabled codex)" = "1" ]; then add_mcp deliberation-codex codex mcp-server; else remove_mcp deliberation-codex; fi
-remove_mcp codex   # drop legacy bare name
 
 if [ "$(provider_enabled gemini)" = "1" ]; then add_mcp deliberation-gemini node "$PLUGIN_ROOT/server/gemini/index.js"; else remove_mcp deliberation-gemini; fi
-remove_mcp gemini
 
 if [ "$(provider_enabled grok)" = "1" ]; then add_mcp deliberation-grok node "$PLUGIN_ROOT/server/grok/index.js"; else remove_mcp deliberation-grok; fi
-remove_mcp grok
 
-remove_mcp openrouter   # drop legacy bare name
 if [ "$(openrouter_enabled)" = "1" ]; then
   add_mcp deliberation-openrouter node "$PLUGIN_ROOT/server/openrouter/index.js"
   KEYENV="$(or_key_env)"; [ -z "$(printenv "$KEYENV" 2>/dev/null)" ] && echo "Note: \$$KEYENV is empty; OpenRouter calls return auth errors until you export it."
@@ -96,7 +88,6 @@ echo "OpenRouter auth: $([ -n "${OPENROUTER_API_KEY:-}" ] && echo set || echo "n
 echo "MCP servers registered (user scope). Run 'claude mcp list' to confirm."
 echo
 echo "Restart Claude Code so the deliberation-* tools load; until then /ask-* may not find them."
-[ -d "$HOME/.claude/rules/delegator" ] && echo "Note: legacy ~/.claude/rules/delegator/ is unused after the rename; remove it manually if you want."
 ```
 
 After it runs, report the printed status to the user.
@@ -121,9 +112,7 @@ After it runs, report the printed status to the user.
 ## Step 2: Optional short command names
 
 The commands are always available namespaced (`/deliberation:ask-gpt`, `:ask-all`, `:consensus`,
-...). The short aliases (`/ask-gpt` etc.) are an opt-in copy into `~/.claude/commands/`. (The
-namespaced form changed from `/claude-delegator:*` to `/deliberation:*`; the unnamespaced aliases
-are unaffected by the rename.)
+...). The short aliases (`/ask-gpt` etc.) are an opt-in copy into `~/.claude/commands/`.
 
 Ask with `AskUserQuestion` (this turn has NO Bash call): "Also install short command names
 (/ask-gpt etc.) into ~/.claude/commands?" Options: "Yes (recommended)" / "No, keep namespaced

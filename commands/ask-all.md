@@ -22,14 +22,14 @@ User question or topic: $ARGUMENTS
      an alias the server has not approved. -->
 
 0. **Prep - identify the expert and load its prompt.** Identify the expert role first (step 1 below is *reasoning* on `$ARGUMENTS`, no tool call), then read the expert prompt:
-   - `Glob` `~/.claude/plugins/cache/*/deliberation/*/prompts/[expert].md` (expert prompt; fall back to `~/.claude/plugins/cache/*/claude-delegator/*/prompts/[expert].md` if no match)
+   - `Glob` `~/.claude/plugins/cache/*/deliberation/*/prompts/[expert].md` (expert prompt)
 
    Delegate selection - which built-ins are enabled, which OpenRouter aliases are eligible, the fanout cap - is resolved server-side by `mcp__deliberation__ask-all`. The command does not read `config.json`, list OpenRouter aliases, or pre-read provider model config. The exact dispatched delegates, their models, and any fanout-capped omissions come back in the tool response, so the status block (step 4) is built from that response, not from pre-read sources.
 
 1. **Identify expert** - match `$ARGUMENTS` against trigger patterns in `~/.claude/rules/deliberation/triggers.md`. The server applies the **same expert role** to every delegate so verdicts are comparable. Default to Architect if unclear.
 
 2. **Read expert prompt** via this resolution sequence:
-   1. Glob `~/.claude/plugins/cache/*/deliberation/*/prompts/[expert].md`. Pick the match with the highest semver version segment (the segment immediately after `deliberation/`, parsed as semver - not lexical string compare). If no match, fall back to `~/.claude/plugins/cache/*/claude-delegator/*/prompts/[expert].md` (legacy cache; same semver pick).
+   1. Glob `~/.claude/plugins/cache/*/deliberation/*/prompts/[expert].md`. Pick the match with the highest semver version segment (the segment immediately after `deliberation/`, parsed as semver - not lexical string compare).
    2. If no match, look up the inlined fallback under the heading `## Inlined fallback - [Expert]` in this command file (see end of this file).
    3. If neither found, abort with: `Error: deliberation plugin cache missing for expert "[Expert]". Run /plugin install deliberation or /reload-plugins.`
 
