@@ -1,5 +1,5 @@
 {
-  "name": "claude-delegator",
+  "name": "deliberation",
   "version": "1.18.0",
   "private": true,
   "scripts": {

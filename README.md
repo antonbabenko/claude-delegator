@@ -1,4 +1,4 @@
-# Claude Delegator
+# Deliberation
 
 Get a second opinion in Claude Code from GPT, Gemini, and Grok - plus 300+ more models through OpenRouter, including Qwen, Kimi, and DeepSeek. Seven domain experts (Architect, Code Reviewer, Security Analyst, and four more) review your plans, find bugs, and debate edge cases until they agree.
 
@@ -29,7 +29,7 @@ When three models argue, the real bug reveals itself. Round 1 = independent top 
 
 </details>
 
-## What is Claude Delegator?
+## What is Deliberation?
 
 Claude can ask GPT, Gemini, Grok, or any OpenAI-compatible model (via OpenRouter) for help
 through MCP. The plugin handles the wiring for each provider so you just write the prompt.
@@ -37,7 +37,7 @@ Each expert has a distinct specialty and can advise or implement.
 
 You can use any subset of the providers. The plugin detects which are configured and routes
 accordingly. OpenRouter is advisory-only and config-driven: models are declared in
-`~/.claude/claude-delegator/config.json` and hot-reload without restarting Claude Code.
+`~/.claude/deliberation/config.json` and hot-reload without restarting Claude Code.
 
 | What you get | Why it matters |
 |--------------|----------------|
@@ -58,12 +58,12 @@ Inside a Claude Code instance, run:
 
 **2. Install the plugin**
 ```
-/plugin install claude-delegator@antonbabenko
+/plugin install deliberation@antonbabenko
 ```
 
 **3. Run setup**
 ```
-/claude-delegator:setup
+/deliberation:setup
 ```
 
 Claude now routes complex tasks to your GPT, Gemini, Grok, and OpenRouter experts (Grok and OpenRouter advise; GPT and Gemini can also implement).
@@ -92,7 +92,7 @@ You need at least one provider:
 - **Codex CLI** (GPT): `npm install -g @openai/codex`, then `codex login`.
 - **Antigravity CLI**: [Getting Started with Antigravity CLI](https://antigravity.google/docs/cli-getting-started) and [Migrating from Gemini CLI](https://antigravity.google/docs/gcli-migration), then run `agy` and login.
 - **Grok (xAI)**: no CLI to install; the bridge ships with the plugin (needs Node 18+). Set `XAI_API_KEY` (get a key at https://console.x.ai).
-- **OpenRouter**: no CLI; the bridge ships with the plugin (needs Node 18+). Set `OPENROUTER_API_KEY` (get a key at https://openrouter.ai/keys), then declare models in `~/.claude/claude-delegator/config.json`. Works with any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio, HuggingFace Inference) - auth is skipped automatically when the key env var is empty.
+- **OpenRouter**: no CLI; the bridge ships with the plugin (needs Node 18+). Set `OPENROUTER_API_KEY` (get a key at https://openrouter.ai/keys), then declare models in `~/.claude/deliberation/config.json`. Works with any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio, HuggingFace Inference) - auth is skipped automatically when the key env var is empty.
 
 ## Commands
 
@@ -100,15 +100,15 @@ Bundled with the plugin (available once installed):
 
 | Command | Purpose |
 |---------|---------|
-| `/claude-delegator:setup` | Configure Codex/Gemini/Grok/OpenRouter MCP servers + orchestration rules |
-| `/claude-delegator:consensus` | 🔥🔥🔥 Arbiter-mediated GPT + Gemini + Grok + Claude convergence loop |
-| `/claude-delegator:ask-all` | 🔥 GPT + Gemini + Grok (+ configured OpenRouter models) in parallel, synthesized |
-| `/claude-delegator:ask-gpt` | One-shot GPT (Codex) second opinion |
-| `/claude-delegator:ask-gemini` | One-shot Gemini second opinion |
-| `/claude-delegator:ask-grok` | One-shot Grok (xAI) second opinion (advisory-only) |
-| `/claude-delegator:ask-openrouter` | One-shot OpenRouter model second opinion (advisory-only) |
-| `/claude-delegator:uninstall` | Remove MCP config, rules, and aliases |
-| `/claude-delegator:grok-files` | List, prune, or gc Grok-uploaded files (storage + local cache cleanup) |
+| `/deliberation:setup` | Configure Codex/Gemini/Grok/OpenRouter MCP servers + orchestration rules |
+| `/deliberation:consensus` | 🔥🔥🔥 Arbiter-mediated GPT + Gemini + Grok + Claude convergence loop |
+| `/deliberation:ask-all` | 🔥 GPT + Gemini + Grok (+ configured OpenRouter models) in parallel, synthesized |
+| `/deliberation:ask-gpt` | One-shot GPT (Codex) second opinion |
+| `/deliberation:ask-gemini` | One-shot Gemini second opinion |
+| `/deliberation:ask-grok` | One-shot Grok (xAI) second opinion (advisory-only) |
+| `/deliberation:ask-openrouter` | One-shot OpenRouter model second opinion (advisory-only) |
+| `/deliberation:uninstall` | Remove MCP config, rules, and aliases |
+| `/deliberation:grok-files` | List, prune, or gc Grok-uploaded files (storage + local cache cleanup) |
 
 `/setup` can also install short aliases (`/ask-gpt`, `/ask-gemini`, `/ask-grok`, `/ask-all`, `/consensus`, `/grok-files`) into `~/.claude/commands/`. This is opt-in. Existing same-named commands are kept by default; setup asks before overwriting any of them. `/uninstall` removes an alias only if it is byte-identical to the bundled copy.
 
@@ -202,8 +202,9 @@ Every expert supports two modes, chosen automatically from your request:
 
 ### OpenRouter config
 
-OpenRouter models are declared in `~/.claude/claude-delegator/config.json`
-(override path with `CLAUDE_DELEGATOR_CONFIG`). The file is the live single source of
+OpenRouter models are declared in `~/.claude/deliberation/config.json`
+(override path with `DELIBERATION_CONFIG`; the legacy `CLAUDE_DELEGATOR_CONFIG` and
+`~/.claude/claude-delegator/config.json` path are still read as a fallback). The file is the live single source of
 truth: changes to the `openrouter` block hot-reload without restarting Claude Code.
 Toggling a built-in provider (codex / gemini / grok) still requires `/setup`.
 
@@ -272,7 +273,7 @@ Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow, 
 
 ## Credits
 
-Claude Delegator started as a fork of [jarrodwatts/claude-delegator](https://github.com/jarrodwatts/claude-delegator) - credit to Jarrod Watts for the original solution and inspiration. Original work and MIT copyright are retained. This fork adds Grok support, Gemini bridge reliability (timeout and trust recovery), provider configuration overrides, and the bundled delegation commands. It is not an official continuation of the upstream project.
+Deliberation started as a fork of [jarrodwatts/claude-delegator](https://github.com/jarrodwatts/claude-delegator) - credit to Jarrod Watts for the original solution and inspiration. Original work and MIT copyright are retained. This fork adds Grok support, Gemini bridge reliability (timeout and trust recovery), provider configuration overrides, and the bundled delegation commands. It is not an official continuation of the upstream project.
 
 Expert prompts are adapted from [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) (snapshot `03eb9fff`, 2026-05-25) and [PAL MCP server](https://github.com/BeehiveInnovations/pal-mcp-server) (Apache-2.0, snapshot `7afc7c1`, 2026-05-25).
 
