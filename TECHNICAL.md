@@ -319,7 +319,7 @@ Uploads are deduplicated by SHA-256 content hash. A reuse hit requires the SAME 
 (see cache-key below); identical bytes uploaded under a different filename or a different
 key produce separate cache rows:
 
-- Cache file: `~/.claude/cache/deliberation/grok-files.json` (legacy `~/.claude/cache/claude-delegator/grok-files.json` read as a fallback)
+- Cache file: `~/.claude/cache/deliberation/grok-files.json`
 - Cache key: `sha256(bytes)@sha256(XAI_API_KEY)[:16]@normalize(apiBase)@effectiveFilename`
   - Key rotation auto-invalidates entries (different `keyFp`).
   - Different `apiBase` (including port/protocol differences) → separate rows.
@@ -370,8 +370,8 @@ It is **advisory-only** - it cannot edit files or run shell commands.
 ### Configuration file
 
 The bridge and the fan-out commands (`/ask-all`, `/consensus`) read
-`~/.claude/claude-delegator/config.json` at call time. Override the path with
-`CLAUDE_DELEGATOR_CONFIG`. The file is stat-gated: the bridge re-reads it only when
+`~/.claude/deliberation/config.json` at call time. Override the path with
+`DELIBERATION_CONFIG`. The file is stat-gated: the bridge re-reads it only when
 the mtime changes, so edits to the `openrouter` block (models, flags, defaults) take
 effect immediately without restarting Claude Code or re-running `/setup`. Toggling a
 **built-in** provider (codex / gemini / grok) still requires `/setup` to re-register

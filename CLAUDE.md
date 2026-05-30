@@ -66,7 +66,7 @@ Retries use multi-turn (`*-reply` with `threadId`) so the expert remembers previ
 | `prompts/*.md` | Expert personalities | Injected via `developer-instructions` |
 | `commands/*.md` | Slash commands | `/setup`, `/uninstall` |
 | `config/providers.json` | Provider metadata | Not used at runtime |
-| `~/.claude/deliberation/config.json` | OpenRouter model config | Live SSOT (legacy `~/.claude/claude-delegator/` read as fallback); stat-gated hot-reload |
+| `~/.claude/deliberation/config.json` | OpenRouter model config | Live SSOT; stat-gated hot-reload |
 
 > Expert prompts adapted from [oh-my-opencode](https://github.com/code-yeongyu/oh-my-opencode)
 

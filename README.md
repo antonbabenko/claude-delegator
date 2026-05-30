@@ -203,8 +203,7 @@ Every expert supports two modes, chosen automatically from your request:
 ### OpenRouter config
 
 OpenRouter models are declared in `~/.claude/deliberation/config.json`
-(override path with `DELIBERATION_CONFIG`; the legacy `CLAUDE_DELEGATOR_CONFIG` and
-`~/.claude/claude-delegator/config.json` path are still read as a fallback). The file is the live single source of
+(override the path with `DELIBERATION_CONFIG`). The file is the live single source of
 truth: changes to the `openrouter` block hot-reload without restarting Claude Code.
 Toggling a built-in provider (codex / gemini / grok) still requires `/setup`.
 
@@ -262,6 +261,26 @@ file-attachment caps, session model persistence, consensus cost model, and error
 see [TECHNICAL.md - OpenRouter bridge](TECHNICAL.md#openrouter-bridge).
 
 For provider defaults, environment variables, and manual MCP setup, see [TECHNICAL.md](TECHNICAL.md#environment-variables).
+
+## Upgrade from 1.x (claude-delegator -> deliberation)
+
+2.0 renames the plugin and drops 1.x compatibility. One-time steps:
+
+1. Move your config: `mv ~/.claude/claude-delegator ~/.claude/deliberation` (or set
+   `DELIBERATION_CONFIG` to a custom path; `CLAUDE_DELEGATOR_CONFIG` is no longer read).
+2. Re-run `/deliberation:setup` to register the renamed MCP servers. The old bare
+   `codex`/`gemini`/`grok`/`openrouter` registrations are not auto-removed. If you had them,
+   remove each one (the CLI takes one name per call):
+   ```
+   claude mcp remove --scope user codex
+   claude mcp remove --scope user gemini
+   claude mcp remove --scope user grok
+   claude mcp remove --scope user openrouter
+   ```
+3. Slash commands moved from `/claude-delegator:*` to `/deliberation:*` (the short aliases
+   `/ask-gpt` etc. are unchanged).
+4. Optional cleanup: `rm -rf ~/.claude/rules/delegator ~/.claude/cache/claude-delegator`.
+5. Restart Claude Code.
 
 ## Author
 
