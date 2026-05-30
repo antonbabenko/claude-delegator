@@ -1,6 +1,6 @@
 {
   "name": "deliberation",
-  "description": "Deliberation for Claude Code - GPT, Gemini, Grok, and OpenRouter expert subagents. Seven specialized experts: Architect, Plan Reviewer, Scope Analyst, Code Reviewer, Security Analyst, Researcher, Debugger.",
+  "description": "GPT (Codex CLI), Gemini, Grok (xAI), and OpenRouter (400+ models) expert subagents for Claude Code and any MCP host. Seven experts (Architect, Plan Reviewer, Scope Analyst, Code Reviewer, Security Analyst, Researcher, Debugger) that advise or implement across delegation, code review, and architecture.",
   "version": "1.18.0",
   "author": {
     "name": "Anton Babenko",
