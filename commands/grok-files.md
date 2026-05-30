@@ -22,10 +22,11 @@ Sub-command + flags: $ARGUMENTS
 ## Workflow
 
 1. **Resolve the admin script** via this sequence:
-   1. Glob `~/.claude/plugins/cache/*/claude-delegator/*/server/grok/files-admin.js`;
-      pick the highest-semver match.
+   1. Glob `~/.claude/plugins/cache/*/deliberation/*/server/grok/files-admin.js`;
+      pick the highest-semver match. If no match, fall back to
+      `~/.claude/plugins/cache/*/claude-delegator/*/server/grok/files-admin.js` (legacy cache).
    2. Fall back to `${CLAUDE_PLUGIN_ROOT}/server/grok/files-admin.js`.
-   3. If neither exists, abort: `Error: claude-delegator plugin cache missing. Run /plugin install claude-delegator.`
+   3. If none exists, abort: `Error: deliberation plugin cache missing. Run /plugin install deliberation.`
 
 2. **Check auth**: the script needs `XAI_API_KEY` in the environment. If it is unset, tell the
    user to `export XAI_API_KEY=xai-...` and stop (the script will error otherwise).

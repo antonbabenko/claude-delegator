@@ -35,9 +35,9 @@ Plan, design, spec, or proposal to refine: $ARGUMENTS
    - Security / threat modeling → Security Analyst
    - Code review of a concrete diff → Code Reviewer
 2. Read expert prompt ONCE via this resolution sequence:
-   1. Glob `~/.claude/plugins/cache/*/claude-delegator/*/prompts/[expert].md`. Pick the match with the highest semver version segment (the segment immediately after `claude-delegator/`, parsed as semver - not lexical string compare).
+   1. Glob `~/.claude/plugins/cache/*/deliberation/*/prompts/[expert].md`. Pick the match with the highest semver version segment (the segment immediately after `deliberation/`, parsed as semver - not lexical string compare). If no match, fall back to `~/.claude/plugins/cache/*/claude-delegator/*/prompts/[expert].md` (legacy cache; same semver pick).
    2. If no match, look up the inlined fallback under the heading `## Inlined fallback - [Expert]` in this command file (see end of this file).
-   3. If neither found, abort with: `Error: claude-delegator plugin cache missing for expert "[Expert]". Run /plugin install claude-delegator or /reload-plugins.`
+   3. If neither found, abort with: `Error: deliberation plugin cache missing for expert "[Expert]". Run /plugin install deliberation or /reload-plugins.`
 
    Reuse the loaded contents across all rounds (pass it as `developerInstructions` to the consensus tool).
 3. **Set cwd**: use `process.cwd()` as the MCP `cwd` for every call; the server resolves each provider's working directory from it.
@@ -67,7 +67,7 @@ For each round R:
    --- Round R/5 ---
    ```
 
-2. **Build identical review prompt** (7-section format per `~/.claude/rules/delegator/delegation-format.md`). Include:
+2. **Build identical review prompt** (7-section format per `~/.claude/rules/deliberation/delegation-format.md`). Include:
    - **CURRENT PLAN** (full text of the latest revision)
    - **ROUND METADATA**: round R of 5; if R > 1, attach the previous round's deltas (what was changed and why)
    - **Round metadata is BOUNDED**: include the last 2 rounds verbatim; for any rounds older than that, include only a one-line summary of each (verdict + applied-change phrase). This prevents prompt-length growth across 5 rounds.

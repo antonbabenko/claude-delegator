@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Configure claude-delegator with Codex (GPT), Gemini, Grok, and OpenRouter MCP servers
+description: Configure deliberation with Codex (GPT), Gemini, Grok, and OpenRouter MCP servers
 allowed-tools: Bash, Read, Write, Edit, AskUserQuestion
 timeout: 60000
 ---
@@ -8,6 +8,10 @@ timeout: 60000
 # Setup
 
 Configure GPT (via Codex), Gemini, Grok, and OpenRouter as specialized expert subagents via MCP. Seven domain experts that can advise OR implement (Grok and OpenRouter are advisory-only).
+
+## Migration note
+
+If a legacy bare `codex`, `gemini`, `grok`, or `openrouter` MCP registration is present from an earlier install, re-run this setup. Step 2 registers the namespaced `deliberation-*` servers and removes the legacy bare registrations so nothing is left dangling.
 
 ## Step 1: Check CLI Dependencies
 
@@ -69,28 +73,34 @@ built-in is `enabled:false`, run `claude mcp remove <name>` instead of registeri
 
 ### Codex (GPT)
 ```bash
-# Idempotent: safe to rerun setup.
+# Idempotent: safe to rerun setup. Ordered migration: ADD the namespaced
+# registration first, then remove the legacy bare one (|| true) so there is no
+# window where neither exists.
 # No model flag: Codex inherits its model from ~/.codex/config.toml. To pin a
 # model on the server regardless of config.toml, append `-c model=<id>` (see the
 # Codex model note below).
+claude mcp remove deliberation-codex >/dev/null 2>&1 || true
+claude mcp add --transport stdio --scope user deliberation-codex -- codex mcp-server
 claude mcp remove codex >/dev/null 2>&1 || true
-claude mcp add --transport stdio --scope user codex -- codex mcp-server
 ```
 
 ### Gemini
 ```bash
-# Idempotent: safe to rerun setup
+# Idempotent: safe to rerun setup. ADD namespaced first, then remove legacy bare.
+claude mcp remove deliberation-gemini >/dev/null 2>&1 || true
+claude mcp add --transport stdio --scope user deliberation-gemini -- node '${CLAUDE_PLUGIN_ROOT}/server/gemini/index.js'
 claude mcp remove gemini >/dev/null 2>&1 || true
-claude mcp add --transport stdio --scope user gemini -- node '${CLAUDE_PLUGIN_ROOT}/server/gemini/index.js'
 ```
 
 ### Grok (xAI)
 ```bash
-# Idempotent: safe to rerun setup. Registered WITHOUT --env so the key is NOT
-# written to ~/.claude.json. The bridge inherits XAI_API_KEY from the environment
-# that launches Claude Code, so export it in your shell profile to persist it.
+# Idempotent: safe to rerun setup. ADD namespaced first, then remove legacy bare.
+# Registered WITHOUT --env so the key is NOT written to ~/.claude.json. The bridge
+# inherits XAI_API_KEY from the environment that launches Claude Code, so export it
+# in your shell profile to persist it.
+claude mcp remove deliberation-grok >/dev/null 2>&1 || true
+claude mcp add --transport stdio --scope user deliberation-grok -- node '${CLAUDE_PLUGIN_ROOT}/server/grok/index.js'
 claude mcp remove grok >/dev/null 2>&1 || true
-claude mcp add --transport stdio --scope user grok -- node '${CLAUDE_PLUGIN_ROOT}/server/grok/index.js'
 if [ -z "$XAI_API_KEY" ]; then
   echo "Note: XAI_API_KEY not set in this environment; Grok calls return missing-auth until you export it (add it to your shell profile) and restart Claude Code."
 fi
@@ -102,7 +112,7 @@ This registers the MCP servers at user scope (available across all projects).
 
 **Grok file TTL (optional):** files Grok uploads default to a 7-day `expires_after` so they
 self-delete. To change it, export `GROK_FILE_TTL_SECONDS=<seconds>` (1h..30d, i.e. 3600..2592000)
-in Claude Code's launch environment, or add `--env GROK_FILE_TTL_SECONDS=<seconds>` on the `grok`
+in Claude Code's launch environment, or add `--env GROK_FILE_TTL_SECONDS=<seconds>` on the `deliberation-grok`
 registration. Manage uploads with `/grok-files`: `prune --older-than <age>` deletes remote
 bridge-owned files; `gc` reconciles the local SHA-256 cache (`~/.claude/cache/claude-delegator/grok-files.json`)
 with remote state. Set `XAI_DISABLE_FILE_CACHE=1` to bypass the cache layer (debugging). Full
@@ -110,7 +120,7 @@ reference: [TECHNICAL.md § Grok files and cleanup](../TECHNICAL.md#grok-files-a
 
 **Grok reasoning effort (optional):** defaults to `high`. Override by exporting
 `GROK_REASONING_EFFORT=<low|medium|high|none>` in Claude Code's launch environment, or add
-`--env GROK_REASONING_EFFORT=<low|medium|high|none>` on the `grok` registration, or set it per
+`--env GROK_REASONING_EFFORT=<low|medium|high|none>` on the `deliberation-grok` registration, or set it per
 call with the `reasoning_effort` parameter; `none` omits the field so the model uses its default.
 
 ### OpenRouter (optional, config-driven)
@@ -118,9 +128,14 @@ call with the `reasoning_effort` parameter; `none` omits the field so the model 
 ```bash
 CFG="${CLAUDE_DELEGATOR_CONFIG:-$HOME/.claude/claude-delegator/config.json}"
 OR_ON=$(node -e 'try{const c=require(process.argv[1]);const o=c.openrouter||{};const on=o.enabled!==false&&((Array.isArray(o.models)&&o.models.length)||o.defaultModel);process.stdout.write(on?"1":"0")}catch(e){process.stdout.write("0")}' "$CFG" 2>/dev/null || echo 0)
+# Clean up any prior registrations unconditionally (covers the disabled-OpenRouter
+# rerun case): drop the legacy bare name and the namespaced one before deciding.
 claude mcp remove openrouter >/dev/null 2>&1 || true
+claude mcp remove deliberation-openrouter >/dev/null 2>&1 || true
 if [ "$OR_ON" = "1" ]; then
-  claude mcp add --transport stdio --scope user openrouter -- node '${CLAUDE_PLUGIN_ROOT}/server/openrouter/index.js'
+  # ADD namespaced registration (the unconditional removes above already cleared
+  # both the legacy bare and any stale namespaced entry).
+  claude mcp add --transport stdio --scope user deliberation-openrouter -- node '${CLAUDE_PLUGIN_ROOT}/server/openrouter/index.js'
   KEYENV=$(node -e 'try{const c=require(process.argv[1]);process.stdout.write((c.openrouter&&c.openrouter.apiKeyEnv)||"OPENROUTER_API_KEY")}catch(e){process.stdout.write("OPENROUTER_API_KEY")}' "$CFG" 2>/dev/null || echo OPENROUTER_API_KEY)
   KEYVAL=$(printenv "$KEYENV" 2>/dev/null)
   if [ -z "$KEYVAL" ]; then echo "Note: \$$KEYENV is empty; OpenRouter calls to openrouter.ai will return auth errors until you export it."; fi
@@ -140,12 +155,18 @@ claude mcp remove deliberation >/dev/null 2>&1 || true
 claude mcp add --transport stdio --scope user deliberation -- node '${CLAUDE_PLUGIN_ROOT}/server/mcp/index.js'
 ```
 
+After registering the servers above, print this restart notice:
+
+```
+Restart Claude Code so the deliberation-* tools load; until then /ask-* may not find them.
+```
+
 **Codex model (optional):** by default Codex inherits its model, sandbox, and
 approval policy from `~/.codex/config.toml` (the `model` key) - change it there
 and every provider that reads that file follows. To pin a model on the MCP server
 regardless of config.toml, append `-c model=<id>` to the registration, e.g.
 `claude mcp add --transport stdio --scope user codex -- codex mcp-server -c model=gpt-5.5`.
-To override for a single call, pass `model:` to `mcp__codex__codex(...)`. This
+To override for a single call, pass `model:` to `mcp__deliberation-codex__codex(...)`. This
 mirrors the Gemini/Grok model-override pattern. (Codex has no bridge env var like
 `GROK_DEFAULT_MODEL` because it ships its own native MCP server and reads
 `~/.codex/config.toml` directly.)
@@ -156,17 +177,23 @@ e.g. `-p nosandbox`.
 ## Step 3: Install Orchestration Rules
 
 ```bash
-mkdir -p ~/.claude/rules/delegator && cp ${CLAUDE_PLUGIN_ROOT}/rules/*.md ~/.claude/rules/delegator/
+mkdir -p ~/.claude/rules/deliberation && cp ${CLAUDE_PLUGIN_ROOT}/rules/*.md ~/.claude/rules/deliberation/
+# Remove the legacy rules dir so it does not linger after the rename.
+rm -rf ~/.claude/rules/delegator
 ```
 
 ## Step 3b: Optional Short Command Names
 
 The delegation commands ship with the plugin and are always available
-namespaced: `/claude-delegator:ask-gpt`, `:ask-gemini`, `:ask-grok`,
+namespaced: `/deliberation:ask-gpt`, `:ask-gemini`, `:ask-grok`,
 `:ask-all`, `:consensus`.
 
 Offer the short, unnamespaced aliases (`/ask-gpt` etc.) by copying them into
 `~/.claude/commands/`.
+
+Note: the namespaced command form changed from `/claude-delegator:*` to
+`/deliberation:*`. The unnamespaced aliases below (`/ask-gpt`, `/ask-all`, and
+the rest) are unaffected by the rename and keep working.
 
 Use AskUserQuestion: "Also install short command names (/ask-gpt etc.) into
 ~/.claude/commands?" Options: "Yes (recommended)" / "No, keep namespaced only".
@@ -215,7 +242,7 @@ agy --help 2>&1 | head -1 || echo "Not installed"
 # Check 2: Codex MCP server
 # Model is no longer hardcoded on the registration; resolve it from a `-c model=`
 # server override if present, else the `model` key in ~/.codex/config.toml.
-CODEX_CONFIG=$(claude mcp get codex 2>/dev/null)
+CODEX_CONFIG=$(claude mcp get deliberation-codex 2>/dev/null)
 if echo "$CODEX_CONFIG" | grep -q "codex"; then
   MODEL=$(echo "$CODEX_CONFIG" | grep -oE 'model=[^ ]+' | head -1 | cut -d= -f2)
   if [ -z "$MODEL" ]; then
@@ -228,7 +255,7 @@ else
 fi
 
 # Check 3: Gemini MCP server
-GEMINI_CONFIG=$(claude mcp get gemini 2>/dev/null)
+GEMINI_CONFIG=$(claude mcp get deliberation-gemini 2>/dev/null)
 if echo "$GEMINI_CONFIG" | grep -q "server/gemini/index.js"; then
   GEMINI_MODEL="${GEMINI_DEFAULT_MODEL:-auto-gemini-3}"
   echo "Gemini: OK (model: $GEMINI_MODEL)"
@@ -264,7 +291,7 @@ case "$GEMINI_SETTINGS_MODEL" in
 esac
 
 # Check 4b: Grok MCP server + bridge health
-GROK_CONFIG=$(claude mcp get grok 2>/dev/null)
+GROK_CONFIG=$(claude mcp get deliberation-grok 2>/dev/null)
 if echo "$GROK_CONFIG" | grep -q "server/grok/index.js"; then
   GROK_MODEL="${GROK_DEFAULT_MODEL:-grok-4.3}"
   echo "Grok: OK (model: $GROK_MODEL)"
@@ -278,7 +305,7 @@ else
 fi
 
 # Check 5: OpenRouter MCP server + bridge health
-OR_CONFIG=$(claude mcp get openrouter 2>/dev/null)
+OR_CONFIG=$(claude mcp get deliberation-openrouter 2>/dev/null)
 if echo "$OR_CONFIG" | grep -q "server/openrouter/index.js"; then
   OR_HEALTH=$(printf '{"jsonrpc":"2.0","id":"health","method":"initialize","params":{}}\n' \
     | node "${CLAUDE_PLUGIN_ROOT}/server/openrouter/index.js" 2>/dev/null \
@@ -289,7 +316,7 @@ else
 fi
 
 # Check 6: Rules installed (count files)
-ls ~/.claude/rules/delegator/*.md 2>/dev/null | wc -l
+ls ~/.claude/rules/deliberation/*.md 2>/dev/null | wc -l
 
 # Check 7: Codex auth status
 codex login status 2>&1 | head -1 || echo "Codex: Run 'codex login'"
@@ -300,7 +327,7 @@ codex login status 2>&1 | head -1 || echo "Codex: Run 'codex login'"
 Display actual values from the checks above:
 
 ```
-claude-delegator Status
+deliberation Status
 ───────────────────────────────────────────────────
 Codex CLI:       [version from check 1]
 Antigravity CLI: [agy install signal from check 1]
@@ -309,7 +336,7 @@ Gemini MCP:      [status + model from check 3]
 Gemini Bridge:   [status from check 4]
 Gemini model:    [value from check 4a]
 Grok MCP:        [status + model from check 4b]
-Rules:           ✓ [N] files in ~/.claude/rules/delegator/
+Rules:           ✓ [N] files in ~/.claude/rules/deliberation/
 Codex Auth:      [status from check 7]
 Grok Auth:       [XAI_API_KEY status from check 4b]
 ───────────────────────────────────────────────────
@@ -328,7 +355,7 @@ Next steps:
    - Codex: Run `codex login`
    - Gemini: Run `agy` once and complete sign-in (or set the model in ~/.gemini/settings.json)
    - Grok: export XAI_API_KEY=xai-... (get a key at https://console.x.ai) in your shell profile, then restart Claude Code
-3. After editing plugin code or upgrading the plugin version: run `/mcp` in your Claude Code session and press `Reconnect` on `gemini` and `grok` to load the new code without restarting Claude Code. See README → "Updating the plugin".
+3. After editing plugin code or upgrading the plugin version: run `/mcp` in your Claude Code session and press `Reconnect` on `deliberation-gemini` and `deliberation-grok` to load the new code without restarting Claude Code. See README → "Updating the plugin".
 
 Seven experts available:
 
@@ -369,18 +396,18 @@ Explicit: "Ask GPT to...", "Ask Gemini to...", or "Ask Grok to..."
 
 ## Step 7: Ask About Starring
 
-Use AskUserQuestion to ask the user if they'd like to ⭐ star the claude-delegator repository on GitHub to support the project.
+Use AskUserQuestion to ask the user if they'd like to ⭐ star the deliberation repository on GitHub to support the project.
 
 Options: "Yes, star the repo" / "No thanks"
 
 **If yes**: Check if `gh` CLI is available and run:
 ```bash
-gh api -X PUT /user/starred/antonbabenko/claude-delegator
+gh api -X PUT /user/starred/antonbabenko/deliberation
 ```
 
 If `gh` is not available or the command fails, provide the manual link:
 ```
-https://github.com/antonbabenko/claude-delegator
+https://github.com/antonbabenko/deliberation
 ```
 
 **If no**: Thank them and complete setup without starring.

@@ -1,13 +1,13 @@
 ---
 name: uninstall
-description: Uninstall claude-delegator (remove MCP config and rules)
+description: Uninstall deliberation (remove MCP config and rules)
 allowed-tools: Bash, Read, Write, Edit, AskUserQuestion
 timeout: 30000
 ---
 
 # Uninstall
 
-Remove claude-delegator from Claude Code.
+Remove deliberation from Claude Code.
 
 ## Confirm Removal
 
@@ -20,16 +20,28 @@ If cancelled, stop here.
 
 ## Remove MCP Configuration
 
+Remove both the namespaced `deliberation-*` registrations, the unified `deliberation`
+server, and any legacy bare registrations from an earlier install. Each remove is
+tolerant of absence.
+
 ```bash
-claude mcp remove --scope user codex
-claude mcp remove --scope user gemini
-claude mcp remove --scope user grok
-claude mcp remove --scope user openrouter
+claude mcp remove --scope user deliberation-codex 2>/dev/null || true
+claude mcp remove --scope user deliberation-gemini 2>/dev/null || true
+claude mcp remove --scope user deliberation-grok 2>/dev/null || true
+claude mcp remove --scope user deliberation-openrouter 2>/dev/null || true
+claude mcp remove --scope user deliberation 2>/dev/null || true
+claude mcp remove --scope user codex 2>/dev/null || true
+claude mcp remove --scope user gemini 2>/dev/null || true
+claude mcp remove --scope user grok 2>/dev/null || true
+claude mcp remove --scope user openrouter 2>/dev/null || true
 ```
 
 ## Remove Installed Rules
 
+Remove both the new and legacy rules directories (tolerant of absence).
+
 ```bash
+rm -rf ~/.claude/rules/deliberation/
 rm -rf ~/.claude/rules/delegator/
 ```
 
@@ -50,7 +62,7 @@ xAI's side before uninstall, run `/grok-files prune --older-than 0s --yes` first
 ## Remove Short Command Aliases (if installed)
 
 Only the aliases that `/setup` may have copied; the namespaced
-`claude-delegator:*` commands are removed by uninstalling the plugin itself.
+`deliberation:*` commands are removed by uninstalling the plugin itself.
 Ownership-aware: a copied alias is removed only if it is byte-identical to the
 plugin's bundled command (so an unrelated user-authored same-named command,
 which `/setup` would have skipped rather than overwritten, is left untouched).
@@ -82,8 +94,8 @@ fi
 
 ```
 ✓ Removed providers from MCP servers
-✓ Removed rules from ~/.claude/rules/delegator/
+✓ Removed rules from ~/.claude/rules/deliberation/
 ✓ Removed short command aliases from ~/.claude/commands/ (if present)
 
-To reinstall: /claude-delegator:setup
+To reinstall: /deliberation:setup
 ```
