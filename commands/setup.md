@@ -26,7 +26,21 @@ report.
 
 ```bash
 set -u
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT is required (run this via /deliberation:setup)}"
+
+# --- resolve plugin root: env var -> marketplace cache (highest semver) -> current checkout ---
+# A candidate is valid only if it contains server/mcp/index.js.
+resolve_plugin_root() {
+  if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$CLAUDE_PLUGIN_ROOT/server/mcp/index.js" ]; then
+    printf '%s' "$CLAUDE_PLUGIN_ROOT"; return 0; fi
+  # marketplace cache, highest version (use find, not a glob - a failed zsh glob warns on stderr)
+  local c
+  c=$(find "$HOME/.claude/plugins/cache" -maxdepth 6 -path '*/deliberation/*/server/mcp/index.js' -type f 2>/dev/null | sort -V | tail -1)
+  if [ -n "$c" ]; then printf '%s' "${c%/server/mcp/index.js}"; return 0; fi
+  if [ -f "$PWD/server/mcp/index.js" ] && grep -q '"name": "deliberation"' "$PWD/.claude-plugin/plugin.json" 2>/dev/null; then
+    printf '%s' "$PWD"; return 0; fi
+  return 1
+}
+PLUGIN_ROOT="$(resolve_plugin_root)" || { echo "Error: cannot locate the deliberation plugin root. Install via /plugin, run from the plugin checkout, or set CLAUDE_PLUGIN_ROOT."; exit 1; }
 
 # --- config path: env override > default deliberation path ---
 CFG="${DELIBERATION_CONFIG:-$HOME/.claude/deliberation/config.json}"
@@ -122,7 +136,14 @@ only".
 
 ```bash
 set -u
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT is required}"
+resolve_plugin_root() {
+  if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$CLAUDE_PLUGIN_ROOT/server/mcp/index.js" ]; then printf '%s' "$CLAUDE_PLUGIN_ROOT"; return 0; fi
+  local c; c=$(find "$HOME/.claude/plugins/cache" -maxdepth 6 -path '*/deliberation/*/server/mcp/index.js' -type f 2>/dev/null | sort -V | tail -1)
+  if [ -n "$c" ]; then printf '%s' "${c%/server/mcp/index.js}"; return 0; fi
+  if [ -f "$PWD/server/mcp/index.js" ] && grep -q '"name": "deliberation"' "$PWD/.claude-plugin/plugin.json" 2>/dev/null; then printf '%s' "$PWD"; return 0; fi
+  return 1
+}
+PLUGIN_ROOT="$(resolve_plugin_root)" || { echo "Error: cannot locate the deliberation plugin root."; exit 1; }
 mkdir -p "$HOME/.claude/commands"
 collisions=""
 for c in ask-gpt ask-gemini ask-grok ask-openrouter ask-all consensus grok-files; do
@@ -141,7 +162,14 @@ first = overwrite): "Yes, overwrite (recommended)" / "No, keep existing".
 
 ```bash
 set -u
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT is required}"
+resolve_plugin_root() {
+  if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$CLAUDE_PLUGIN_ROOT/server/mcp/index.js" ]; then printf '%s' "$CLAUDE_PLUGIN_ROOT"; return 0; fi
+  local c; c=$(find "$HOME/.claude/plugins/cache" -maxdepth 6 -path '*/deliberation/*/server/mcp/index.js' -type f 2>/dev/null | sort -V | tail -1)
+  if [ -n "$c" ]; then printf '%s' "${c%/server/mcp/index.js}"; return 0; fi
+  if [ -f "$PWD/server/mcp/index.js" ] && grep -q '"name": "deliberation"' "$PWD/.claude-plugin/plugin.json" 2>/dev/null; then printf '%s' "$PWD"; return 0; fi
+  return 1
+}
+PLUGIN_ROOT="$(resolve_plugin_root)" || { echo "Error: cannot locate the deliberation plugin root."; exit 1; }
 for c in <collided names>; do
   cp -f "$PLUGIN_ROOT/commands/$c.md" "$HOME/.claude/commands/$c.md" && echo "overwrote /$c"
 done

@@ -31,7 +31,17 @@ user-authored same-named command is left untouched).
 
 ```bash
 set -u
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+
+# --- resolve plugin root (non-fatal): env var -> cache (highest semver) -> current checkout ---
+# Only the byte-identical alias check below needs it; empty is fine - MCP/rules/cache still purge.
+resolve_plugin_root() {
+  if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$CLAUDE_PLUGIN_ROOT/server/mcp/index.js" ]; then printf '%s' "$CLAUDE_PLUGIN_ROOT"; return 0; fi
+  local c; c=$(find "$HOME/.claude/plugins/cache" -maxdepth 6 -path '*/deliberation/*/server/mcp/index.js' -type f 2>/dev/null | sort -V | tail -1)
+  if [ -n "$c" ]; then printf '%s' "${c%/server/mcp/index.js}"; return 0; fi
+  if [ -f "$PWD/server/mcp/index.js" ] && grep -q '"name": "deliberation"' "$PWD/.claude-plugin/plugin.json" 2>/dev/null; then printf '%s' "$PWD"; return 0; fi
+  return 1
+}
+PLUGIN_ROOT="$(resolve_plugin_root || true)"
 
 # --- MCP registrations (namespaced + unified) ---
 for s in deliberation deliberation-codex deliberation-gemini deliberation-grok deliberation-openrouter; do
