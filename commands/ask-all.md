@@ -73,15 +73,15 @@ User question or topic: $ARGUMENTS
      1. **Fix & proceed (Recommended)** - for each invalid entry that has a `suggestedAlias`,
         `Edit` `~/.claude/claude-delegator/config.json` to apply it (rename the `alias`);
         drop (and note) any entry with no `suggestedAlias` since it cannot be auto-repaired
-        (e.g. missing `model`, unknown expert). Then re-call `openrouter-list` and use the
-        resulting valid set.
-     2. **Run valid only** - leave `config.json` untouched; use the returned `delegates`
-        as-is and note the skipped entries in the synthesis.
+        (e.g. missing `model`, unknown expert). Then re-call `openrouter-list` (again with
+        `mode:"ask-all"` + `expert`) and use the resulting `selected` set.
+     2. **Run valid only** - leave `config.json` untouched; use the returned `selected`
+        as-is and note the skipped `invalidModels` entries in the synthesis.
      3. **Skip all OpenRouter** - empty OpenRouter set for this run.
-   - From the valid set, select delegates where `askAll != false` and the delegate is
-     eligible for the chosen expert (`experts` absent = all; `[]` = none; else must include
-     the expert), in list order, truncated to `maxFanout`. NOTE any delegates omitted by the
-     cap in the final synthesis (no silent truncation).
+   - **OpenRouter delegate set = the `selected` array returned by `openrouter-list`** (the
+     bridge already applied `askAll != false`, expert eligibility, config order, and the
+     `maxFanout` cap via its canonical routing). Do NOT re-derive selection here. Report the
+     returned `omitted` entries as the cap note in the final synthesis (no silent truncation).
 
 6. **Parallel dispatch** - fire ALL selected provider calls in a **single message** (the enabled built-ins plus each selected OpenRouter delegate from 5b), as **parallel tool blocks** so they run concurrently:
    ```
