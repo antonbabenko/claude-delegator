@@ -147,8 +147,8 @@ Codex has no bridge environment variables: it ships its own native MCP server an
 reads `~/.codex/config.toml` directly. The **model** comes from the `model` key in
 that file by default (the Codex analog of `GEMINI_DEFAULT_MODEL` /
 `GROK_DEFAULT_MODEL`). Override it on the server with `-c model=<id>` on the
-`claude mcp add ... codex` registration, or per call with the `model` parameter of
-`mcp__codex__codex(...)`. See [Configuration in the README](README.md#configuration).
+`claude mcp add ... deliberation-codex` registration, or per call with the `model` parameter of
+`mcp__deliberation-codex__codex(...)`. See [Configuration in the README](README.md#configuration).
 
 ## Manual MCP setup
 
