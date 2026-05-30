@@ -96,7 +96,7 @@ async function callOpenRouter({ apiBase, apiKey, model, messages, reasoningEffor
 
 const crypto = require("node:crypto");
 const { makeConfigReader } = require("./config.js");
-const { resolveAlias, RESERVED_ALIAS } = require("./routing.js");
+const { resolveAlias, RESERVED_ALIAS, askAllDelegates, consensusDelegates } = require("./routing.js");
 const { inlineFiles } = require("./files.js");
 
 const CONFIG_PATH = process.env.CLAUDE_DELEGATOR_CONFIG
@@ -172,7 +172,7 @@ const handlers = {
     sendResponse(id, { tools: [
       { name: "openrouter", description: "Start an OpenRouter expert session (advisory only). Pick a configured `alias`.", inputSchema: { type: "object", properties: TOOL_PROPS, required: ["prompt"] } },
       { name: "openrouter-reply", description: "Continue an OpenRouter session by threadId (in-memory; lost on restart).", inputSchema: { type: "object", properties: { threadId: { type: "string" }, prompt: { type: "string" }, files: TOOL_PROPS.files, roots: TOOL_PROPS.roots, alias: TOOL_PROPS.alias, model: TOOL_PROPS.model, reasoning_effort: TOOL_PROPS.reasoning_effort, temperature: TOOL_PROPS.temperature, timeout: TOOL_PROPS.timeout, cwd: TOOL_PROPS.cwd }, required: ["threadId", "prompt"] } },
-      { name: "openrouter-list", description: "List configured OpenRouter delegates and settings.", inputSchema: { type: "object", properties: {} } },
+      { name: "openrouter-list", description: "List configured OpenRouter delegates and settings. Pass mode ('ask-all'|'consensus') + optional expert to also get the resolved `selected` delegate set (selection applied server-side from the live config).", inputSchema: { type: "object", properties: { mode: { type: "string", enum: ["ask-all", "consensus"] }, expert: { type: "string" } } } },
     ] });
   },
   "tools/call": async (id, params, respond) => {
@@ -184,7 +184,16 @@ const handlers = {
     const cfg = configReader.get();
     if (!cfg.ok) {
       if (name === "openrouter-list") {
-        if (respond) sendResponse(id, { content: [{ type: "text", text: JSON.stringify({ delegates: [], defaultModelSet: false, maxFanout: 3, maxFanoutHigh: false, error: cfg.error }) }] });
+        // When a broken config is paired with a mode request, still echo an empty `selected`
+        // so the caller dispatches nothing (never a stale set) rather than missing the field.
+        const errPayload = { delegates: [], defaultModelSet: false, maxFanout: 3, maxFanoutHigh: false, error: cfg.error };
+        if (isObject(args) && (args.mode === "ask-all" || args.mode === "consensus")) {
+          errPayload.mode = args.mode;
+          if (typeof args.expert === "string") errPayload.expert = args.expert;
+          errPayload.selected = [];
+          if (args.mode === "ask-all") errPayload.omitted = [];
+        }
+        if (respond) sendResponse(id, { content: [{ type: "text", text: JSON.stringify(errPayload) }] });
         logCall(id, name, "config", Date.now() - startedAt);
         return;
       }
@@ -195,17 +204,36 @@ const handlers = {
 
     if (name === "openrouter-list") {
       if (!respond) return;
+      // Shape a resolved model into the wire form (matches `delegates` entries below).
+      const shape = (m) => ({
+        alias: m.alias, model: m.model, experts: m.experts, askAll: m.askAll, consensus: m.consensus,
+        // Resolved effort the bridge would use absent a per-call override: per-model > defaults > null.
+        reasoning_effort: pick(undefined, m.reasoning_effort, or.defaults.reasoning_effort) ?? null,
+      });
       const payload = {
-        delegates: or.models.map((m) => ({
-          alias: m.alias, model: m.model, experts: m.experts, askAll: m.askAll, consensus: m.consensus,
-          // Resolved effort the bridge would use absent a per-call override: per-model > defaults > null.
-          reasoning_effort: pick(undefined, m.reasoning_effort, or.defaults.reasoning_effort) ?? null,
-        })),
+        delegates: or.models.map(shape),
         defaultModelSet: !!or.defaultModel, maxFanout: or.maxFanout, maxFanoutHigh: or.maxFanout > 10,
         // Per-entry validation failures (kept-valid delegates above; these were skipped).
         // Each: { index, alias, reason, suggestedAlias? }. Empty when the config is clean.
         invalidModels: or.invalidModels || [],
       };
+      // Server-side selection: when a mode is requested, return the resolved `selected` set
+      // (and `omitted` for ask-all's maxFanout overflow) from the canonical routing selectors.
+      // This is the single source of selection truth; callers MUST dispatch exactly `selected`
+      // instead of re-deriving askAll/consensus/expert eligibility in command prose.
+      const mode = args.mode;
+      if (mode === "ask-all" || mode === "consensus") {
+        const expert = typeof args.expert === "string" ? args.expert : undefined;
+        payload.mode = mode;
+        if (expert !== undefined) payload.expert = expert;
+        if (mode === "ask-all") {
+          const out = askAllDelegates(or, expert);
+          payload.selected = out.selected.map(shape);
+          payload.omitted = out.omitted.map(shape);
+        } else {
+          payload.selected = consensusDelegates(or, expert).map(shape);
+        }
+      }
       sendResponse(id, { content: [{ type: "text", text: JSON.stringify(payload) }] });
       logCall(id, name, "ok", Date.now() - startedAt);
       return;

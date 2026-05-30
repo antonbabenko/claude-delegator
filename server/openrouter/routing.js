@@ -1,10 +1,10 @@
 "use strict";
 
 // NOTE: askAllDelegates/consensusDelegates/eligibleForExpert are the canonical
-// selection semantics for fan-out. The bridge runtime does not call them - /ask-all
-// and /consensus reimplement this selection in command prose over openrouter-list
-// output. These exports are the reference (and unit-tested) source of truth; if the
-// command prose changes, keep it consistent with this file (and vice versa).
+// selection semantics for fan-out. The bridge runtime calls them from openrouter-list
+// (mode:"ask-all"|"consensus") so /ask-all and /consensus dispatch exactly the returned
+// `selected` set instead of re-deriving selection in command prose. These exports are the
+// single source of truth and are unit-tested in test/openrouter-routing.test.js.
 
 const RESERVED_ALIAS = "openrouter-default";
 

@@ -66,3 +66,21 @@ test("R7: invalid maxFanout (0/negative/non-int) falls back to a cap of 3", () =
     assert.equal(askAllDelegates(c, "architect").selected.length, 3, `maxFanout=${bad} should fall back to 3`);
   }
 });
+
+test("R8: a model expert-eligible but askAll:false is excluded from askAll, still in consensus", () => {
+  // Regression for the reported bug: deepseek-v4-pro/kimi-k2-thinking were dispatched by
+  // /ask-all after being set askAll:false. `dis` is expert-eligible (experts:null) so this
+  // isolates the askAll filter alone (R1's `rev` is also expert-filtered).
+  const c = {
+    maxFanout: 5,
+    models: [
+      { alias: "on", model: "a/on", experts: null, askAll: true, consensus: true },
+      { alias: "dis", model: "a/dis", experts: null, askAll: false, consensus: true },
+    ],
+  };
+  const askAll = askAllDelegates(c, "architect").selected.map((m) => m.alias);
+  assert.equal(askAll.includes("dis"), false, "askAll:false model must not be selected for /ask-all");
+  assert.deepEqual(askAll, ["on"]);
+  const con = consensusDelegates(c, "architect").map((m) => m.alias);
+  assert.equal(con.includes("dis"), true, "askAll:false does not affect /consensus eligibility");
+});

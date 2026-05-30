@@ -53,7 +53,7 @@ Plan, design, spec, or proposal to refine: $ARGUMENTS
    /consensus: starting consensus loop (max 5 rounds, expert=[Expert])
    ```
 
-6. **Concurrent prep + build the OpenRouter voting panel.** Run the prep ONCE in a single parallel message (concurrent prep, single dispatch): the expert-prompt `Glob` (step 2), `Read` `~/.claude/claude-delegator/config.json`, `mcp__openrouter__openrouter-list`, and the round-1 status-block sources - `Read` `~/.codex/config.toml`, `Read` `~/.gemini/settings.json`, `Bash` `echo "$GROK_DEFAULT_MODEL" "$GROK_REASONING_EFFORT"` - all in ONE message, not sequential turns. Build the panel + round-1 status block from those cached results (the `invalidModels` `AskUserQuestion` below is the one allowed serial gate):
+6. **Concurrent prep + build the OpenRouter voting panel.** Run the prep ONCE in a single parallel message (concurrent prep, single dispatch): the expert-prompt `Glob` (step 2), `Read` `~/.claude/claude-delegator/config.json`, `mcp__openrouter__openrouter-list` with `mode:"consensus"` and `expert:"[chosen expert]"` (returns the server-selected voting panel as `selected`), and the round-1 status-block sources - `Read` `~/.codex/config.toml`, `Read` `~/.gemini/settings.json`, `Bash` `echo "$GROK_DEFAULT_MODEL" "$GROK_REASONING_EFFORT"` - all in ONE message, not sequential turns. Build the panel + round-1 status block from those cached results (the `invalidModels` `AskUserQuestion` below is the one allowed serial gate). **MANDATORY, every invocation:** re-run this prep (read `config.json` AND call `openrouter-list`) at the start of every `/consensus` run; NEVER reuse a cached config, panel, or `selected` set from an earlier run this session - `config.json` hot-reloads and a model's `consensus` flag may have changed.
    - From the cached `~/.claude/claude-delegator/config.json` read, take `providers.*.enabled` (a built-in
      with `enabled:false` is excluded from this run even if registered).
    - From the cached `mcp__openrouter__openrouter-list` result: if unavailable / `error` set (a hard config
@@ -65,13 +65,15 @@ Plan, design, spec, or proposal to refine: $ARGUMENTS
      ask with `AskUserQuestion` (first option is the pre-selected default):
      1. **Fix & proceed (Recommended)** - apply each `suggestedAlias` by `Edit`ing
         `~/.claude/claude-delegator/config.json`; drop + note entries with no safe fix;
-        re-call `openrouter-list` and use the resulting valid set.
-     2. **Run valid only** - leave config untouched; use the returned `delegates` as-is, note
-        the skipped entries.
+        re-call `openrouter-list` (again with `mode:"consensus"` + `expert`) and use the
+        resulting `selected` panel.
+     2. **Run valid only** - leave config untouched; use the returned `selected` as-is, note
+        the skipped `invalidModels` entries.
      3. **Skip all OpenRouter** - no OpenRouter voices this run.
-   - The voting panel = valid delegates with `consensus == true` eligible for the chosen
-     expert (`experts` absent = all; `[]` = none; else must include the expert). NOT bounded
-     by `maxFanout`.
+   - **The voting panel = the `selected` array returned by `openrouter-list`** (the bridge
+     already applied `consensus == true` + expert eligibility via its canonical routing; the
+     consensus panel is intentionally NOT bounded by `maxFanout`). Do NOT re-derive the panel
+     here.
    - If the OpenRouter voting panel size is > 3, PRINT before the first dispatch:
      `Warning: N OpenRouter voting models x up to 5 rounds x the inlined repo bundle = significant token cost AND a stricter convergence bar (every responding voice must APPROVE).`
 
