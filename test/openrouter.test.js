@@ -111,6 +111,21 @@ test("O6: tools/list advertises openrouter, -reply, -list", async () => {
   } finally { child.kill(); }
 });
 
+test("O6b: DELIBERATION_CONFIG env override wins (resolver-owned precedence)", async () => {
+  // The bridge now resolves its config path via core/paths.js, which prefers
+  // DELIBERATION_CONFIG over the legacy CLAUDE_DELEGATOR_CONFIG. A legacy path
+  // pointing at a non-existent file must be ignored when the new env is set.
+  const file = writeConfig({ version: 1, openrouter: { enabled: true, models: [{ alias: "m1", model: "a/b" }] } });
+  const child = startBridge({ DELIBERATION_CONFIG: file, CLAUDE_DELEGATOR_CONFIG: "/nonexistent/legacy.json" });
+  const c = rpc(child);
+  try {
+    await c.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const r = await c.request({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "openrouter-list", arguments: {} } });
+    const payload = JSON.parse(r.result.content[0].text);
+    assert.deepEqual(payload.delegates.map((d) => d.alias), ["m1"]);
+  } finally { child.kill(); }
+});
+
 test("O7: openrouter-list returns delegates object in config order", async () => {
   const file = writeConfig({ version: 1, openrouter: { enabled: true, maxFanout: 4, defaultModel: "d/m", models: [
     { alias: "x", model: "a/x" }, { alias: "y", model: "a/y", experts: [] },
