@@ -164,7 +164,7 @@ After changes, verify with actual MCP calls:
 
 1. Install the plugin in Claude Code
 2. Run `/deliberation:setup`
-3. Verify MCP tools are available (`mcp__codex__codex`)
+3. Verify MCP tools are available (`mcp__deliberation-codex__codex`)
 4. Test MCP tool calls via oracle delegation
 5. Verify responses are properly synthesized
 6. Test error cases (timeout, missing CLI)
