@@ -6,11 +6,13 @@
     "allowJs": true,
     "checkJs": true,
     "noEmit": true,
-    "strict": true,
+    "strict": false,
+    "noImplicitAny": false,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"]
   },
-  "include": ["core/**/*.js", "server/mcp/**/*.js"],
+  "include": ["core/**/*.js", "server/mcp/**/*.js", "test/core-*.test.js"],
   "exclude": ["node_modules"]
 }

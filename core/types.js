@@ -32,6 +32,7 @@
  * @property {string}   [threadId]
  * @property {boolean}  isError
  * @property {string}   [errorKind]
+ * @property {string}   [message]
  * @property {boolean}  [retryable]
  * @property {number}   ms
  */
