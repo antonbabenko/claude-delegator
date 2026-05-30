@@ -1,13 +1,13 @@
 ---
 name: setup
-description: Configure claude-delegator with Codex (GPT) or Gemini MCP servers
+description: Configure claude-delegator with Codex (GPT), Gemini, Grok, and OpenRouter MCP servers
 allowed-tools: Bash, Read, Write, Edit, AskUserQuestion
 timeout: 60000
 ---
 
 # Setup
 
-Configure GPT (via Codex) or Gemini as specialized expert subagents via native MCP. Seven domain experts that can advise OR implement.
+Configure GPT (via Codex), Gemini, Grok, and OpenRouter as specialized expert subagents via MCP. Seven domain experts that can advise OR implement (Grok and OpenRouter are advisory-only).
 
 ## Step 1: Check CLI Dependencies
 
@@ -57,6 +57,16 @@ then: export XAI_API_KEY=xai-...   (add it to your shell profile to persist)
 
 Register your preferred provider(s) as MCP servers using Claude Code's native command:
 
+### Read config (single source of truth)
+
+```bash
+CFG="${CLAUDE_DELEGATOR_CONFIG:-$HOME/.claude/claude-delegator/config.json}"
+if [ -f "$CFG" ]; then echo "config: $CFG"; else echo "config: none (defaults: 3 built-ins on, no OpenRouter)"; fi
+```
+
+For each built-in, read `providers.<name>.enabled` from `$CFG` (missing = enabled). When a
+built-in is `enabled:false`, run `claude mcp remove <name>` instead of registering it.
+
 ### Codex (GPT)
 ```bash
 # Idempotent: safe to rerun setup.
@@ -103,6 +113,20 @@ reference: [TECHNICAL.md § Grok files and cleanup](../TECHNICAL.md#grok-files-a
 `--env GROK_REASONING_EFFORT=<low|medium|high|none>` on the `grok` registration, or set it per
 call with the `reasoning_effort` parameter; `none` omits the field so the model uses its default.
 
+### OpenRouter (optional, config-driven)
+
+```bash
+CFG="${CLAUDE_DELEGATOR_CONFIG:-$HOME/.claude/claude-delegator/config.json}"
+OR_ON=$(node -e 'try{const c=require(process.argv[1]);const o=c.openrouter||{};const on=o.enabled!==false&&((Array.isArray(o.models)&&o.models.length)||o.defaultModel);process.stdout.write(on?"1":"0")}catch(e){process.stdout.write("0")}' "$CFG" 2>/dev/null || echo 0)
+claude mcp remove openrouter >/dev/null 2>&1 || true
+if [ "$OR_ON" = "1" ]; then
+  claude mcp add --transport stdio --scope user openrouter -- node '${CLAUDE_PLUGIN_ROOT}/server/openrouter/index.js'
+  KEYENV=$(node -e 'try{const c=require(process.argv[1]);process.stdout.write((c.openrouter&&c.openrouter.apiKeyEnv)||"OPENROUTER_API_KEY")}catch(e){process.stdout.write("OPENROUTER_API_KEY")}' "$CFG" 2>/dev/null || echo OPENROUTER_API_KEY)
+  KEYVAL=$(printenv "$KEYENV" 2>/dev/null)
+  if [ -z "$KEYVAL" ]; then echo "Note: \$$KEYENV is empty; OpenRouter calls to openrouter.ai will return auth errors until you export it."; fi
+fi
+```
+
 **Codex model (optional):** by default Codex inherits its model, sandbox, and
 approval policy from `~/.codex/config.toml` (the `model` key) - change it there
 and every provider that reads that file follows. To pin a model on the MCP server
@@ -139,7 +163,7 @@ and collected so you can decide about them next):
 ```bash
 mkdir -p ~/.claude/commands
 collisions=""
-for c in ask-gpt ask-gemini ask-grok ask-all consensus grok-files; do
+for c in ask-gpt ask-gemini ask-grok ask-all consensus grok-files ask-openrouter; do
   dest=~/.claude/commands/$c.md
   if [ -e "$dest" ]; then
     echo "skip $c: ~/.claude/commands/$c.md already exists (left untouched)"
@@ -240,10 +264,21 @@ else
   echo "Grok: NOT CONFIGURED"
 fi
 
-# Check 5: Rules installed (count files)
+# Check 5: OpenRouter MCP server + bridge health
+OR_CONFIG=$(claude mcp get openrouter 2>/dev/null)
+if echo "$OR_CONFIG" | grep -q "server/openrouter/index.js"; then
+  OR_HEALTH=$(printf '{"jsonrpc":"2.0","id":"health","method":"initialize","params":{}}\n' \
+    | node "${CLAUDE_PLUGIN_ROOT}/server/openrouter/index.js" 2>/dev/null \
+    | grep -q '"id":"health"' && echo "OpenRouter Bridge: HEALTHY" || echo "OpenRouter Bridge: UNHEALTHY")
+  echo "$OR_HEALTH"
+else
+  echo "OpenRouter: NOT CONFIGURED"
+fi
+
+# Check 6: Rules installed (count files)
 ls ~/.claude/rules/delegator/*.md 2>/dev/null | wc -l
 
-# Check 6: Codex auth status
+# Check 7: Codex auth status
 codex login status 2>&1 | head -1 || echo "Codex: Run 'codex login'"
 ```
 
@@ -262,7 +297,7 @@ Gemini Bridge:   [status from check 4]
 Gemini model:    [value from check 4a]
 Grok MCP:        [status + model from check 4b]
 Rules:           ✓ [N] files in ~/.claude/rules/delegator/
-Codex Auth:      [status from check 6]
+Codex Auth:      [status from check 7]
 Grok Auth:       [XAI_API_KEY status from check 4b]
 ───────────────────────────────────────────────────
 ```

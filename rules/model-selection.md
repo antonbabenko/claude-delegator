@@ -1,6 +1,6 @@
 # Model Selection Guidelines
 
-GPT (Codex), Gemini, and Grok (xAI) experts serve as specialized consultants for complex problems.
+GPT (Codex), Gemini, Grok (xAI), and OpenRouter experts serve as specialized consultants for complex problems. Grok and OpenRouter are advisory-only.
 
 ## Provider Selection
 
@@ -10,9 +10,10 @@ Before delegating, check which MCP tools are available in the current environmen
    - Use **Gemini** (Gemini 3 via the Antigravity CLI, `agy`) for tasks requiring large context or multimodal analysis. Gemini-via-agy is **advisory-effective**: agy print-mode writes are sandboxed to a scratch dir, so it can read context to advise but cannot mutate the real workspace. Prefer it for analysis/review over file-editing (`workspace-write` is best-effort).
    - Use **GPT (Codex)** when the user explicitly asks for "GPT" or "Codex".
    - Use **Grok (xAI)** when the user explicitly asks for "Grok". Grok is advisory-only (it cannot edit files), so never route file-editing / implementation tasks to it. It reads attached files (PDF/code/docs) via `files:[{path|file_id|file_url|dir}]` on the `mcp__grok__grok` call. Entries resolve under the top-level `roots: string[]` (first-root-wins for relative paths; absolute paths must lie under one of the roots) or `cwd` when `roots` is omitted. `{dir}` entries expand recursively via a bundled glob walker (`include`/`exclude`/`maxFiles`/`maxBytes`). Uploads are SHA-256 dedup-cached locally so repeated calls with the same content skip the upload step. Full reference: [TECHNICAL.md § Grok files and cleanup](../TECHNICAL.md#grok-files-and-cleanup). **Context parity vs GPT/Gemini:** GPT (Codex) and Gemini (agy) walk the filesystem at `cwd` under `sandbox: "read-only"` - they can glob and read any file in the repo. Grok sees ONLY what is in the `files` array. For any open-ended, repo-wide question routed to Grok (or to a parallel pattern like `/ask-all` / `/consensus`), attach an orientation bundle (2-6 files: project `CLAUDE.md` / `AGENTS.md`, top-level entrypoints, modules the question targets, total <= 48 MB) - or pass a `{dir}` entry with a tight `include` pattern - so Grok answers from real source instead of the textual description alone. Skipping this is the dominant reason Grok loses argument rounds against GPT/Gemini in repo-audit prompts.
+   - Use **OpenRouter** when the user explicitly asks for an OpenRouter alias, or when `/ask-all` / `/consensus` fan-out is configured. OpenRouter is **advisory-only** - never route implementation or file-editing tasks to it. Alias selection, expert eligibility, and fan-out participation are all declared in `~/.claude/claude-delegator/config.json` (hot-reload; see [TECHNICAL.md - OpenRouter bridge](../TECHNICAL.md#openrouter-bridge)). For `/ask-all`, models with `askAll !== false` are included up to `maxFanout` (default 3). For `/consensus`, models with `consensus === true` are included without a fanout cap (warn if >3). `openrouter-default` is the single-shot fallback for bare `/ask-openrouter` calls and is never included in fan-out. Parameter precedence: per-model overrides > `openrouter.defaults` > bridge built-ins.
    - Default to **Gemini** for general reasoning.
-   - For **Researcher** (external library/docs research): prefer GPT or Gemini (tool-capable); route to Grok only when the user names it or attaches files, since Grok answers from knowledge and marks claims `[unverified]`.
-2. **If only one is available**: Use the available provider regardless of the task type (but Grok cannot implement file changes - only advise).
+   - For **Researcher** (external library/docs research): prefer GPT or Gemini (tool-capable); route to Grok or OpenRouter only when the user names them, since both answer from knowledge and mark claims `[unverified]`.
+2. **If only one is available**: Use the available provider regardless of the task type (but Grok and OpenRouter cannot implement file changes - only advise).
 3. **If none are available**: Do not delegate; inform the user that they need to run `/claude-delegator:setup`.
 
 ## Expert Directory
@@ -248,6 +249,33 @@ Error (Gemini bridge only - bridge sets `isError: true` and adds these fields):
 | `errorKind` | `timeout` \| `parse` \| `missing-cli` \| `upstream-abort` \| `unknown` | Machine-readable category. |
 | `retryable` | boolean | `true` means the orchestrator may retry; see `orchestration.md`. |
 
+## OpenRouter Parameters Reference
+
+### `mcp__openrouter__openrouter` (Start Session)
+
+| Parameter | Values | Notes |
+|-----------|--------|-------|
+| `prompt` | string | **Required.** The delegation prompt (use 7-section format) |
+| `developer-instructions` | string | Expert prompt injection (from `prompts/*.md`) |
+| `alias` | string | Model alias from config. Omit to use `defaultModel` (openrouter-default). |
+| `files` | array | `{path}` or `{dir}` only. `file_id`/`file_url` are rejected. Mode coerced to inline. Per-file 256 KB cap; aggregate 1 MB cap. |
+| `cwd` | path | Working directory for resolving file paths |
+
+### `mcp__openrouter__openrouter-reply` (Continue Session)
+
+| Parameter | Values | Notes |
+|-----------|--------|-------|
+| `threadId` | string | **Required.** Thread ID from previous `openrouter` call |
+| `prompt` | string | **Required.** Follow-up instruction |
+
+### `mcp__openrouter__openrouter-list` (List Models)
+
+| Parameter | Values | Notes |
+|-----------|--------|-------|
+| `expert` | string | Optional. Filter by expert key to see eligible aliases only |
+
+Returns configured model aliases with their `askAll`, `consensus`, and `experts` fields.
+
 ## When NOT to Delegate
 
 - Simple questions you can answer
@@ -255,3 +283,4 @@ Error (Gemini bridge only - bridge sets `isError: true` and adds these fields):
 - Trivial decisions
 - Research tasks (use other tools)
 - When user just wants quick info
+- Implementation or file-editing tasks (route to Codex or Gemini, not OpenRouter/Grok)

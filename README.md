@@ -1,6 +1,6 @@
 # Claude Delegator
 
-Get a second opinion in Claude Code from GPT, Gemini, and Grok. Seven domain experts (Architect, Code Reviewer, Security Analyst, and four more) review your plans, find bugs, and debate edge cases until they agree.
+Get a second opinion in Claude Code from GPT, Gemini, and Grok - plus 300+ more models through OpenRouter, including Qwen, Kimi, and DeepSeek. Seven domain experts (Architect, Code Reviewer, Security Analyst, and four more) review your plans, find bugs, and debate edge cases until they agree.
 
 [![Four chairs at the table: Claude, GPT, Gemini, Grok - one verdict you can ship](assets/agents.png)<br>One model is a guess. Three that agree is a plan. → read the blog post](https://builder.aws.com/content/3DtBiR4ua0qy7ybZMPzPmQ2SDMj/one-model-is-a-guess-three-that-agree-is-a-plan)
 
@@ -31,14 +31,18 @@ When three models argue, the real bug reveals itself. Round 1 = independent top 
 
 ## What is Claude Delegator?
 
-Claude can ask GPT, Gemini, or Grok for help through MCP. The plugin handles the wiring for each provider so you just write the prompt. Each expert has a distinct specialty and can advise or implement.
+Claude can ask GPT, Gemini, Grok, or any OpenAI-compatible model (via OpenRouter) for help
+through MCP. The plugin handles the wiring for each provider so you just write the prompt.
+Each expert has a distinct specialty and can advise or implement.
 
-You can use any subset of the three providers. The plugin detects which are configured and routes accordingly.
+You can use any subset of the providers. The plugin detects which are configured and routes
+accordingly. OpenRouter is advisory-only and config-driven: models are declared in
+`~/.claude/claude-delegator/config.json` and hot-reload without restarting Claude Code.
 
 | What you get | Why it matters |
 |--------------|----------------|
 | 7 domain experts | The right specialist for each problem type |
-| GPT, Gemini, or Grok | Use your preferred provider(s) |
+| GPT, Gemini, Grok, or OpenRouter models | Use your preferred provider(s) |
 | Dual mode | Experts analyze (read-only) or implement (write) |
 | Auto-routing | Claude detects when to delegate from your request |
 | Synthesized responses | Claude interprets expert output, never raw passthrough |
@@ -62,7 +66,7 @@ Inside a Claude Code instance, run:
 /claude-delegator:setup
 ```
 
-Claude now routes complex tasks to your GPT, Gemini, and Grok experts.
+Claude now routes complex tasks to your GPT, Gemini, Grok, and OpenRouter experts (Grok and OpenRouter advise; GPT and Gemini can also implement).
 
 The canonical marketplace is [`antonbabenko/agent-plugins`](https://github.com/antonbabenko/agent-plugins) (above), which also bundles the other plugins.
 
@@ -88,6 +92,7 @@ You need at least one provider:
 - **Codex CLI** (GPT): `npm install -g @openai/codex`, then `codex login`.
 - **Antigravity CLI**: [Getting Started with Antigravity CLI](https://antigravity.google/docs/cli-getting-started) and [Migrating from Gemini CLI](https://antigravity.google/docs/gcli-migration), then run `agy` and login.
 - **Grok (xAI)**: no CLI to install; the bridge ships with the plugin (needs Node 18+). Set `XAI_API_KEY` (get a key at https://console.x.ai).
+- **OpenRouter**: no CLI; the bridge ships with the plugin (needs Node 18+). Set `OPENROUTER_API_KEY` (get a key at https://openrouter.ai/keys), then declare models in `~/.claude/claude-delegator/config.json`. Works with any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio, HuggingFace Inference) - auth is skipped automatically when the key env var is empty.
 
 ## Commands
 
@@ -95,12 +100,13 @@ Bundled with the plugin (available once installed):
 
 | Command | Purpose |
 |---------|---------|
-| `/claude-delegator:setup` | Configure Codex/Gemini/Grok MCP servers + orchestration rules |
+| `/claude-delegator:setup` | Configure Codex/Gemini/Grok/OpenRouter MCP servers + orchestration rules |
 | `/claude-delegator:consensus` | 🔥🔥🔥 Arbiter-mediated GPT + Gemini + Grok + Claude convergence loop |
-| `/claude-delegator:ask-all` | 🔥 GPT + Gemini + Grok in parallel, synthesized |
+| `/claude-delegator:ask-all` | 🔥 GPT + Gemini + Grok (+ configured OpenRouter models) in parallel, synthesized |
 | `/claude-delegator:ask-gpt` | One-shot GPT (Codex) second opinion |
 | `/claude-delegator:ask-gemini` | One-shot Gemini second opinion |
 | `/claude-delegator:ask-grok` | One-shot Grok (xAI) second opinion (advisory-only) |
+| `/claude-delegator:ask-openrouter` | One-shot OpenRouter model second opinion (advisory-only) |
 | `/claude-delegator:uninstall` | Remove MCP config, rules, and aliases |
 | `/claude-delegator:grok-files` | List, prune, or gc Grok-uploaded files (storage + local cache cleanup) |
 
@@ -193,6 +199,66 @@ Every expert supports two modes, chosen automatically from your request:
 |------|---------|----------|
 | Advisory | `read-only` | Analysis, recommendations, reviews |
 | Implementation | `workspace-write` | Making changes, fixing issues |
+
+### OpenRouter config
+
+OpenRouter models are declared in `~/.claude/claude-delegator/config.json`
+(override path with `CLAUDE_DELEGATOR_CONFIG`). The file is the live single source of
+truth: changes to the `openrouter` block hot-reload without restarting Claude Code.
+Toggling a built-in provider (codex / gemini / grok) still requires `/setup`.
+
+Minimal example:
+
+```json
+{
+  "version": 1,
+  "providers": {
+    "codex":  { "enabled": true },
+    "gemini": { "enabled": true },
+    "grok":   { "enabled": true }
+  },
+  "openrouter": {
+    "enabled": true,
+    "apiKeyEnv": "OPENROUTER_API_KEY",
+    "apiBase": "https://openrouter.ai/api/v1",
+    "maxFanout": 3,
+    "defaultModel": "openai/gpt-4.1-mini",
+    "defaults": { "reasoning_effort": "medium" },
+    "models": [
+      {
+        "alias": "gpt-4-or",
+        "model": "openai/gpt-4.1",
+        "askAll": true,
+        "consensus": false
+      },
+      {
+        "alias": "claude-haiku-or",
+        "model": "anthropic/claude-haiku-4-5",
+        "askAll": true,
+        "consensus": true,
+        "reasoning_effort": "high"
+      }
+    ]
+  }
+}
+```
+
+Browse model slugs at [openrouter.ai/models](https://openrouter.ai/models?input_modalities=text);
+the `model` field takes any slug listed there.
+
+`reasoning_effort` (`low` / `medium` / `high`) sets how hard a reasoning model
+thinks. Put it on `openrouter.defaults` to cover every model, or on a single model
+entry to override the default for that one. Precedence runs call argument over
+per-model override over `defaults`.
+
+`/ask-all` includes models where `askAll !== false`, capped to `maxFanout`.
+`/consensus` includes models where `consensus === true`, with no fanout cap (a warning
+is emitted when more than 3 models participate). Implementation tasks always route to
+Codex or Gemini - never OpenRouter.
+
+For the full schema, apiBase override matrix (Ollama, vLLM, LM Studio, HuggingFace),
+file-attachment caps, session model persistence, consensus cost model, and error kinds,
+see [TECHNICAL.md - OpenRouter bridge](TECHNICAL.md#openrouter-bridge).
 
 For provider defaults, environment variables, and manual MCP setup, see [TECHNICAL.md](TECHNICAL.md#environment-variables).
 

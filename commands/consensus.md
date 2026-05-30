@@ -1,11 +1,11 @@
 ---
 name: consensus
-description: Arbiter-mediated consensus - GPT + Gemini + Grok review while Claude commits a blind verdict, adjudicates, and synthesizes. Converges only with cross-model agreement. Max 5 rounds.
-allowed-tools: mcp__codex__codex, mcp__gemini__gemini, mcp__grok__grok, Read, Bash
+description: Arbiter-mediated consensus - GPT + Gemini + Grok (plus any configured OpenRouter delegates) review while Claude commits a blind verdict, adjudicates, and synthesizes. Converges only with cross-model agreement. Max 5 rounds.
+allowed-tools: mcp__codex__codex, mcp__gemini__gemini, mcp__grok__grok, mcp__openrouter__openrouter, mcp__openrouter__openrouter-list, Read, Bash
 timeout: 900000
 ---
 
-# Consensus (arbiter-mediated GPT + Gemini + Grok + Claude convergence loop)
+# Consensus (arbiter-mediated GPT + Gemini + Grok + OpenRouter + Claude convergence loop)
 
 Iterate up to 5 rounds. Each round refines the plan based on GPT + Gemini + Grok feedback. This is **arbiter-mediated consensus, not pure democracy**: the external models vote independently, but Claude (the orchestrator) authors the review prompt, adjudicates which critical issues are real, and rewrites the plan between rounds. To keep that power accountable, Claude commits a **blind verdict** before reading the reviewers (Round loop below), cannot reach consensus on its own vote alone (Convergence check below), and must show a reason for every dismissed issue. Stop when the convergence rule is met or when 5 rounds are exhausted.
 
@@ -34,7 +34,7 @@ Plan, design, spec, or proposal to refine: $ARGUMENTS
    - Architecture / design tradeoffs → Architect
    - Security / threat modeling → Security Analyst
    - Code review of a concrete diff → Code Reviewer
-2. Read expert prompt ONCE via this resolution sequence:
+2. Read expert prompt ONCE via this resolution sequence (fire this `Glob` in the SAME parallel message as the step 6 concurrent-prep reads - see step 6):
    1. Glob `~/.claude/plugins/cache/*/claude-delegator/*/prompts/[expert].md`. Pick the match with the highest semver version segment (the segment immediately after `claude-delegator/`, parsed as semver - not lexical string compare).
    2. If no match, look up the inlined fallback under the heading `## Inlined fallback - [Expert]` in this command file (see end of this file).
    3. If neither found, abort with: `Error: claude-delegator plugin cache missing for expert "[Expert]". Run /plugin install claude-delegator or /reload-plugins.`
@@ -52,6 +52,28 @@ Plan, design, spec, or proposal to refine: $ARGUMENTS
    ```
    /consensus: starting consensus loop (max 5 rounds, expert=[Expert])
    ```
+
+6. **Concurrent prep + build the OpenRouter voting panel.** Run the prep ONCE in a single parallel message (concurrent prep, single dispatch): the expert-prompt `Glob` (step 2), `Read` `~/.claude/claude-delegator/config.json`, `mcp__openrouter__openrouter-list`, and the round-1 status-block sources - `Read` `~/.codex/config.toml`, `Read` `~/.gemini/settings.json`, `Bash` `echo "$GROK_DEFAULT_MODEL" "$GROK_REASONING_EFFORT"` - all in ONE message, not sequential turns. Build the panel + round-1 status block from those cached results (the `invalidModels` `AskUserQuestion` below is the one allowed serial gate):
+   - From the cached `~/.claude/claude-delegator/config.json` read, take `providers.*.enabled` (a built-in
+     with `enabled:false` is excluded from this run even if registered).
+   - From the cached `mcp__openrouter__openrouter-list` result: if unavailable / `error` set (a hard config
+     failure - bad JSON, schema, version, or maxFanout), there are no OpenRouter voices.
+     Otherwise the returned `delegates` are the valid models; `invalidModels` (if non-empty)
+     are entries the bridge skipped per-entry (each `{ index, alias, reason, suggestedAlias? }`).
+   - **If `invalidModels` is non-empty, do NOT silently drop them.** PRINT a short report
+     (one line per entry: `alias|index` + `reason` + `-> suggestedAlias` when present), then
+     ask with `AskUserQuestion` (first option is the pre-selected default):
+     1. **Fix & proceed (Recommended)** - apply each `suggestedAlias` by `Edit`ing
+        `~/.claude/claude-delegator/config.json`; drop + note entries with no safe fix;
+        re-call `openrouter-list` and use the resulting valid set.
+     2. **Run valid only** - leave config untouched; use the returned `delegates` as-is, note
+        the skipped entries.
+     3. **Skip all OpenRouter** - no OpenRouter voices this run.
+   - The voting panel = valid delegates with `consensus == true` eligible for the chosen
+     expert (`experts` absent = all; `[]` = none; else must include the expert). NOT bounded
+     by `maxFanout`.
+   - If the OpenRouter voting panel size is > 3, PRINT before the first dispatch:
+     `Warning: N OpenRouter voting models x up to 5 rounds x the inlined repo bundle = significant token cost AND a stricter convergence bar (every responding voice must APPROVE).`
 
 ### Round loop (rounds 1..5)
 
@@ -92,7 +114,7 @@ For each round R:
    ```
    This is the orchestrator's PEER vote. Emitting it in an earlier message than the dispatch makes the pre-commitment visible in the transcript. Claude must NOT edit the blind verdict after seeing reviewers; it appears verbatim in the final report. (Claude's *adjudication* in step 7 is a separate, arbiter-role decision, recorded distinctly.)
 
-4. **Parallel dispatch** - in the NEXT message, all three calls in ONE message with three tool blocks. Identical prompt body, identical expert prompt:
+4. **Parallel dispatch** - in the NEXT message, all three calls in ONE message with three tool blocks. Identical prompt body, identical expert prompt. On **round 1 only**, print the delegate status block first (see "Report as you go" for the format and sources) so the panel's exact models and reasoning efforts are visible before any dispatch; the panel is stable across rounds, so later rounds reuse the per-round status line only:
    ```
    mcp__codex__codex({
      prompt: "[identical 7-section prompt for round R]",
@@ -159,6 +181,21 @@ For each round R:
    For purely conceptual consensus loops (no repo files relevant to the
    plan), the verification check does NOT apply - run Grok with an empty
    `files` array as a normal parallel reviewer.
+
+   For EACH OpenRouter voting-panel delegate, add a parallel tool block:
+   ```
+   mcp__openrouter__openrouter({
+     prompt: "[identical 7-section prompt for round R]",
+     "developer-instructions": "[expert prompt]",
+     alias: "[delegate alias]",
+     sandbox: "read-only",
+     cwd: "[repo root]",
+     files: [ /* SAME orientation bundle passed to Grok each round */ ]
+   })
+   ```
+   Each OpenRouter delegate is one independent external voice in the convergence count. An
+   errored delegate is marked `ERRORED` and excluded from the convergence bar (same as a
+   built-in), so a flaky model never blocks convergence.
 
 5. **Stream short status as each return arrives**. Do not wait until all are back to print anything. Mark a provider that returned an MCP error or `result.isError` as ERRORED. Examples:
    ```
@@ -260,11 +297,14 @@ For each round R:
    - Zero accepted critical issues remain (from any reviewer or from Claude's blind verdict), AND
    - Claude's adjudicated verdict == APPROVE.
    A round in which ALL externals errored has no responding external and therefore CANNOT converge. If any responding reviewer returned REJECT, the result may NOT be labelled "consensus" even at round 5.
+   "Externals" here means every responding enabled built-in (GPT/Gemini/Grok) AND every
+   responding OpenRouter voting-panel delegate. Each is one voice; ERRORED voices are
+   excluded from the bar.
 
 9. **If not converged**:
    - Compile the union of `accept`-ed critical issues from all responding reviewers plus any Claude found.
    - Revise the plan to address them. Be explicit about what changed and what was deliberately not changed.
-   - Record this round in `history` with: Claude blind verdict, GPT/Gemini/Grok verdicts (or ERRORED), Claude's per-issue decisions + reasons, the diff summary applied to the plan.
+   - Record this round in `history` with: Claude blind verdict, GPT/Gemini/Grok and each OpenRouter delegate verdict (or ERRORED), Claude's per-issue decisions + reasons, the diff summary applied to the plan.
    - Print the revised plan ONLY if it has changed materially (don't spam on small wording tweaks).
    - Continue to round R+1.
    - **Backoff after multi error**: if MORE THAN ONE provider errored in round R, wait 1-2 seconds before dispatching round R+1 to let transient API hiccups clear.
@@ -330,6 +370,7 @@ If there were zero fallbacks across the whole loop, render `**Parse fallbacks**:
 ## Stability rules
 
 - **Always dispatch in parallel** - all three MCP calls in the same message. Sequential triples wall time.
+- **Concurrent prep** - run the Setup prep (expert Glob + `config.json` + `openrouter-list` + the round-1 status sources `~/.codex/config.toml` / `~/.gemini/settings.json` / Grok env) in ONE parallel message before the round loop, not sequential turns. The `invalidModels` `AskUserQuestion` is the one allowed serial gate. See `rules/delegator/orchestration.md` Step 5.5.
 - **Single-shot per round** - fresh thread each call. Do NOT use `*-reply` with stored threadId. Cross-round state lives in the prompt body, not in provider memory. Avoids contamination if one provider went off track.
 - **`cwd` for Gemini** - use `process.cwd()` (Setup step 3). agy print mode needs no folder-trust pre-check, so there is nothing to abort on.
 - **Provider failure does not kill the loop** - if a provider errors (timeout, Grok `missing-auth`, transient API error), mark it ERRORED with a note `"provider error: <truncated msg>"` and EXCLUDE it from the convergence bar for that round (it counts as neither APPROVE nor REQUEST CHANGES). The loop still converges when every responding external and Claude APPROVE and at least one external responded. If ALL externals errored in a round, there is no responding external, so that round cannot converge.
@@ -337,11 +378,19 @@ If there were zero fallbacks across the whole loop, render `**Parse fallbacks**:
 - **Claude cannot self-approve into consensus** - convergence requires every responding external to APPROVE and at least one external to respond; Claude's APPROVE alone never converges. Claude's blind verdict is a peer vote; its adjudication is a separate, accountable role.
 - **No silent dismissal** - every `dismiss`/`defer` of a critical issue (from a reviewer OR from Claude's own blind verdict) carries a one-line reason that appears in the final report. Repeated cross-source issues are accepted by default.
 - **Hard cap at 5 rounds** - even if one reviewer is being stubborn, terminate. Diverging too many rounds usually means the plan has an unresolved ambiguity, not that the reviewer is wrong.
-- **Report as you go** - print a status line after each round dispatch and after each return. Long silences look like a hang.
+- **Report as you go** - before the round-1 dispatch, print a per-delegate status block (one line per voting member: provider, exact model, reasoning effort), then print a status line after each round dispatch and after each return. Long silences look like a hang. Resolve each member's model + effort from its real source, never invent: Codex from `~/.codex/config.toml` (`model` / `model_reasoning_effort`, missing = `default`); Gemini model from `~/.gemini/settings.json` (`model.name`, default `auto-gemini-3`) with effort `n/a` (agy has no knob); Grok = `$GROK_DEFAULT_MODEL` else `grok-4.3` / `$GROK_REASONING_EFFORT` else `high`; OpenRouter voting delegates straight from `openrouter-list` (`model` + resolved `reasoning_effort`, `null` prints as `default`). Print `unknown` for any field whose source can't be read. Example:
+  ```
+  Consensus panel (round 1, typical 30-60s/round):
+    - Codex (GPT)                   gpt-5.5                       reasoning: high
+    - Gemini                        auto-gemini-3                 reasoning: n/a
+    - Grok (xAI)                    grok-4.3                      reasoning: high
+    - OpenRouter / kimi-k2-thinking moonshotai/kimi-k2-thinking   reasoning: high
+  ```
 - **Synthesize, never paste raw** - reviewers' raw output never appears verbatim in the final report.
 - **Stage 2 is decision input only** - Stage 2 fires conditionally (step 6); its candidate issues feed step 7's existing adjudication. Stage 2 status (`fired`/`skipped`/`errored`) does NOT participate in the convergence rule. The convergence rule in step 8 reads only Stage 1 verdicts + Claude's adjudication + accepted critical issues (from any source, Stage 1 or Stage 2 alike).
 - **Stage 2 anonymization is best-effort** - identity stripping removes preambles and self-references but model house styles may still leak. Reviewers are explicitly instructed to score substance and ignore style. The operator-visible shuffle mapping in the final report records ground truth for post-hoc audit.
 - **Stage 2 skips on workspace-write sandbox** - when `/consensus` is invoked with `sandbox: workspace-write` (Claude making code changes via consensus), step 6 sets `stage_2_status = "skip_sandbox"` and skips the entire Stage 2 sub-loop. Anonymization leaks too much on patches. Plan reviews that merely CONTAIN embedded diff text as prose still run Stage 2.
+- **Stage 2 cross-review covers the built-in externals only (v1)** - OpenRouter voting delegates count as voices in Stage 1 verdicts and in the convergence bar, but they do NOT enter the Stage 2 anonymization pool and are not dispatched as Stage 2 reviewers. When Stage 2 step 6b counts "Stage 1 responding externals" for quorum, count only the built-ins (GPT/Gemini/Grok). This is intentional for v1.
 
 ## Heuristics for Claude's per-issue decisions
 

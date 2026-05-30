@@ -12,8 +12,13 @@ You have access to GPT experts via MCP tools. Use them strategically based on th
 | `mcp__gemini__gemini-reply` | Gemini | Continue an existing session (multi-turn) |
 | `mcp__grok__grok` | Grok (xAI) | Start a new expert session (advisory-only; reads attached files) |
 | `mcp__grok__grok-reply` | Grok (xAI) | Continue a session (in-memory; lost on MCP restart) |
+| `mcp__openrouter__openrouter` | OpenRouter | Start a new advisory session (config-driven model alias) |
+| `mcp__openrouter__openrouter-reply` | OpenRouter | Continue a session (multi-turn via threadId) |
+| `mcp__openrouter__openrouter-list` | OpenRouter | List configured aliases and their eligibility flags |
 
 > **Grok notes:** the Grok bridge talks to the xAI HTTP API, so it is advisory-only (it cannot edit files). It reads attached files via `files:[{path|file_id|file_url}]` - attach referenced local files by default and set `cwd` to the repo root so paths resolve (a path outside `cwd` is refused). It needs `XAI_API_KEY`; a missing key surfaces `errorKind: "missing-auth"`.
+
+> **OpenRouter notes:** the OpenRouter bridge is advisory-only (it cannot edit files). Model aliases are declared in `~/.claude/claude-delegator/config.json` and hot-reload without restarting. File attachment is text-inline only (`{path}`/`{dir}`; 256 KB per file, 1 MB aggregate). `/ask-all` fan-out is capped by `maxFanout` (default 3); `/consensus` is uncapped (warn if >3 models). Implementation tasks must route to Codex or Gemini.
 
 ## Available Experts
 
@@ -89,13 +94,14 @@ Before handling any request, check if an expert would help:
 
 ## REACTIVE Delegation (Explicit User Request)
 
-When user explicitly requests GPT/Codex or Gemini:
+When user explicitly requests GPT/Codex, Gemini, Grok, or OpenRouter:
 
 | User Says | Action |
 |-----------|--------|
 | "ask GPT", "consult GPT", "ask codex" | Identify task type → route to appropriate expert |
 | "ask Gemini", "consult Gemini", "ask gemini" | Identify task type → route to appropriate expert |
 | "ask Grok", "consult Grok", "ask grox" | Identify task type → route to appropriate expert |
+| "ask OpenRouter", "use [alias]", "ask [alias]" | Advisory only - identify expert, call `mcp__openrouter__openrouter` with the named alias |
 | "ask GPT to review the architecture" | Delegate to Architect |
 | "have Gemini review this code" | Delegate to Code Reviewer |
 | "GPT security review" | Delegate to Security Analyst |
@@ -131,7 +137,7 @@ For example, for Architect: `Read ${CLAUDE_PLUGIN_ROOT}/prompts/architect.md`
 Status line is owned by each command file (see ask-gpt.md, ask-gemini.md, ask-grok.md, ask-all.md, consensus.md). Commands print exactly one line immediately before the MCP tool dispatch:
 
 - single-provider: `Codex working (typical 30-60s)...` or `Gemini working (typical 30-60s)...`
-- parallel: `Codex + Gemini working in parallel (typical 30-60s)...`
+- parallel: a per-delegate status block (one line per dispatched delegate: provider, exact model, reasoning effort) instead of a single line - see `ask-all.md` / `consensus.md`.
 
 This rule file no longer defines the wording. The command files are the source of truth.
 
@@ -142,6 +148,22 @@ Use the 7-section format from `rules/delegation-format.md`.
 - What the user asked for
 - Relevant code/files
 - Any previous attempts and their results (for retries)
+
+### Step 5.5: Concurrent prep, single dispatch
+
+Emit independent prep reads CONCURRENTLY, then dispatch in ONE message. Expert
+identification (Step 1) is *reasoning* on the request - it is not a tool read and happens
+BEFORE the prep message. Then fire every independent prep read (the expert-prompt Glob,
+plus any `~/.claude/claude-delegator/config.json` / `~/.codex/config.toml` /
+`~/.gemini/settings.json` / Grok env / `openrouter-list` reads a command needs) in ONE
+message as parallel tool blocks. Build the prompt, status line/block, and delegate set
+from those results, then dispatch all providers in ONE parallel message.
+
+Two reads stay serial: (a) a read whose INPUT depends on another read's OUTPUT (a genuine
+data dependency - e.g. `/ask-openrouter` must call `openrouter-list` before it can strip a
+model alias from `$ARGUMENTS`, and the stripped question determines the expert, which
+determines the Glob target); and (b) an interactive `AskUserQuestion` gate, which cannot
+run concurrently with reads. Everything else is concurrent.
 
 ### Step 6: Call the Expert
 ```typescript
@@ -160,7 +182,17 @@ mcp__gemini__gemini({
   sandbox: "[read-only or workspace-write based on mode]",
   cwd: "[current working directory]"
 })
+
+// OR Using OpenRouter (advisory-only; alias from config)
+mcp__openrouter__openrouter({
+  prompt: "[your 7-section delegation prompt with FULL context]",
+  "developer-instructions": "[contents of the expert's prompt file]",
+  alias: "[model alias from ~/.claude/claude-delegator/config.json]",
+  cwd: "[current working directory]"
+})
 ```
+
+> OpenRouter is advisory-only. Never set sandbox to `workspace-write` for OpenRouter calls. For implementation tasks, always use Codex or Gemini.
 
 ### Step 7: Handle Response
 1. **Synthesize** - Never show raw output directly
@@ -342,3 +374,4 @@ Trusted projects allow the expert full access within the sandbox policy.
 | Skip status line before MCP dispatch | ALWAYS print status line (see command files for wording) |
 | Retry without including error context | Include FULL history of what was tried |
 | Assume expert remembers across sessions | Use the appropriate `*-reply` tool for multi-turn; include full context for single-shot |
+| Serialize independent prep reads (Glob / config / list across separate turns) | Fire them in one parallel prep message, then dispatch (see Step 5.5) |

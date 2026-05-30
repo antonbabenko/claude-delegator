@@ -1,11 +1,11 @@
 ---
 name: ask-all
-description: Ask GPT, Gemini, and Grok in parallel for independent second opinions, then synthesize and compare. Zero cross-contamination.
-allowed-tools: mcp__codex__codex, mcp__gemini__gemini, mcp__grok__grok, Read, Bash
+description: Ask GPT, Gemini, Grok, and any configured OpenRouter models in parallel for independent second opinions, then synthesize and compare. Zero cross-contamination.
+allowed-tools: mcp__codex__codex, mcp__gemini__gemini, mcp__grok__grok, mcp__openrouter__openrouter, mcp__openrouter__openrouter-list, Read, Bash
 timeout: 300000
 ---
 
-# Ask All (GPT + Gemini + Grok)
+# Ask All (GPT + Gemini + Grok + OpenRouter)
 
 Parallel dispatch to GPT (Codex), Gemini, and Grok (xAI) for independent second opinions on the same question. Three fresh threads, none sees the others' output. Final synthesis compares verdicts and flags disagreement. Grok is advisory-only (HTTP API; it reads attached files via `files` but cannot edit), so all three run `read-only`.
 
@@ -14,6 +14,16 @@ Parallel dispatch to GPT (Codex), Gemini, and Grok (xAI) for independent second 
 User question or topic: $ARGUMENTS
 
 ## Workflow
+
+0. **Prep - one parallel message (concurrent prep, single dispatch).** Identify the expert role first (step 1 below is *reasoning* on `$ARGUMENTS`, no tool call), then fire ALL independent prep reads in ONE message as parallel tool blocks - do NOT serialize them across turns:
+   - `Glob` `~/.claude/plugins/cache/*/claude-delegator/*/prompts/[expert].md` (expert prompt)
+   - `Read` `~/.claude/claude-delegator/config.json` (built-in `enabled` flags + OpenRouter config)
+   - `Read` `~/.codex/config.toml` (Codex `model` + `model_reasoning_effort`; a `-c model=` / `-c model_reasoning_effort=` MCP registration override still wins; missing key = `default`)
+   - `Read` `~/.gemini/settings.json` (`model.name`, default `auto-gemini-3`; effort always `n/a`)
+   - `Bash` `echo "$GROK_DEFAULT_MODEL" "$GROK_REASONING_EFFORT"` (Grok model/effort; unset -> `grok-4.3` / `high`)
+   - `mcp__openrouter__openrouter-list` (OpenRouter delegate set + per-model resolved effort)
+
+   Steps 2, 4, and 5b below CONSUME these cached results - they MUST NOT issue their own reads. Any source that cannot be read prints `unknown` in the status block (never invent a value); it does NOT trigger a follow-up serial read. The only allowed serial step in the preamble is the `invalidModels` `AskUserQuestion` gate in 5b (rare path).
 
 1. **Identify expert** - match `$ARGUMENTS` against trigger patterns in `~/.claude/rules/delegator/triggers.md`. Use the **same expert role** for all three providers so verdicts are comparable. Default to Architect if unclear.
 
@@ -29,11 +39,51 @@ User question or topic: $ARGUMENTS
    - Relevant code snippets / file paths from current conversation context
    - Any specific constraints user has mentioned this session
 
-4. **Print status line**: `Codex + Gemini + Grok working in parallel (typical 30-60s)...`
+4. **Print status block** (after building the delegate set in 5b, immediately before the dispatch in step 6): one line per delegate that is actually being dispatched, showing the exact model and the reasoning effort each will run with. Do not print a generic single line, and do not list providers that are skipped or fanout-capped.
+
+   ```
+   Working in parallel (typical 30-60s):
+     - Codex (GPT)                   gpt-5.5                       reasoning: high
+     - Gemini                        auto-gemini-3                 reasoning: n/a
+     - Grok (xAI)                    grok-4.3                      reasoning: high
+     - OpenRouter / deepseek-v4-pro  deepseek/deepseek-v4-pro      reasoning: medium
+     - OpenRouter / kimi-k2-thinking moonshotai/kimi-k2-thinking   reasoning: high
+   ```
+
+   Resolve each field from its real source - never invent a value (print `unknown` if a source cannot be read). All these sources are already fetched in the Step 0 prep message; read them from those cached results, do NOT issue new reads here:
+   - **Codex**: model + effort from `~/.codex/config.toml` (`model`, `model_reasoning_effort`), or a `-c model=` / `-c model_reasoning_effort=` override on the MCP registration. Label a missing key `default`.
+   - **Gemini**: model from `~/.gemini/settings.json` (`model.name`, default `auto-gemini-3`). Reasoning effort is always `n/a` - agy exposes no reasoning knob.
+   - **Grok**: model = `$GROK_DEFAULT_MODEL` else `grok-4.3`; effort = `$GROK_REASONING_EFFORT` else `high`.
+   - **OpenRouter**: model and `reasoning_effort` come straight from each delegate in the `mcp__openrouter__openrouter-list` result (the list already resolves per-model override > `defaults` > `null`). A `null` effort prints as `default`.
 
 5. **Set cwd** (Gemini path) - use `process.cwd()` as the MCP `cwd`; agy print mode needs no folder-trust pre-check. Grok and Codex have no trusted-directory concept either.
 
-6. **Parallel dispatch** - fire all three MCP calls in a **single message with three tool blocks** so they run concurrently:
+5b. **Build the active delegate set from config** (use the `config.json` and `openrouter-list` results already fetched in Step 0 - do not re-read here, except the `openrouter-list` RE-CALL on the Fix & proceed branch below)**:**
+   - From the Step 0 `~/.claude/claude-delegator/config.json` read (if present). For each built-in
+     (`codex`/`gemini`/`grok`), include it ONLY if `providers.<name>.enabled` is not
+     `false` (missing = enabled) AND its MCP tool is available; otherwise skip it.
+   - Call `mcp__openrouter__openrouter-list`. If unavailable or its `error` is set (a hard
+     config failure - bad JSON, schema, version, or maxFanout), the OpenRouter delegate set
+     is EMPTY (use the Step 0 `mcp__openrouter__openrouter-list` result; only RE-CALL it on the Fix & proceed branch below). Otherwise the returned `delegates` are the valid models; `invalidModels` (if
+     present and non-empty) are entries the bridge skipped because of a per-entry problem
+     (each `{ index, alias, reason, suggestedAlias? }`).
+   - **If `invalidModels` is non-empty, do NOT silently drop them.** PRINT a short report -
+     one line per entry: `alias|index` + `reason` + `-> suggestedAlias` when present - then
+     ask with `AskUserQuestion` (first option is the pre-selected default):
+     1. **Fix & proceed (Recommended)** - for each invalid entry that has a `suggestedAlias`,
+        `Edit` `~/.claude/claude-delegator/config.json` to apply it (rename the `alias`);
+        drop (and note) any entry with no `suggestedAlias` since it cannot be auto-repaired
+        (e.g. missing `model`, unknown expert). Then re-call `openrouter-list` and use the
+        resulting valid set.
+     2. **Run valid only** - leave `config.json` untouched; use the returned `delegates`
+        as-is and note the skipped entries in the synthesis.
+     3. **Skip all OpenRouter** - empty OpenRouter set for this run.
+   - From the valid set, select delegates where `askAll != false` and the delegate is
+     eligible for the chosen expert (`experts` absent = all; `[]` = none; else must include
+     the expert), in list order, truncated to `maxFanout`. NOTE any delegates omitted by the
+     cap in the final synthesis (no silent truncation).
+
+6. **Parallel dispatch** - fire ALL selected provider calls in a **single message** (the enabled built-ins plus each selected OpenRouter delegate from 5b), as **parallel tool blocks** so they run concurrently:
    ```
    mcp__codex__codex({
      prompt: "[identical 7-section prompt]",
@@ -58,6 +108,20 @@ User question or topic: $ARGUMENTS
      files: [{ path: "path/relative/to/cwd" }]   // attach referenced local files by default
    })
    ```
+   For EACH selected OpenRouter delegate, add one more parallel tool block:
+   ```
+   mcp__openrouter__openrouter({
+     prompt: "[identical 7-section prompt]",
+     "developer-instructions": "[expert prompt]",
+     alias: "[delegate alias]",
+     sandbox: "read-only",
+     cwd: "[repo root]",
+     files: [ /* SAME orientation bundle passed to Grok, e.g. {path|dir, mode:"auto"} */ ]
+   })
+   ```
+   OpenRouter delegates obey the same "provider failure does not kill the command" rule; an
+   errored delegate renders as `OpenRouter:<alias> bottom line: UNAVAILABLE (...)`.
+
    **Provider failure does not kill the command** (mirrors `consensus.md`): for ANY of the three providers, if the call returns `result.isError` or an MCP/transport error, do not abort. Render that provider's section as:
    ```
    **<Provider> bottom line:** UNAVAILABLE (<errorKind|"error">: <message truncated to 200 chars>)
@@ -129,6 +193,7 @@ User question or topic: $ARGUMENTS
    **GPT bottom line:** [1-2 sentences]
    **Gemini bottom line:** [1-2 sentences]
    **Grok bottom line:** [1-2 sentences]
+   **OpenRouter:<alias> bottom line:** [1-2 sentences]   (one line per selected delegate)
 
    **Agreement:** [where they converge]
    **Disagreement:** [where they diverge - call out specifics]
@@ -142,6 +207,7 @@ User question or topic: $ARGUMENTS
 - **Identical prompts** - all three providers receive byte-identical input. No "GPT said..." leakage into the Gemini or Grok prompt, etc.
 - **Single-shot only** - never reuse `threadId` from prior calls. Each invocation creates three fresh threads.
 - **Parallel, not sequential** - all three MCP tool calls in one message. Sequential dispatch wastes wall time.
+- **Concurrent prep** - the full prep read set (expert Glob, `config.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, Grok env, `openrouter-list`) runs in ONE message (Step 0), not sequential turns; then dispatch all providers in ONE parallel message. The `invalidModels` `AskUserQuestion` is the one allowed serial gate. See `rules/delegator/orchestration.md` Step 5.5.
 - **Advisory only** - `sandbox: "read-only"` for all three. Grok cannot list or glob the repo (it sees only files passed in `files`), and the xAI HTTP bridge cannot edit files at all, so `/ask-all` is never an implementation command. For Grok context parity on whole-repo questions, see the "Grok context parity (CRITICAL)" block in step 6.
 - **Pin Gemini model** - always `model: "auto-gemini-3"`. Grok uses its bridge default (`GROK_DEFAULT_MODEL` or `grok-4.3`).
 - **Disagreement is signal** - when the models diverge, treat it as a flag to dig deeper, not a tie to break by majority. Often more than one is partly wrong.

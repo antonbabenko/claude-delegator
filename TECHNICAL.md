@@ -15,6 +15,7 @@ and the Gemini recovery paths.
 - [Multi-turn and retry](#multi-turn-and-retry)
 - [Gemini timeout recovery](#gemini-timeout-recovery)
 - [Grok files and cleanup](#grok-files-and-cleanup)
+- [OpenRouter bridge](#openrouter-bridge)
 - [Customizing expert prompts](#customizing-expert-prompts)
 - [Troubleshooting](#troubleshooting)
 - [Known limitations](#known-limitations)
@@ -359,6 +360,189 @@ The bundled `server/grok/files-admin.js` supports three subcommands:
 `prune` and `gc` are complementary: `prune` is the remote-side cleaner; `gc` keeps
 the local cache aligned with remote state. The `claude-delegator-` filename prefix
 is a hard safety invariant on both paths - your own xAI files are never touched.
+
+## OpenRouter bridge
+
+The OpenRouter bridge (`server/openrouter/index.js`) is a zero-dependency Node MCP server
+that calls any OpenAI-compatible `POST {apiBase}/chat/completions` endpoint.
+It is **advisory-only** - it cannot edit files or run shell commands.
+
+### Configuration file
+
+The bridge and the fan-out commands (`/ask-all`, `/consensus`) read
+`~/.claude/claude-delegator/config.json` at call time. Override the path with
+`CLAUDE_DELEGATOR_CONFIG`. The file is stat-gated: the bridge re-reads it only when
+the mtime changes, so edits to the `openrouter` block (models, flags, defaults) take
+effect immediately without restarting Claude Code or re-running `/setup`. Toggling a
+**built-in** provider (codex / gemini / grok) still requires `/setup` to re-register
+or de-register the MCP server.
+
+Config file schema (strict JSON, version must be `1`):
+
+```json
+{
+  "version": 1,
+  "providers": {
+    "codex":  { "enabled": true },
+    "gemini": { "enabled": true },
+    "grok":   { "enabled": true }
+  },
+  "openrouter": {
+    "enabled": true,
+    "apiKeyEnv": "OPENROUTER_API_KEY",
+    "apiBase": "https://openrouter.ai/api/v1",
+    "allowRawModel": false,
+    "maxFanout": 3,
+    "defaultModel": "openai/gpt-4.1-mini",
+    "defaults": {
+      "reasoning_effort": "high",
+      "timeout": 120000,
+      "temperature": 0.2
+    },
+    "models": [
+      {
+        "alias": "gpt-4-or",
+        "model": "openai/gpt-4.1",
+        "experts": ["architect", "code-reviewer"],
+        "askAll": true,
+        "consensus": false,
+        "timeout": 90000
+      }
+    ]
+  }
+}
+```
+
+**Model entry fields:**
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `alias` | string | required | Unique, `[a-z0-9-]+`, not `"openrouter-default"` |
+| `model` | string | required | Provider model slug (e.g. `openai/gpt-4.1`) |
+| `experts` | array or absent | absent = all 7 | `[]` = none / explicit-only; array = subset of the 7 expert keys |
+| `askAll` | boolean | `true` | Include this model in `/ask-all` fan-out when eligible |
+| `consensus` | boolean | `false` | Include this model in `/consensus` voting |
+| `reasoning_effort` | string | from `defaults` | Per-model override |
+| `timeout` | number (ms) | from `defaults` | Per-model override |
+| `temperature` | number | from `defaults` | Per-model override |
+| `apiBase` | string | from `openrouter.apiBase` | Per-model override (use for mixing endpoints) |
+
+**On `temperature`:** most delegator work is analytical - code review, debugging,
+security audits, architecture and plan verdicts - where you want focused, repeatable
+answers. Leave `temperature` unset (the bridge default is low) for those. Raise it
+(roughly `0.6`-`0.9`) only for generative fan-out where spread across models is the
+point: brainstorming, naming, "give me 20 options". Keep it low for `/consensus`
+rounds; you want the models reasoning, not improvising.
+
+### Routing
+
+- **`/ask-all`**: includes all models where `askAll !== false` and the model is eligible
+  for the requested expert; capped to `maxFanout` models (default 3).
+- **`/consensus`**: includes models where `consensus === true`; NOT subject to `maxFanout`.
+  A warning is logged when more than 3 models enter a consensus round (cost).
+- **`openrouter-default`** is the reserved alias for the bare `mcp__openrouter__openrouter`
+  call and `/ask-openrouter` with no alias specified. It is the single-shot fallback only
+  and is never included in fan-out or consensus.
+- Implementation tasks always route to Codex or Gemini, never to OpenRouter.
+
+### Config validation (partial) and the `openrouter-list` contract
+
+Validation is **per-entry**, not all-or-nothing. A single malformed `models[]` entry
+(bad alias characters, duplicate alias, reserved alias, missing `model`, unknown expert,
+or a bad per-model override) no longer rejects the whole config - the bridge keeps every
+valid delegate and collects the bad ones into `invalidModels`. Only **top-level/schema**
+problems hard-fail the whole config: malformed JSON, a non-object root, an unsupported
+`version`, or a non-integer/`< 1` `maxFanout`.
+
+`mcp__openrouter__openrouter-list` returns:
+
+```jsonc
+{
+  "delegates": [ { "alias", "model", "experts", "askAll", "consensus", "reasoning_effort" } ],
+  "defaultModelSet": true,
+  "maxFanout": 3,
+  "maxFanoutHigh": false,
+  "invalidModels": [ { "index": 2, "alias": "qwen3.7-max",
+                       "reason": "models[2] alias must match [a-z0-9-]+ ...",
+                       "suggestedAlias": "qwen3-7-max" } ]
+}
+```
+
+- On a hard config failure the object instead carries `error: "<message>"` with
+  `delegates: []` (and `invalidModels` absent/empty). `/ask-all` and `/consensus` treat
+  the `error` form as "OpenRouter set EMPTY".
+- `invalidModels[].suggestedAlias` is present only when a safe deterministic repair exists:
+  alias-format errors are sanitized to `[a-z0-9-]+` (e.g. `qwen3.7-max` -> `qwen3-7-max`),
+  and duplicate aliases get a free `-N` suffix. Suggestions are collision-checked against
+  every existing alias and the reserved `openrouter-default`. Entries with no safe fix
+  (missing `model`, unknown expert, reserved-alias clash) have no `suggestedAlias`.
+- The bridge never edits `config.json`. The `/ask-all` and `/consensus` commands surface
+  `invalidModels` and offer **Fix & proceed** (default - apply each `suggestedAlias` to
+  `config.json`, drop the unrepairable, re-list), **Run valid only**, or **Skip all
+  OpenRouter**.
+
+### Authentication (optional)
+
+The Authorization header is sent **only** when the key env var resolves to a non-empty
+string. Keyless local endpoints (Ollama, vLLM, LM Studio) work without a dummy key.
+`openrouter.ai` returns HTTP 401 if the key is absent; local endpoints accept no-auth
+requests.
+
+### apiBase override matrix
+
+| Endpoint | apiBase value |
+|----------|---------------|
+| OpenRouter | `https://openrouter.ai/api/v1` (default) |
+| HuggingFace Inference | `https://router.huggingface.co/v1` |
+| Ollama (local) | `http://localhost:11434/v1` |
+| LM Studio | `http://localhost:1234/v1` |
+| vLLM | `http://localhost:8000/v1` |
+
+### File attachment (text-inline only)
+
+OpenRouter accepts `{path}` and `{dir}` entries only. `file_id` and `file_url`
+entries are rejected (`-32602`). The `mode` field is coerced to `"inline"` regardless
+of what is set - there is no upload path. Content is embedded as text blocks in the
+request body.
+
+Per-file cap: `OPENROUTER_INLINE_MAX_BYTES` (default 262144 = 256 KB).
+Aggregate cap: `OPENROUTER_INLINE_MAX_TOTAL_BYTES` (default 1048576 = 1 MB).
+Exceeding either cap returns a hard error with counts.
+
+### Session model persistence
+
+A model alias is bound at the start of a session via `mcp__openrouter__openrouter`
+and is preserved for the life of that `threadId`. `-reply` calls on the same thread
+always use the same model.
+
+### Consensus cost model
+
+Each consensus round uses approximately `N models x bundle tokens x rounds` tokens.
+When more than 3 models participate, the bridge emits a warning with an estimated
+token count. There is no hard spend cap - the warning is informational only.
+
+### MCP tools
+
+| Tool | Purpose |
+|------|---------|
+| `mcp__openrouter__openrouter` | Start a new advisory session |
+| `mcp__openrouter__openrouter-reply` | Continue a session (multi-turn via threadId) |
+| `mcp__openrouter__openrouter-list` | List configured model aliases and their eligibility flags |
+
+### Error kinds
+
+| errorKind | Meaning |
+|-----------|---------|
+| `auth` | API key missing or rejected (HTTP 401/403) |
+| `rate-limit` | HTTP 429 from upstream |
+| `timeout` | Request exceeded the configured timeout |
+| `network` | Connection error or DNS failure |
+| `parse` | Response body could not be parsed |
+| `upstream` | Non-2xx from the endpoint (other than auth/rate-limit) |
+| `config` | Config file missing, invalid JSON, or schema violation |
+| `model-not-allowed` | Requested alias is not in the config, or a raw `model` was passed with `allowRawModel:false`, or no alias/model was given and no `defaultModel` is set |
+| `unknown-thread` | `-reply` called with a threadId that does not exist |
+| `unknown` | Catch-all for unclassified errors |
 
 ## Customizing expert prompts
 

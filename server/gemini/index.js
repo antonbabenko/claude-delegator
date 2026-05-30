@@ -481,41 +481,45 @@ const handlers = {
 
 let buffer = "";
 
+// Process one JSON-RPC line. Awaits its handler and catches internally so callers can
+// dispatch lines CONCURRENTLY: replies correlate by id and Node serializes stdout writes,
+// so parallel tool calls overlap without reordering or frame-interleaving hazard.
+async function processLine(line) {
+  if (!line.trim()) return;
+
+  let request;
+  try {
+    request = JSON.parse(line);
+  } catch (e) {
+    return; // Ignore parse errors from noise
+  }
+
+  const shouldRespond = hasRequestId(request);
+  if (!isObject(request) || typeof request.method !== "string") {
+    if (shouldRespond) sendError(request.id, -32600, "Invalid Request");
+    return;
+  }
+
+  const handler = handlers[request.method];
+  if (!handler) {
+    if (shouldRespond) sendError(request.id, -32601, `Method not found: ${request.method}`);
+    return;
+  }
+
+  try {
+    await handler(request.id, request.params, shouldRespond);
+  } catch (e) {
+    if (shouldRespond) sendError(request.id, -32603, `Internal error: ${e.message}`);
+  }
+}
+
 if (require.main === module) {
-  process.stdin.on("data", async (chunk) => {
+  // Dispatch concurrently - do NOT await each line - so parallel tool calls overlap.
+  process.stdin.on("data", (chunk) => {
     buffer += chunk.toString();
-    let lines = buffer.split("\n");
+    const lines = buffer.split("\n");
     buffer = lines.pop(); // Keep partial line in buffer
-
-    for (const line of lines) {
-      if (!line.trim()) continue;
-
-      let request;
-      try {
-        request = JSON.parse(line);
-      } catch (e) {
-        // Ignore parse errors from noise
-        continue;
-      }
-
-      const shouldRespond = hasRequestId(request);
-      if (!isObject(request) || typeof request.method !== "string") {
-        if (shouldRespond) sendError(request.id, -32600, "Invalid Request");
-        continue;
-      }
-
-      const handler = handlers[request.method];
-      if (!handler) {
-        if (shouldRespond) sendError(request.id, -32601, `Method not found: ${request.method}`);
-        continue;
-      }
-
-      try {
-        await handler(request.id, request.params, shouldRespond);
-      } catch (e) {
-        if (shouldRespond) sendError(request.id, -32603, `Internal error: ${e.message}`);
-      }
-    }
+    for (const line of lines) void processLine(line);
   });
 
   // Startup Check
