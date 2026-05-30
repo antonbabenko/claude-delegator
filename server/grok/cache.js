@@ -7,8 +7,8 @@ const crypto = require("node:crypto");
 const { mkdirSync, readFileSync, writeFileSync, renameSync } = require("node:fs");
 const lock = require("./lock.js");
 
-const CACHE_DIR = path.join(os.homedir(), ".claude", "cache", "claude-delegator");
-const CACHE_FILE = path.join(CACHE_DIR, "grok-files.json");
+const CACHE_FILE = require("../../core/paths.js").resolveGrokCachePath();
+const CACHE_DIR = path.dirname(CACHE_FILE);
 const CACHE_VERSION = 1;
 
 function normalize(apiBase) {

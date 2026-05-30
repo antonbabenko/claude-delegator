@@ -117,9 +117,7 @@ function startStdio() {
   const { makeCodexProvider } = require("../../core/providers/codex.js");
   const configMod = /** @type {any} */ (require("../openrouter/config.js"));
   const { makeConfigReader, DEFAULT_API_BASE, DEFAULT_API_KEY_ENV } = configMod;
-  const path = require("node:path");
-  const os = require("node:os");
-  const reader = makeConfigReader(path.join(os.homedir(), ".claude", "claude-delegator", "config.json"));
+  const reader = makeConfigReader(require("../../core/paths.js").resolveConfigPath());
   /** @returns {any} */
   const getConfig = () => (reader.get().resolved || { providers: {}, openrouter: {} });
 

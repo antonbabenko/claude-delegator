@@ -1,7 +1,7 @@
 ---
 name: ask-all
 description: Ask GPT, Gemini, Grok, and any configured OpenRouter models in parallel for independent second opinions, then synthesize and compare. Zero cross-contamination.
-allowed-tools: mcp__deliberation__ask-all, Read, Bash
+allowed-tools: mcp__deliberation__ask-all, mcp__deliberation-openrouter__openrouter-list, Read, Bash
 timeout: 300000
 ---
 
@@ -22,20 +22,20 @@ User question or topic: $ARGUMENTS
      an alias the server has not approved. -->
 
 0. **Prep - identify the expert and load its prompt.** Identify the expert role first (step 1 below is *reasoning* on `$ARGUMENTS`, no tool call), then read the expert prompt:
-   - `Glob` `~/.claude/plugins/cache/*/claude-delegator/*/prompts/[expert].md` (expert prompt)
+   - `Glob` `~/.claude/plugins/cache/*/deliberation/*/prompts/[expert].md` (expert prompt)
 
    Delegate selection - which built-ins are enabled, which OpenRouter aliases are eligible, the fanout cap - is resolved server-side by `mcp__deliberation__ask-all`. The command does not read `config.json`, list OpenRouter aliases, or pre-read provider model config. The exact dispatched delegates, their models, and any fanout-capped omissions come back in the tool response, so the status block (step 4) is built from that response, not from pre-read sources.
 
-1. **Identify expert** - match `$ARGUMENTS` against trigger patterns in `~/.claude/rules/delegator/triggers.md`. The server applies the **same expert role** to every delegate so verdicts are comparable. Default to Architect if unclear.
+1. **Identify expert** - match `$ARGUMENTS` against trigger patterns in `~/.claude/rules/deliberation/triggers.md`. The server applies the **same expert role** to every delegate so verdicts are comparable. Default to Architect if unclear.
 
 2. **Read expert prompt** via this resolution sequence:
-   1. Glob `~/.claude/plugins/cache/*/claude-delegator/*/prompts/[expert].md`. Pick the match with the highest semver version segment (the segment immediately after `claude-delegator/`, parsed as semver - not lexical string compare).
+   1. Glob `~/.claude/plugins/cache/*/deliberation/*/prompts/[expert].md`. Pick the match with the highest semver version segment (the segment immediately after `deliberation/`, parsed as semver - not lexical string compare).
    2. If no match, look up the inlined fallback under the heading `## Inlined fallback - [Expert]` in this command file (see end of this file).
-   3. If neither found, abort with: `Error: claude-delegator plugin cache missing for expert "[Expert]". Run /plugin install claude-delegator or /reload-plugins.`
+   3. If neither found, abort with: `Error: deliberation plugin cache missing for expert "[Expert]". Run /plugin install deliberation or /reload-plugins.`
 
    Pass the loaded prompt as the `developerInstructions` argument so the server injects the same expert prompt into every delegate.
 
-3. **Build 7-section delegation prompt** per `~/.claude/rules/delegator/delegation-format.md`. **Identical prompt** sent to every delegate - the server forwards the same `prompt` to all of them, so there is no provider-specific framing. This is the `prompt` argument for the tool call. Include:
+3. **Build 7-section delegation prompt** per `~/.claude/rules/deliberation/delegation-format.md`. **Identical prompt** sent to every delegate - the server forwards the same `prompt` to all of them, so there is no provider-specific framing. This is the `prompt` argument for the tool call. Include:
    - Verbatim user question from `$ARGUMENTS`
    - Relevant code snippets / file paths from current conversation context
    - Any specific constraints user has mentioned this session

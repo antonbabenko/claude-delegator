@@ -259,7 +259,7 @@ async function runGemini(args, cwd, timeoutMs, recoveryGraceMs) {
           settled = true;
           clearTimers();
           process.stderr.write(
-            "[claude-delegator] recovered agy answer via stdout drain after soft timeout (" +
+            "[deliberation] recovered agy answer via stdout drain after soft timeout (" +
             Math.round((Date.now() - spawnStartMs) / 1000) + "s)\n"
           );
           return resolve({ response: out, threadId: resolveConversationId(effCwd) || "unknown", recovered: true });
@@ -274,7 +274,7 @@ async function runGemini(args, cwd, timeoutMs, recoveryGraceMs) {
         const threadId = resolveConversationId(effCwd);
         if (threadId == null) {
           process.stderr.write(
-            "[claude-delegator] no conversation id found for cwd " + effCwd +
+            "[deliberation] no conversation id found for cwd " + effCwd +
             "; returning threadId:\"unknown\" (resume will be unavailable)\n"
           );
         }
@@ -311,7 +311,7 @@ const handlers = {
     sendResponse(id, {
       protocolVersion: "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "claude-delegator-gemini", version: "1.6.0" }
+      serverInfo: { name: "deliberation-gemini", version: "1.6.0" }
     });
   },
 
