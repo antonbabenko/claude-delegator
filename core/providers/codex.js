@@ -69,7 +69,8 @@ function makeCodexProvider(opts = {}) {
         isError: true,
         errorKind,
         retryable,
-        text: (stdout && stdout.trim()) || undefined, // keep stdout-borne error detail
+        // Error results carry no text; surface stdout/stderr diagnostics in message.
+        message: (stdout && stdout.trim()) || stderr || undefined,
         ms: Date.now() - started,
       };
     },

@@ -40,7 +40,7 @@ function makeGrokProvider(opts = {}) {
               turns: bridge.buildInitialTurns(req.developerInstructions, req.prompt, []),
               model, apiKey, apiBase, reasoningEffort, timeoutMs: req.timeoutMs,
             });
-        return { provider: "grok", model, text: out.text, isError: false, ms: Date.now() - started };
+        return { provider: "grok", model, text: out.text || "", isError: false, ms: Date.now() - started };
       } catch (e) {
         return toErrorResult("grok", model, started, /** @type {any} */ (e), bridge.classifyGrokError);
       }

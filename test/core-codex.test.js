@@ -23,10 +23,11 @@ test("CX3: capabilities.canImplement true (Core still calls advisory only)", () 
   assert.equal(makeCodexProvider({ run: async () => ({ code: 0, stdout: "", stderr: "" }) }).capabilities.canImplement, true);
 });
 
-test("CX4: a non-zero exit surfaces stdout in .text (diagnostic detail not lost)", async () => {
+test("CX4: a non-zero exit surfaces stdout in .message (diagnostic detail not lost; error has no text)", async () => {
   const p = makeCodexProvider({ run: async () => ({ code: 1, stdout: "diagnostic detail from codex", stderr: "boom" }) });
   const r = await p.ask({ prompt: "x" });
   assert.equal(r.isError, true);
   assert.equal(r.errorKind, "unknown");
-  assert.equal(/** @type {any} */ (r).text, "diagnostic detail from codex");
+  assert.equal("text" in r, false); // error results carry no text key
+  assert.equal(/** @type {any} */ (r).message, "diagnostic detail from codex");
 });

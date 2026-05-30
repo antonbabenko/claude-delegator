@@ -25,17 +25,27 @@
  */
 
 /**
- * @typedef {Object} DelegationResult
+ * @typedef {Object} DelegationSuccess
+ * @property {false}    isError
  * @property {string}   provider
  * @property {string}   model
- * @property {string}   [text]
+ * @property {string}   text
  * @property {string}   [threadId]
- * @property {boolean}  isError
- * @property {string}   [errorKind]
- * @property {string}   [message]
- * @property {boolean}  [retryable]
  * @property {number}   ms
  */
+
+/**
+ * @typedef {Object} DelegationError
+ * @property {true}     isError
+ * @property {string}   provider
+ * @property {string}   model
+ * @property {string}   errorKind
+ * @property {boolean}  retryable
+ * @property {string}   [message]
+ * @property {number}   ms
+ */
+
+/** @typedef {DelegationSuccess | DelegationError} DelegationResult */
 
 /**
  * @typedef {Object} ProviderCapabilities

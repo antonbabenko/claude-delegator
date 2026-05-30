@@ -1,19 +1,19 @@
 "use strict";
-/** @typedef {import("./types.js").DelegationResult} DelegationResult */
+/** @typedef {import("./types.js").DelegationError} DelegationError */
 
 /**
- * Normalize a thrown bridge error into a DelegationResult using that bridge's
+ * Normalize a thrown bridge error into a DelegationError using that bridge's
  * own classifier, so behavior matches the standalone bridge exactly.
  * @param {string} name
  * @param {string} model
  * @param {number} started   // Date.now() at call start
  * @param {{status?:number, code?:string}} err
  * @param {(status?:number, code?:string) => {errorKind:string, retryable:boolean}} classify
- * @returns {DelegationResult}
+ * @returns {DelegationError}
  */
 function toErrorResult(name, model, started, err, classify) {
   const { errorKind, retryable } = classify(err && err.status, err && err.code);
-  return { provider: name, model, isError: true, errorKind, retryable, text: undefined, ms: Date.now() - started };
+  return { provider: name, model, isError: true, errorKind, retryable, ms: Date.now() - started };
 }
 
 // Structured opinion schema shared across providers (Core minimum).

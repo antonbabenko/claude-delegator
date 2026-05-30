@@ -12,7 +12,7 @@ test("P1: toErrorResult normalizes a thrown error via the bridge classifier", ()
   assert.equal(r.isError, true);
   assert.equal(r.errorKind, "rate-limit");
   assert.equal(r.retryable, true);
-  assert.equal(r.text, undefined);
+  assert.equal("text" in r, false); // error results carry no text key
   assert.ok(r.ms >= 0);
 });
 

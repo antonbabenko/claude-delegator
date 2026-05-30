@@ -35,7 +35,9 @@ function makeAntigravityProvider(opts = {}) {
       try {
         // runGemini(args, cwd, timeoutMs, recoveryGraceMs). recovered:true => normal success.
         const out = await bridge.runGemini(args, req.cwd, req.timeoutMs, undefined);
-        return { provider: "gemini", model, text: out.response, threadId: out.threadId, isError: false, ms: Date.now() - started };
+        // out.response can be undefined on a degenerate clean run; coerce to ""
+        // so the DelegationSuccess.text contract (string, not string|undefined) holds.
+        return { provider: "gemini", model, text: out.response || "", threadId: out.threadId, isError: false, ms: Date.now() - started };
       } catch (e) {
         // classifyGeminiError(errMsg, errCode): the missing-cli and upstream-abort
         // branches key off the message, so pass the real caught message - not "".

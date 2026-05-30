@@ -2,6 +2,7 @@
 /** @typedef {import("./types.js").Provider} Provider */
 /** @typedef {import("./types.js").DelegationRequest} DelegationRequest */
 /** @typedef {import("./types.js").DelegationResult} DelegationResult */
+/** @typedef {import("./types.js").DelegationSuccess} DelegationSuccess */
 
 /**
  * Fan out ONE request to N providers concurrently. The whole serialization fix:
@@ -26,7 +27,6 @@ async function askAll(providers, req) {
           isError: true,
           errorKind: "unknown",
           retryable: false,
-          text: undefined,
           message: String((s.reason && s.reason.message) || s.reason || "rejected"),
           ms: 0,
         }
@@ -46,7 +46,7 @@ async function askOne(provider, req) {
 /**
  * Assemble the arbiter prompt from independent opinions for blind cross-review.
  * @param {string} question
- * @param {DelegationResult[]} opinions  // successful opinions only
+ * @param {DelegationSuccess[]} opinions  // successful opinions only (text guaranteed)
  * @returns {string}
  */
 function buildArbiterPrompt(question, opinions) {
@@ -75,7 +75,9 @@ function buildArbiterPrompt(question, opinions) {
  */
 async function consensus(providers, req, opts = {}) {
   const opinions = await askAll(providers, req);
-  const ok = opinions.filter((o) => !o.isError && o.text);
+  // The union guarantees `text` on the success branch, so `!o.isError` alone
+  // narrows each survivor to DelegationSuccess - no `&& o.text` guard needed.
+  const ok = /** @type {DelegationSuccess[]} */ (opinions.filter((o) => !o.isError));
   if (!ok.length) return { opinions, verdict: null, error: "all-providers-failed" };
   const arbiter = opts.arbiter || providers[0];
   if (!arbiter) return { opinions, verdict: null, error: "no-arbiter" };
