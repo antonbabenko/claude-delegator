@@ -69,7 +69,11 @@ jobs:
           git-user-name: 'github-actions[bot]'
           git-user-email: 'github-actions[bot]@users.noreply.github.com'
           git-branch: 'release/next'
-          preset: 'angular'
+          # conventionalcommits honors the `!` breaking shorthand (feat!:) and
+          # BREAKING CHANGE: footers as MAJOR bumps; the angular preset does not
+          # (it shipped the 2.0 rebrand as a patch). Keep this so feat!: /
+          # BREAKING CHANGE commits bump major automatically.
+          preset: 'conventionalcommits'
           tag-prefix: 'v'
           output-file: 'CHANGELOG.md'
           version-file: './version.json'

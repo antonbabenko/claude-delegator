@@ -1,3 +1,25 @@
+# [2.0.0](https://github.com/antonbabenko/claude-delegator/compare/v1.18.0...v2.0.0) (2026-05-30)
+
+
+### BREAKING CHANGES
+
+* The plugin is renamed `claude-delegator` -> `deliberation`. The plugin name, slash namespace (`/deliberation:*`), config path (`~/.claude/deliberation/config.json`), Grok cache, rules dir (`~/.claude/rules/deliberation/`), and the four bridge MCP servers (`deliberation-codex`, `deliberation-gemini`, `deliberation-grok`, `deliberation-openrouter`) all change. 1.x backward-compat is removed: no legacy config-path fallback, no `CLAUDE_DELEGATOR_CONFIG` env, no dual-path globs. See the README "Upgrade from 1.x" section for the one-time migration.
+
+
+### Features
+
+* **core:** extract a host-neutral `core/` library (provider adapters, `askAll` fan-out, single-round `consensus`, per-alias OpenRouter expansion, `DelegationResult` union) and a unified stdio MCP server (`server/mcp`), plus a strict `tsc --checkJs` typecheck gate
+* **plugin:** rebrand to `deliberation`, namespace the four bridge MCP servers, add a host-neutral description
+
+
+### Bug Fixes
+
+* **openrouter:** move delegate selection and dispatch server-side so a disabled alias can never be dispatched from a stale client-side selection
+* **setup:** collapse setup into one idempotent Bash call; isolate uninstall removal
+* **release:** switch the release preset from `angular` to `conventionalcommits` so `feat!:` / `BREAKING CHANGE:` commits bump major automatically
+
+
+
 # [1.18.0](https://github.com/antonbabenko/claude-delegator/compare/v1.17.0...v1.18.0) (2026-05-30)
 
 
