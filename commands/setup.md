@@ -127,6 +127,19 @@ if [ "$OR_ON" = "1" ]; then
 fi
 ```
 
+### Deliberation (unified fan-out server)
+
+The deliberation server powers `/ask-all` and `/consensus`. It selects and
+dispatches the active delegate set (enabled built-ins plus eligible OpenRouter
+aliases) in one server call, so a disabled alias can never be dispatched from a
+stale client-side selection. Register it unconditionally - it fans out to
+whatever providers are enabled.
+
+```bash
+claude mcp remove deliberation >/dev/null 2>&1 || true
+claude mcp add --transport stdio --scope user deliberation -- node '${CLAUDE_PLUGIN_ROOT}/server/mcp/index.js'
+```
+
 **Codex model (optional):** by default Codex inherits its model, sandbox, and
 approval policy from `~/.codex/config.toml` (the `model` key) - change it there
 and every provider that reads that file follows. To pin a model on the MCP server
