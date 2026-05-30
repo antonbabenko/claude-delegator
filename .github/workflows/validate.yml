@@ -27,6 +27,9 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Typecheck
+        run: npm run typecheck
+
       - name: Run bridge tests
         run: node --test test/*.test.js
 

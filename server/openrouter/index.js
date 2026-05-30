@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ts-nocheck -- legacy bridge; predates the strict typecheck gate (core-only). Opt-in is a separate pass.
 "use strict";
 
 /**
