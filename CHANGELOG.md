@@ -1,3 +1,12 @@
+# [1.18.0](https://github.com/antonbabenko/claude-delegator/compare/v1.17.0...v1.18.0) (2026-05-30)
+
+
+### Features
+
+* **openrouter:** add server-side delegate selection to openrouter-list ([#48](https://github.com/antonbabenko/claude-delegator/issues/48)) ([0ee7796](https://github.com/antonbabenko/claude-delegator/commit/0ee7796b80099829345f33a292b702e148ed6228))
+
+
+
 # [1.17.0](https://github.com/antonbabenko/claude-delegator/compare/v1.16.1...v1.17.0) (2026-05-30)
 
 
@@ -31,15 +40,6 @@
 ### Bug Fixes
 
 * **setup:** quote ${CLAUDE_PLUGIN_ROOT} so MCP bridges resolve current plugin version per spawn ([#33](https://github.com/antonbabenko/claude-delegator/issues/33)) ([ed7ba2f](https://github.com/antonbabenko/claude-delegator/commit/ed7ba2f14bced0105d7b5f1b51152a90ba73f963))
-
-
-
-## [1.15.1](https://github.com/antonbabenko/claude-delegator/compare/v1.15.0...v1.15.1) (2026-05-27)
-
-
-### Bug Fixes
-
-* **grok:** expand DEFAULT_EXCLUDE, merge caller exclude with excludeReset escape hatch ([#31](https://github.com/antonbabenko/claude-delegator/issues/31)) ([dd645ef](https://github.com/antonbabenko/claude-delegator/commit/dd645efd42ecbe18b9f5c5e1ad772c468cd41da1))
 
 
 
