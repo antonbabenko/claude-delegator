@@ -44,9 +44,9 @@ Claude: detects a security question, selects the Security Analyst
                 |
                 v
    +-------------------------------------+
-   |  mcp__codex__codex /                |
-   |  mcp__gemini__gemini /              |
-   |  mcp__grok__grok                    |
+   |  mcp__deliberation-codex__codex /   |
+   |  mcp__deliberation-gemini__gemini / |
+   |  mcp__deliberation-grok__grok       |
    |    -> Security Analyst prompt       |
    |    -> expert analyzes your code     |
    +-------------------------------------+
@@ -239,7 +239,7 @@ that escape via `realpath` are also refused. An oversize file (>48 MB) returns
 ### Cross-repo example
 
 ```js
-mcp__grok__grok({
+mcp__deliberation-grok__grok({
   prompt: "Compare the auth strategy in these two services.",
   cwd: "/Users/me/work/service-a",
   roots: ["/Users/me/work/service-a", "/Users/me/work/service-b"],

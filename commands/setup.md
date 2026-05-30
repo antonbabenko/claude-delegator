@@ -64,7 +64,8 @@ Register your preferred provider(s) as MCP servers using Claude Code's native co
 ### Read config (single source of truth)
 
 ```bash
-CFG="${CLAUDE_DELEGATOR_CONFIG:-$HOME/.claude/claude-delegator/config.json}"
+CFG="${DELIBERATION_CONFIG:-${CLAUDE_DELEGATOR_CONFIG:-}}"
+[ -z "$CFG" ] && { if [ -f "$HOME/.claude/deliberation/config.json" ]; then CFG="$HOME/.claude/deliberation/config.json"; else CFG="$HOME/.claude/claude-delegator/config.json"; fi; }
 if [ -f "$CFG" ]; then echo "config: $CFG"; else echo "config: none (defaults: 3 built-ins on, no OpenRouter)"; fi
 ```
 
@@ -126,7 +127,8 @@ call with the `reasoning_effort` parameter; `none` omits the field so the model 
 ### OpenRouter (optional, config-driven)
 
 ```bash
-CFG="${CLAUDE_DELEGATOR_CONFIG:-$HOME/.claude/claude-delegator/config.json}"
+CFG="${DELIBERATION_CONFIG:-${CLAUDE_DELEGATOR_CONFIG:-}}"
+[ -z "$CFG" ] && { if [ -f "$HOME/.claude/deliberation/config.json" ]; then CFG="$HOME/.claude/deliberation/config.json"; else CFG="$HOME/.claude/claude-delegator/config.json"; fi; }
 OR_ON=$(node -e 'try{const c=require(process.argv[1]);const o=c.openrouter||{};const on=o.enabled!==false&&((Array.isArray(o.models)&&o.models.length)||o.defaultModel);process.stdout.write(on?"1":"0")}catch(e){process.stdout.write("0")}' "$CFG" 2>/dev/null || echo 0)
 # Clean up any prior registrations unconditionally (covers the disabled-OpenRouter
 # rerun case): drop the legacy bare name and the namespaced one before deciding.

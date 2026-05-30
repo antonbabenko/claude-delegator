@@ -19,7 +19,7 @@ is used.
 ## Workflow
 
 1. Call `mcp__deliberation-openrouter__openrouter-list`. If the tool is unavailable, tell the user
-   OpenRouter is not configured (add models to `~/.claude/claude-delegator/config.json`,
+   OpenRouter is not configured (add models to `~/.claude/deliberation/config.json`,
    then run `/deliberation:setup`) and stop.
 2. Parse `$ARGUMENTS`: if the first token equals a delegate `alias`, use it; else use no
    alias (the bridge falls back to `openrouter-default`; if `defaultModelSet` is false in
