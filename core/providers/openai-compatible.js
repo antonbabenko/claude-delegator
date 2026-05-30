@@ -32,7 +32,7 @@ function makeOpenAICompatibleProvider(opts) {
     async health() {
       return process.env[apiKeyEnv] ? { ok: true } : { ok: false, reason: `${apiKeyEnv} unset` };
     },
-    async ask(req) {
+    async ask(/** @type {import("../types.js").DelegationRequest} */ req) {
       const started = Date.now();
       const model = resolveModel(req);
       const prior = req.threadId && sessions.get(req.threadId);

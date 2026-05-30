@@ -28,5 +28,5 @@ test("CX4: a non-zero exit surfaces stdout in .text (diagnostic detail not lost)
   const r = await p.ask({ prompt: "x" });
   assert.equal(r.isError, true);
   assert.equal(r.errorKind, "unknown");
-  assert.equal(r.text, "diagnostic detail from codex");
+  assert.equal(/** @type {any} */ (r).text, "diagnostic detail from codex");
 });

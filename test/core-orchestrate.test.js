@@ -5,13 +5,13 @@ const assert = require("node:assert/strict");
 const { askAll, consensus } = require("../core/orchestrate.js");
 /** @typedef {import("../core/types.js").Provider} Provider */
 
-/** @returns {Provider} */
+/** @param {string} name @param {string} [behavior] @returns {Provider} */
 function fakeProvider(name, behavior) {
   return /** @type {any} */ ({
     name,
     capabilities: { canImplement: false, fileUpload: false, multiTurn: false },
     async health() { return { ok: true }; },
-    async ask(req) {
+    async ask(/** @type {any} */ req) {
       if (behavior === "throw") throw new Error("boom");
       return { provider: name, model: "m", text: `${name}:${req.prompt}`, isError: false, ms: 1 };
     },
@@ -21,7 +21,7 @@ function fakeProvider(name, behavior) {
 test("O1: askAll returns one result per provider, in order", async () => {
   const out = await askAll([fakeProvider("a"), fakeProvider("b")], { prompt: "hi" });
   assert.deepEqual(out.map((r) => r.provider), ["a", "b"]);
-  assert.equal(out[0].text, "a:hi");
+  assert.equal(/** @type {any} */ (out[0]).text, "a:hi");
 });
 
 test("O2: a thrown provider becomes an isError result, never rejects the batch", async () => {
@@ -36,9 +36,9 @@ test("O3: each provider gets an independent copy of the request (zero contaminat
   /** @type {any[]} */
   const seen = [];
   const a = /** @type {any} */ ({ name: "a", capabilities: {}, async health() { return { ok: true }; },
-    async ask(req) { req.prompt += "!"; seen.push(req.prompt); return { provider: "a", model: "m", isError: false, ms: 0 }; } });
+    async ask(/** @type {any} */ req) { req.prompt += "!"; seen.push(req.prompt); return { provider: "a", model: "m", isError: false, ms: 0 }; } });
   const b = /** @type {any} */ ({ name: "b", capabilities: {}, async health() { return { ok: true }; },
-    async ask(req) { seen.push(req.prompt); return { provider: "b", model: "m", isError: false, ms: 0 }; } });
+    async ask(/** @type {any} */ req) { seen.push(req.prompt); return { provider: "b", model: "m", isError: false, ms: 0 }; } });
   await askAll([a, b], { prompt: "p" });
   assert.deepEqual(seen, ["p!", "p"]); // b unaffected by a's mutation
 });
@@ -46,13 +46,13 @@ test("O3: each provider gets an independent copy of the request (zero contaminat
 test("C1: consensus fans out then runs ONE arbiter pass over the opinions", async () => {
   const a = fakeProvider("a"), b = fakeProvider("b");
   const arbiter = /** @type {any} */ ({ name: "arb", capabilities: {}, async health() { return { ok: true }; },
-    async ask(req) {
+    async ask(/** @type {any} */ req) {
       const sawBoth = req.prompt.includes("a:hi") && req.prompt.includes("b:hi");
       return { provider: "arb", model: "m", text: `verdict:${sawBoth}`, isError: false, ms: 0 };
     } });
   const out = await consensus([a, b], { prompt: "hi" }, { arbiter });
   assert.equal(out.opinions.length, 2);
-  assert.equal(out.verdict && out.verdict.text, "verdict:true"); // arbiter received both opinions in its prompt
+  assert.equal(out.verdict && /** @type {any} */ (out.verdict).text, "verdict:true"); // arbiter received both opinions in its prompt
 });
 
 test("C2: all-failed short-circuits with no arbiter call", async () => {

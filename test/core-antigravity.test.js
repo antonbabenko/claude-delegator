@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const { makeAntigravityProvider } = require("../core/providers/antigravity.js");
 
 const fakeBridge = {
-  buildAgyArgs: (req) => ["--model", req.model || "auto-gemini-3", req.prompt],
+  buildAgyArgs: (/** @type {any} */ req) => ["--model", req.model || "auto-gemini-3", req.prompt],
   runGemini: async () => ({ response: "gemini reply", threadId: "g-1", recovered: false }),
   classifyGeminiError: () => ({ errorKind: "timeout", retryable: true }),
 };
@@ -28,7 +28,7 @@ test("AG2: recovered:true is still a success (drain), not an error", async () =>
 test("AG3: thrown runGemini classifies from the real message, not an empty string", async () => {
   // Mirror the message-keyed branches of the real classifyGeminiError so this
   // test fails if the adapter ever hardcodes "" again (which silences missing-cli).
-  const classifyGeminiError = (errMsg, errCode) => {
+  const classifyGeminiError = (/** @type {any} */ errMsg, /** @type {any} */ errCode) => {
     const msg = String(errMsg || "");
     const lower = msg.toLowerCase();
     if (errCode === "timeout") return { errorKind: "timeout", retryable: true };

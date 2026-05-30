@@ -39,8 +39,9 @@ function makeAntigravityProvider(opts = {}) {
       } catch (e) {
         // classifyGeminiError(errMsg, errCode): the missing-cli and upstream-abort
         // branches key off the message, so pass the real caught message - not "".
-        return toErrorResult("gemini", model, started, /** @type {any} */ (e), (_status, code) =>
-          bridge.classifyGeminiError((e && e.message) || "", code)
+        const err = /** @type {any} */ (e);
+        return toErrorResult("gemini", model, started, err, (_status, code) =>
+          bridge.classifyGeminiError((err && err.message) || "", code)
         );
       }
     },

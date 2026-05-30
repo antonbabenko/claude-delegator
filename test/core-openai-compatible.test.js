@@ -5,10 +5,10 @@ const assert = require("node:assert/strict");
 const { makeOpenAICompatibleProvider, MAX_SESSIONS } = require("../core/providers/openai-compatible.js");
 
 const fakeBridge = {
-  callOpenRouter: async ({ model }) => ({ text: `reply from ${model}` }),
-  classifyError: (status) => ({ errorKind: status === 401 ? "auth" : "unknown", retryable: false }),
-  buildMessages: (turns) => turns,
-  buildInitialTurns: (sys, prompt) => [{ role: "system", text: sys }, { role: "user", text: prompt }],
+  callOpenRouter: async (/** @type {any} */ { model }) => ({ text: `reply from ${model}` }),
+  classifyError: (/** @type {any} */ status) => ({ errorKind: status === 401 ? "auth" : "unknown", retryable: false }),
+  buildMessages: (/** @type {any} */ turns) => turns,
+  buildInitialTurns: (/** @type {any} */ sys, /** @type {any} */ prompt) => [{ role: "system", text: sys }, { role: "user", text: prompt }],
 };
 
 test("OC1: ask returns a success DelegationResult with resolved model + threadId", async () => {
@@ -44,7 +44,7 @@ test("OC4: the session map is bounded at MAX_SESSIONS across many fresh calls", 
     resolveModel: () => "m", bridge: fakeBridge });
   for (let i = 0; i < MAX_SESSIONS + 25; i++) {
     const r = await p.ask({ prompt: `q${i}` }); // each fresh call -> new threadId
-    assert.ok(r.threadId);
+    assert.ok(/** @type {any} */ (r).threadId);
   }
   assert.equal(/** @type {any} */ (p).__sessionCount, MAX_SESSIONS);
 });

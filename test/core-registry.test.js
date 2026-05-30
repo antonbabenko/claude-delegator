@@ -3,7 +3,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { makeRegistry } = require("../core/registry.js");
 
-/** @returns {import("../core/types.js").Provider} */
+/** @param {string} name @returns {import("../core/types.js").Provider} */
 function prov(name) {
   return /** @type {any} */ ({ name, capabilities: {}, async health() { return { ok: true }; }, async ask() { return { provider: name, model: "m", isError: false, ms: 0 }; } });
 }
@@ -22,7 +22,7 @@ const config = {
 
 test("G1: get returns a registered provider by name", () => {
   const reg = makeRegistry([prov("codex"), prov("grok")]);
-  assert.equal(reg.get("grok").name, "grok");
+  assert.equal(/** @type {any} */ (reg.get("grok")).name, "grok");
   assert.equal(reg.get("nope"), undefined);
 });
 
@@ -43,7 +43,7 @@ test("G3: a disabled (askAll:false) OR model is never in the fan-out - issue 001
 test("G4: a per-alias OR wrapper injects the alias model into ask() and renames provider", async () => {
   let gotModel;
   const orp = /** @type {any} */ ({ name: "openrouter", capabilities: {}, async health() { return { ok: true }; },
-    async ask(req) { gotModel = req.model; return { provider: "openrouter", model: req.model, isError: false, ms: 0 }; } });
+    async ask(/** @type {any} */ req) { gotModel = req.model; return { provider: "openrouter", model: req.model, isError: false, ms: 0 }; } });
   const reg = makeRegistry([orp]);
   const { providers } = reg.selectForAskAll({ config, expert: "architect" });
   const wrapped = /** @type {any} */ (providers.find((p) => p.name === "openrouter:all-on"));
