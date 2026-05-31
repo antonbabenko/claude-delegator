@@ -73,11 +73,37 @@ The canonical marketplace is [`antonbabenko/agent-plugins`](https://github.com/a
 <details>
 <summary>Use in any MCP host (standalone, without the Claude Code plugin)</summary>
 
-The orchestration server is also published on its own - npm [`@antonbabenko/deliberation-mcp`](https://www.npmjs.com/package/@antonbabenko/deliberation-mcp), Official MCP Registry name `io.github.antonbabenko/deliberation`. Add it to any stdio MCP host:
+The orchestration server is also published on its own - npm [`@antonbabenko/deliberation-mcp`](https://www.npmjs.com/package/@antonbabenko/deliberation-mcp), Official MCP Registry name `io.github.antonbabenko/deliberation`.
+
+**One-click install:**
+
+[![Install in Cursor](https://img.shields.io/badge/Install-Cursor-blue?style=flat-square&logo=cursor)](https://cursor.com/en-US/install-mcp?name=Deliberation&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBhbnRvbmJhYmVua28vZGVsaWJlcmF0aW9uLW1jcCJdfQ==)
+[![Install in VS Code](https://img.shields.io/badge/Install-VS_Code-FF9900?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=Deliberation&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40antonbabenko%2Fdeliberation-mcp%22%5D%7D)
+[![Install in Kiro](https://img.shields.io/badge/Install-Kiro-9046FF?style=flat-square&logo=kiro)](https://kiro.dev/launch/mcp/add?name=Deliberation&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40antonbabenko%2Fdeliberation-mcp%22%5D%7D)
+
+**Manual config** - add this to your host's MCP config (most hosts use the `mcpServers` key):
 
 ```json
-{ "command": "npx", "args": ["-y", "@antonbabenko/deliberation-mcp"], "type": "stdio" }
+{
+  "mcpServers": {
+    "deliberation": { "command": "npx", "args": ["-y", "@antonbabenko/deliberation-mcp"] }
+  }
+}
 ```
+
+Per-host config location and the key it expects:
+
+| Host | Config | Key |
+|------|--------|-----|
+| Claude Code | `claude mcp add deliberation -- npx -y @antonbabenko/deliberation-mcp` (or project `.mcp.json`) | `mcpServers` |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS), `%APPDATA%\Claude\claude_desktop_config.json` (Windows) | `mcpServers` |
+| Cursor | `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project) | `mcpServers` |
+| VS Code | `.vscode/mcp.json` - note: each entry needs `"type": "stdio"` | `servers` |
+| Codex CLI | `~/.codex/config.toml` - TOML, e.g. `[mcp_servers.deliberation]` | `mcp_servers` |
+| Gemini CLI | `~/.gemini/settings.json` | `mcpServers` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` | `mcpServers` |
+| Zed | `settings.json` | `context_servers` |
+| Cline | the extension's MCP settings (Cline panel -> MCP Servers) | `mcpServers` |
 
 Provider prerequisites are the same as the plugin (see [Requirements](#requirements)): the Codex CLI for GPT, `agy` for Gemini, `XAI_API_KEY` for Grok, and `OPENROUTER_API_KEY` plus `~/.claude/deliberation/config.json` for OpenRouter (override the config path with `DELIBERATION_CONFIG`).
 
