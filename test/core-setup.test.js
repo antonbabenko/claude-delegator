@@ -6,6 +6,7 @@ const path = require("node:path");
 const fs = require("node:fs");
 
 const { runSetup, STARTER_CONFIG } = require("../server/mcp/setup.js");
+const { validateConfig } = require("../server/openrouter/config.js");
 
 /** Make an isolated temp HOME; never touches the real ~/.claude. */
 function makeHome() {
@@ -152,6 +153,35 @@ test("SU6: write failure -> partial config unlinked, exit 1", () => {
   } finally {
     rmrf(home);
   }
+});
+
+// SU8: the STARTER_CONFIG written by setup must itself validate under validateConfig
+// (no ajv: parity is asserted via the real validator). Guards against the starter
+// drifting from the schema the server enforces.
+test("SU8: STARTER_CONFIG validates under validateConfig", () => {
+  const { ok, resolved, error } = validateConfig(STARTER_CONFIG);
+  assert.equal(ok, true, error);
+  assert.ok(resolved);
+  // openrouter ships disabled in the starter; consensus arbiter is the auto shorthand.
+  assert.equal(resolved.openrouter.enabled, false);
+  assert.deepEqual(resolved.consensus, { arbiter: "auto" });
+  assert.deepEqual(resolved.openrouter.models, []);
+  assert.equal(resolved.openrouter.maxFanout, 3);
+});
+
+// SU9: the JSON Schema's worked example must also validate under validateConfig, so
+// the schema and the runtime validator agree on the unified v1 shape.
+test("SU9: config.schema.json example validates under validateConfig", () => {
+  const schema = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config", "config.schema.json"), "utf8"));
+  assert.ok(Array.isArray(schema.examples) && schema.examples.length >= 1, "schema carries an example");
+  const example = schema.examples[0];
+  const { ok, resolved, error } = validateConfig(example);
+  assert.equal(ok, true, error);
+  assert.ok(resolved);
+  // the dedicated arbiter record resolves and is referenced by { model: id }
+  assert.deepEqual(resolved.consensus.arbiter, { model: "claude-arb" });
+  assert.equal(resolved.openrouter.models.some((m) => m.alias === "claude-arb"), true);
+  assert.deepEqual(resolved.consensusWarnings, []);
 });
 
 // SU7: mkdir throws EEXIST (a parent component is a regular file). This must

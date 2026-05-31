@@ -26,19 +26,39 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { resolveConfigPath } = require("../../core/paths.js");
 
-/** Starter config written when none exists. Consensus arbiter defaults to "auto". */
+/** The JSON Schema URL the starter config points its `$schema` at (editor validation). */
+const SCHEMA_URL = "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config/config.schema.json";
+
+/**
+ * Starter config written when none exists. Unified v1 shape: providers carry
+ * connection config only; models is a named-record map; routing holds fan-out;
+ * consensus.arbiter defaults to the "auto" shorthand. OpenRouter ships disabled
+ * with an empty models map so the user opts in by enabling it and adding records.
+ */
 const STARTER_CONFIG = {
+  $schema: SCHEMA_URL,
   version: 1,
-  consensus: { arbiter: "auto" },
-  openrouter: {
-    enabled: false,
-    models: [],
+  providers: {
+    codex: { enabled: true },
+    gemini: { enabled: true },
+    grok: { enabled: true, apiKeyEnv: "XAI_API_KEY" },
+    openrouter: {
+      enabled: false,
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      apiBase: "https://openrouter.ai/api/v1",
+      allowRawModel: false,
+      defaultModel: "openai/gpt-4.1-mini",
+      defaults: { reasoningEffort: "high", temperature: 0.2, timeout: 120000 },
+    },
   },
+  models: {},
+  routing: { maxFanout: 3 },
+  consensus: { arbiter: "auto" },
 };
 
 /**
- * Starter config file text: pretty-printed JSON. The openrouter:<alias> example
- * is printed to stdout, not embedded (JSON has no comments).
+ * Starter config file text: pretty-printed JSON. The models-map example and the
+ * { model: id } arbiter form are printed to stdout, not embedded (JSON has no comments).
  * @returns {string}
  */
 function starterConfigText() {
@@ -52,9 +72,9 @@ function starterConfigText() {
  */
 function openrouterExampleLines() {
   return [
-    "Example openrouter model entry (add under openrouter.models, set enabled: true):",
-    '  { "alias": "claude", "model": "anthropic/claude-3.7-sonnet", "askAll": true, "consensus": true }',
-    "Then reference it as the arbiter with consensus.arbiter = \"openrouter:claude\".",
+    "Example model record (add under models, then set providers.openrouter.enabled: true):",
+    '  "claude-arb": { "provider": "openrouter", "model": "anthropic/claude-3.7-sonnet", "askAll": true, "consensus": true }',
+    'Then reference it as the arbiter with consensus.arbiter = { "model": "claude-arb" }.',
   ];
 }
 
@@ -70,9 +90,9 @@ function providerGuidanceLines() {
     "  Grok (xAI)    - set XAI_API_KEY in the server env.",
     "  OpenRouter    - set OPENROUTER_API_KEY and declare models in the config.",
     "",
-    "Recommended cross-host arbiter: openrouter:<a claude alias> (an out-of-panel",
-    "Claude model), so consensus is adjudicated by a model that is not one of the",
-    "voting providers. Set it with consensus.arbiter in the config.",
+    "Recommended cross-host arbiter: a dedicated Claude model record (an out-of-panel",
+    "model), so consensus is adjudicated by a model that is not one of the voting",
+    'providers. Set it with consensus.arbiter = { "model": "<your-record-id>" }.',
   ];
 }
 

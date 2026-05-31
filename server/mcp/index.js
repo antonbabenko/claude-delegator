@@ -7,7 +7,6 @@
 const { makeRegistry, pinAlias } = require("../../core/registry.js");
 const { askAll, askOne, consensus } = require("../../core/orchestrate.js");
 const { PROMPTS } = require("../../core/prompts/index.js");
-const { OR_ARBITER_RE } = require("../openrouter/config.js");
 
 const ADVISORY = { readOnlyHint: true };
 /** @type {Record<string, string>} */
@@ -80,16 +79,19 @@ const BUILTIN_NAMES = new Set(["codex", "gemini", "grok"]);
  * providers[0]. Soft-degrade only - an unusable spec falls back to "auto" with a
  * warning rather than failing the consensus call.
  *
- * - "host"   -> { mode:"host", provider:null }. The handler SKIPS the arbiter
- *               pass entirely (verdict:null); the host (e.g. Claude) arbitrates.
- * - "auto"   -> first provider in `selected` whose health() is ok, PREFERRING an
- *               openrouter:* one; falls back to selected[0] if none report ok.
- * - builtin  -> registry.get(name) if registered, else degrade to auto + warning.
- * - openrouter:<alias> -> pinAlias on the openrouter provider for that alias,
- *               else degrade to auto + warning. The alias need NOT be
- *               consensus:true - arbiter eligibility != voting-panel membership.
+ * The spec is the NORMALIZED arbiter from config (resolveConsensus): either a
+ * shorthand string or an object { model: "<id>" }.
  *
- * @param {string} spec
+ * - "host"          -> { mode:"host", provider:null }. The handler SKIPS the
+ *                      arbiter pass entirely (verdict:null); the host arbitrates.
+ * - "auto"          -> first provider in `selected` whose health() is ok,
+ *                      PREFERRING an openrouter:* one; falls back to selected[0].
+ * - builtin         -> registry.get(name) if registered + enabled, else degrade.
+ * - { model: id }   -> pinAlias on the openrouter provider for that models id,
+ *                      else degrade to auto + warning. The id need NOT be
+ *                      consensus:true - arbiter eligibility != panel membership.
+ *
+ * @param {string|{model:string}} spec
  * @param {Provider[]} selected  the consensus voting panel
  * @param {{get:(n:string)=>(Provider|undefined)}} registry
  * @param {() => any} getConfig
@@ -114,24 +116,24 @@ async function resolveArbiter(spec, selected, registry, getConfig) {
 
   const cfg = getConfig() || {};
 
+  // Object form { model: "<id>" }: pin that models entry as the arbiter.
+  if (spec && typeof spec === "object") {
+    const id = spec.model;
+    const orProvider = registry.get("openrouter");
+    const models = (cfg.openrouter && cfg.openrouter.models) || [];
+    const model = models.find((/** @type {any} */ m) => m && m.alias === id);
+    // OpenRouter must be enabled both as a provider and as the openrouter block.
+    const orEnabled = providerEnabled(cfg, "openrouter") && !(cfg.openrouter && cfg.openrouter.enabled === false);
+    if (orProvider && model && orEnabled) return { mode: "server", provider: pinAlias(orProvider, model) };
+    return auto(`configured arbiter model '${id}' is not available`);
+  }
+
   if (BUILTIN_NAMES.has(spec)) {
     const p = registry.get(spec);
     // Mirror core/registry.js builtinsFor: a provider disabled in config is not
     // a usable arbiter even though the registry still holds it (enablement is
     // applied at selection time, not at registry build). Degrade, never hard-fail.
     if (p && providerEnabled(cfg, spec)) return { mode: "server", provider: p };
-    return auto(`configured arbiter '${spec}' is not available`);
-  }
-
-  const orMatch = OR_ARBITER_RE.exec(spec);
-  if (orMatch) {
-    const alias = orMatch[1];
-    const orProvider = registry.get("openrouter");
-    const models = (cfg.openrouter && cfg.openrouter.models) || [];
-    const model = models.find((/** @type {any} */ m) => m && m.alias === alias);
-    // OpenRouter must be enabled both as a provider and as the openrouter block.
-    const orEnabled = providerEnabled(cfg, "openrouter") && !(cfg.openrouter && cfg.openrouter.enabled === false);
-    if (orProvider && model && orEnabled) return { mode: "server", provider: pinAlias(orProvider, model) };
     return auto(`configured arbiter '${spec}' is not available`);
   }
 

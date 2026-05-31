@@ -373,89 +373,159 @@ It is **advisory-only** - it cannot edit files or run shell commands.
 The bridge and the fan-out commands (`/ask-all`, `/consensus`) read
 `~/.config/deliberation/config.json` at call time - the canonical XDG path (Windows:
 `%APPDATA%\deliberation\config.json`). Override the path with `DELIBERATION_CONFIG`. The file is stat-gated: the bridge re-reads it only when
-the mtime changes, so edits to the `openrouter` block (models, flags, defaults) take
-effect immediately without restarting Claude Code or re-running `/setup`. Toggling a
+the mtime changes, so edits to `models`, `routing`, or the `providers.openrouter` block
+take effect immediately without restarting Claude Code or re-running `/setup`. Toggling a
 **built-in** provider (codex / gemini / grok) still requires `/setup` to re-register
 or de-register the MCP server.
 
-Config file schema (strict JSON, version must be `1`):
+### Concepts
+
+The config has four top-level sections, each with one job:
+
+- **`providers`** - transport / connection only. Per provider: `enabled` (default true)
+  plus auth/endpoint keys. `providers.openrouter` also carries the OpenRouter-specific
+  connection keys (`apiBase`, `allowRawModel`, `defaultModel`, per-call `defaults`).
+- **`models`** - named model records, keyed by id. Each record names its `provider` and
+  `model` slug and sets routing flags. This is where you declare the models the panel uses.
+- **`routing`** - global fan-out policy (`maxFanout`).
+- **`consensus.arbiter`** - who synthesizes the consensus verdict.
+
+Config file schema (strict JSON, `version` must be `1`):
 
 ```json
 {
+  "$schema": "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config/config.schema.json",
   "version": 1,
   "providers": {
     "codex":  { "enabled": true },
     "gemini": { "enabled": true },
-    "grok":   { "enabled": true }
+    "grok":   { "enabled": true, "apiKeyEnv": "XAI_API_KEY" },
+    "openrouter": {
+      "enabled": true,
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "allowRawModel": false,
+      "defaultModel": "openai/gpt-4.1-mini",
+      "defaults": { "reasoningEffort": "high", "temperature": 0.2, "timeout": 120000 }
+    }
   },
-  "openrouter": {
-    "enabled": true,
-    "apiKeyEnv": "OPENROUTER_API_KEY",
-    "apiBase": "https://openrouter.ai/api/v1",
-    "allowRawModel": false,
-    "maxFanout": 3,
-    "defaultModel": "openai/gpt-4.1-mini",
-    "defaults": {
-      "reasoning_effort": "high",
-      "timeout": 120000,
-      "temperature": 0.2
-    },
-    "models": [
-      {
-        "alias": "gpt-4-or",
-        "model": "openai/gpt-4.1",
-        "experts": ["architect", "code-reviewer"],
-        "askAll": true,
-        "consensus": false,
-        "timeout": 90000
-      }
-    ]
-  }
+  "models": {
+    "claude-arb": {
+      "provider": "openrouter",
+      "model": "anthropic/claude-3.7-sonnet",
+      "askAll": true,
+      "consensus": true,
+      "experts": ["architect"],
+      "reasoningEffort": "high",
+      "temperature": 0.2,
+      "timeout": 60000
+    }
+  },
+  "routing": { "maxFanout": 3 },
+  "consensus": { "arbiter": { "model": "claude-arb" } }
 }
 ```
 
-**Model entry fields:**
+**`providers.openrouter` fields** (connection only; these are OpenRouter-specific and
+are not globalized):
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `alias` | string | required | Unique, `[a-z0-9-]+`, not `"openrouter-default"` |
+| `enabled` | boolean | `true` | Whether OpenRouter participates |
+| `apiKeyEnv` | string | `OPENROUTER_API_KEY` | Env var holding the API key |
+| `apiBase` | string | `https://openrouter.ai/api/v1` | OpenAI-compatible base URL |
+| `allowRawModel` | boolean | `false` | Allow raw slugs (not just configured records) |
+| `defaultModel` | string | absent | Slug for the bare `/ask-openrouter` call |
+| `defaults` | object | `{}` | Per-call defaults: `reasoningEffort`, `temperature`, `timeout` |
+
+**`models` record fields** (the map key is the record id, matching `^[a-z0-9-]+$` and not
+the reserved `openrouter-default`):
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `provider` | string | required | Must be `"openrouter"` in v1 (codex/gemini/grok are CLI-managed / singleton built-ins, out of scope) |
 | `model` | string | required | Provider model slug (e.g. `openai/gpt-4.1`) |
 | `experts` | array or absent | absent = all 7 | `[]` = none / explicit-only; array = subset of the 7 expert keys |
-| `askAll` | boolean | `true` | Include this model in `/ask-all` fan-out when eligible |
-| `consensus` | boolean | `false` | Include this model in `/consensus` voting |
-| `reasoning_effort` | string | from `defaults` | Per-model override |
-| `timeout` | number (ms) | from `defaults` | Per-model override |
-| `temperature` | number | from `defaults` | Per-model override |
-| `apiBase` | string | from `openrouter.apiBase` | Per-model override (use for mixing endpoints) |
+| `askAll` | boolean | `true` | Include this record in `/ask-all` fan-out when eligible |
+| `consensus` | boolean | `false` | Include this record in `/consensus` voting |
+| `reasoningEffort` | string | from `defaults` | Per-record override (maps to the wire `reasoning_effort`) |
+| `timeout` | number (ms) | from `defaults` | Per-record override |
+| `temperature` | number | from `defaults` | Per-record override |
+| `apiBase` | string | from `providers.openrouter.apiBase` | Per-record override (use for mixing endpoints) |
 
-**On `temperature`:** most delegator work is analytical - code review, debugging,
+**On `temperature`:** most deliberation work is analytical - code review, debugging,
 security audits, architecture and plan verdicts - where you want focused, repeatable
-answers. Leave `temperature` unset (the bridge default is low) for those. Raise it
-(roughly `0.6`-`0.9`) only for generative fan-out where spread across models is the
-point: brainstorming, naming, "give me 20 options". Keep it low for `/consensus`
-rounds; you want the models reasoning, not improvising.
+answers. Leave `temperature` unset and the field is omitted, so the provider default
+applies (commonly around `1.0`); set a low value (roughly `0.1`-`0.3`) when you want
+that focused, repeatable behavior. Raise it (roughly `0.6`-`0.9`) only for generative
+fan-out where spread across models is the point: brainstorming, naming, "give me 20
+options". Keep it low for `/consensus` rounds; you want the models reasoning, not
+improvising.
+
+### consensus.arbiter
+
+`consensus.arbiter` names who synthesizes the verdict. Two forms:
+
+- A **shorthand string**: `"auto"` (default - pick a healthy voice, preferring an
+  OpenRouter one), `"host"` (the host arbitrates; the server runs no arbiter pass), or a
+  built-in provider name `"codex"` / `"gemini"` / `"grok"`.
+- An **object** `{ "model": "<id>" }` referencing a `models` record. The record can be
+  any entry - even one with `askAll: false` and `consensus: false` - which is the
+  dedicated-arbiter case (an out-of-panel model that adjudicates without voting). Arbiter
+  eligibility is independent of voting-panel membership.
+
+A cross-host recommendation: a dedicated Claude record used only as the arbiter
+(`{ "model": "claude-arb" }`) lets a non-Claude host synthesize with a model that is not
+one of the voting providers. An unusable arbiter (unknown shorthand, a `{ model }` id that
+is not configured, or a disabled provider) soft-degrades to `"auto"` with a warning - it
+never hard-fails the config.
+
+### camelCase config keys, wire mapping
+
+Config keys are camelCase: `reasoningEffort`, `temperature`, `timeout`. The bridge sends
+`reasoning_effort` on the wire; the camelCase -> wire mapping happens in one place - the
+resolved layer in `server/openrouter/config.js`, which carries `reasoning_effort` on each
+resolved record and on `defaults`. `temperature` and `timeout` pass through unchanged.
+
+**Which params apply on which path:** the unified `/ask-all`, `/consensus`, and the
+`{ model: <id> }` arbiter path apply a record's per-model `reasoningEffort`, `temperature`,
+and `timeout` (forwarded with arg-wins precedence by `pinAlias` in `core/registry.js`). A
+record's per-model `apiBase` and the `providers.openrouter.defaults` block apply only on the
+standalone `/ask-openrouter` bridge path, because the unified server's OpenRouter provider
+fixes `apiBase` / `apiKeyEnv` at construction. That is a pre-existing limitation, not a goal
+of the arbiter feature.
 
 ### Routing
 
-- **`/ask-all`**: includes all models where `askAll !== false` and the model is eligible
-  for the requested expert; capped to `maxFanout` models (default 3).
-- **`/consensus`**: includes models where `consensus === true`; NOT subject to `maxFanout`.
-  A warning is logged when more than 3 models enter a consensus round (cost).
-- **`openrouter-default`** is the reserved alias for the bare `mcp__deliberation__openrouter`
-  call and `/ask-openrouter` with no alias specified. It is the single-shot fallback only
-  and is never included in fan-out or consensus.
+- **`/ask-all`**: includes all records where `askAll !== false` and the record is eligible
+  for the requested expert; capped to `routing.maxFanout` records (default 3).
+- **`/consensus`**: includes records where `consensus === true`; NOT subject to `maxFanout`.
+  A warning is logged when more than 3 records enter a consensus round (cost).
+- **`openrouter-default`** is the reserved id for the bare `mcp__deliberation__openrouter`
+  call and `/ask-openrouter` with no record specified. It resolves to `defaultModel`, is the
+  single-shot fallback only, and is never included in fan-out or consensus.
 - Implementation tasks always route to Codex or Gemini, never to OpenRouter.
+
+### Editor validation (VS Code, no extension)
+
+The config carries a `$schema` key pointing at `config/config.schema.json` (JSON Schema draft
+2020-12). VS Code's built-in JSON support reads that key and gives you validation,
+autocomplete, and lint with **no third-party extension** - and it works on the user's real
+config outside this repo, because the file itself carries `$schema`. The in-repo `.vscode/`
+folder additionally wires a `json.schemas` mapping so example configs inside the repo
+validate even without the `$schema` line.
 
 ### Config validation (partial) and the `openrouter-list` contract
 
-Validation is **per-entry**, not all-or-nothing. A single malformed `models[]` entry
-(bad alias characters, duplicate alias, reserved alias, missing `model`, unknown expert,
-or a bad per-model override) no longer rejects the whole config - the bridge keeps every
-valid delegate and collects the bad ones into `invalidModels`. Only **top-level/schema**
+Validation is **per-entry**, not all-or-nothing. A single malformed `models` record
+(bad id characters, reserved id, non-`openrouter` provider, missing `model`, unknown
+expert, or a bad per-record override) no longer rejects the whole config - the bridge keeps
+every valid record and collects the bad ones into `invalidModels`. Only **top-level/schema**
 problems hard-fail the whole config: malformed JSON, a non-object root, an unsupported
-`version`, or a non-integer/`< 1` `maxFanout`.
+`version`, or a non-integer/`< 1` `routing.maxFanout`.
 
-`mcp__deliberation__openrouter-list` returns:
+`mcp__deliberation__openrouter-list` returns (each delegate keeps the `alias` field, equal
+to the record id, so selection and the wire stay stable):
 
 ```jsonc
 {
@@ -464,7 +534,7 @@ problems hard-fail the whole config: malformed JSON, a non-object root, an unsup
   "maxFanout": 3,
   "maxFanoutHigh": false,
   "invalidModels": [ { "index": 2, "alias": "qwen3.7-max",
-                       "reason": "models[2] alias must match [a-z0-9-]+ ...",
+                       "reason": "models id \"qwen3.7-max\" must match [a-z0-9-]+ ...",
                        "suggestedAlias": "qwen3-7-max" } ]
 }
 ```
@@ -473,10 +543,10 @@ problems hard-fail the whole config: malformed JSON, a non-object root, an unsup
   `delegates: []` (and `invalidModels` absent/empty). `/ask-all` and `/consensus` treat
   the `error` form as "OpenRouter set EMPTY".
 - `invalidModels[].suggestedAlias` is present only when a safe deterministic repair exists:
-  alias-format errors are sanitized to `[a-z0-9-]+` (e.g. `qwen3.7-max` -> `qwen3-7-max`),
-  and duplicate aliases get a free `-N` suffix. Suggestions are collision-checked against
-  every existing alias and the reserved `openrouter-default`. Entries with no safe fix
-  (missing `model`, unknown expert, reserved-alias clash) have no `suggestedAlias`.
+  id-format errors are sanitized to `[a-z0-9-]+` (e.g. `qwen3.7-max` -> `qwen3-7-max`), and
+  collisions get a free `-N` suffix. Suggestions are collision-checked against every existing
+  id and the reserved `openrouter-default`. Entries with no safe fix (missing `model`, unknown
+  expert, non-`openrouter` provider, reserved-id clash) have no `suggestedAlias`.
 - The bridge never edits `config.json`. The `/ask-all` and `/consensus` commands surface
   `invalidModels` and offer **Fix & proceed** (default - apply each `suggestedAlias` to
   `config.json`, drop the unrepairable, re-list), **Run valid only**, or **Skip all
