@@ -55,6 +55,36 @@ function assertSafeRel(rel, hostId) {
 }
 
 /**
+ * Claude-Code-ONLY tokens that are broken/meaningless on other hosts. A generated
+ * host artifact must contain none of these (the plain word "Claude" is allowed as
+ * cross-host context). Sources like rules/*.md keep these tokens for Claude Code;
+ * the per-host generators must strip/transform them (e.g. kiro.js hostNeutralTriggers).
+ */
+const CLAUDE_ONLY_TOKENS = [
+  /\$\{CLAUDE_PLUGIN_ROOT\}/, // Claude plugin env var
+  /\.claude\//, // Claude config/cache paths
+  /\/deliberation:/, // Claude slash-command namespace (/deliberation:ask-gpt, ...)
+  /mcp__deliberation/, // Claude MCP tool ids (mcp__deliberation__ask-all, mcp__deliberation-codex__codex, ...)
+  /reload-plugins/, // Claude /reload-plugins guidance
+  /plugins\/cache\//, // Claude plugin cache globs
+];
+
+/**
+ * Throw if a generated artifact leaks a Claude-Code-only token (see CLAUDE_ONLY_TOKENS).
+ * @param {string} rel @param {string} content @param {string} hostId
+ */
+function assertHostClean(rel, content, hostId) {
+  for (const re of CLAUDE_ONLY_TOKENS) {
+    if (re.test(content)) {
+      throw new Error(
+        `host '${hostId}' artifact ${rel} leaks a Claude-Code-only reference (${re}); ` +
+          "host artifacts must be host-neutral - strip/transform it in the host generator."
+      );
+    }
+  }
+}
+
+/**
  * Build every host artifact as a { repoRelativePath: content } map. Throws if a
  * host emits an unsafe path or two hosts claim the same output path.
  * @returns {Record<string,string>}
@@ -67,6 +97,7 @@ function buildArtifacts() {
     const files = build(ctx);
     for (const [rel, content] of Object.entries(files)) {
       assertSafeRel(rel, build.id);
+      assertHostClean(rel, content, build.id);
       if (Object.prototype.hasOwnProperty.call(all, rel)) {
         throw new Error(`host '${build.id}' collides on output path: ${rel}`);
       }
@@ -114,4 +145,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { buildArtifacts, readVersion, readDiskLF, HOSTS };
+module.exports = { buildArtifacts, readVersion, readDiskLF, HOSTS, CLAUDE_ONLY_TOKENS };

@@ -13,7 +13,7 @@ const assert = require("node:assert");
 const path = require("node:path");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
-const { buildArtifacts, readVersion, readDiskLF } = require("../scripts/sync-hosts.js");
+const { buildArtifacts, readVersion, readDiskLF, CLAUDE_ONLY_TOKENS } = require("../scripts/sync-hosts.js");
 
 const CODEX_MANIFEST = "plugins/deliberation/.codex-plugin/plugin.json";
 
@@ -30,4 +30,16 @@ test("Codex plugin manifest version matches version.json", () => {
   const version = readVersion();
   const manifest = JSON.parse(buildArtifacts()[CODEX_MANIFEST]);
   assert.strictEqual(manifest.version, version);
+});
+
+test("no host artifact leaks a Claude-Code-only reference", () => {
+  // buildArtifacts() also throws via the assertHostClean guard; this scans every
+  // file explicitly so a violation names the exact artifact + token.
+  const offenders = [];
+  for (const [rel, content] of Object.entries(buildArtifacts())) {
+    for (const re of CLAUDE_ONLY_TOKENS) {
+      if (re.test(content)) offenders.push(`${rel} :: ${re}`);
+    }
+  }
+  assert.deepStrictEqual(offenders, [], `Claude-only refs leaked into host artifacts:\n${offenders.join("\n")}`);
 });

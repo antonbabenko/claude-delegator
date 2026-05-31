@@ -15,11 +15,6 @@ You MUST scan incoming messages for delegation triggers. This is NOT optional.
 1. **PROACTIVE**: On every user message, check if semantic triggers match → delegate automatically
 2. **REACTIVE**: If user explicitly mentions GPT/Codex, Gemini, Grok, or an OpenRouter alias → delegate immediately
 
-When a trigger matches:
-1. Identify the appropriate expert
-2. Read their prompt file from `${CLAUDE_PLUGIN_ROOT}/prompts/[expert].md`
-3. Follow the delegation flow in `rules/orchestration.md`
-
 ---
 
 ## Available Experts
@@ -152,31 +147,3 @@ Set the sandbox based on what the task requires, not the expert type.
 OpenRouter and Grok are always advisory - never route implementation tasks to them.
 
 **Examples:**
-
-```typescript
-// Architect analyzing (advisory via Codex)
-mcp__deliberation-codex__codex({
-  prompt: "Analyze tradeoffs of Redis vs in-memory caching",
-  sandbox: "read-only"
-})
-
-// Architect implementing (implementation via Gemini)
-mcp__deliberation-gemini__gemini({
-  prompt: "Refactor the caching layer to use Redis",
-  sandbox: "workspace-write"
-})
-
-// Security Analyst reviewing (advisory via OpenRouter)
-mcp__deliberation-openrouter__openrouter({
-  prompt: "Review this auth flow for vulnerabilities",
-  alias: "gpt-4-or",
-  cwd: "/path/to/project"
-  // no sandbox parameter - OpenRouter is always advisory
-})
-
-// Security Analyst hardening (implementation via Codex - not OpenRouter)
-mcp__deliberation-codex__codex({
-  prompt: "Fix the SQL injection vulnerability in user.ts",
-  sandbox: "workspace-write"
-})
-```

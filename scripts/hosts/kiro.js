@@ -117,6 +117,26 @@ function expertsSteering() {
   ].join("\n");
 }
 
+/**
+ * Strip Claude-Code-only regions from rules/triggers.md so the Kiro steering copy
+ * is host-neutral: the "When a trigger matches" workflow (carries `${CLAUDE_PLUGIN_ROOT}`
+ * + a `rules/orchestration.md` path that do not exist off Claude Code) and the fenced
+ * examples that call the Claude bridge MCP tool names (`mcp__deliberation-<provider>__*`).
+ * The host-neutral trigger TABLES stay.
+ * @param {string} text @returns {string}
+ */
+function hostNeutralTriggers(text) {
+  return text
+    // The "When a trigger matches" numbered workflow (tolerate leading whitespace).
+    .replace(/\nWhen a trigger matches:\n(?:[ \t]*\d+\..*\n)+/g, "\n")
+    // A fenced block that mentions a Claude bridge MCP tool. Require a language tag
+    // (`[a-z]+`, so a bare closing fence can't be mistaken for an opening one) and
+    // temper BOTH halves with `(?!```)` so the match never crosses a fence boundary
+    // (no over-matching into a later trigger table).
+    .replace(/```[a-z]+\n(?:(?!```)[\s\S])*?mcp__deliberation(?:(?!```)[\s\S])*?```\n?/g, "")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
 function build(ctx) {
   /** @type {Record<string,string>} */
   const out = {};
@@ -157,7 +177,7 @@ function build(ctx) {
 
   // Steering: an "always" routing summary, plus the verbatim trigger catalogue.
   out["steering/deliberation.md"] = steeringDoc(expertsSteering());
-  out["steering/deliberation-triggers.md"] = steeringDoc(S.readText(ctx.repoRoot, "rules/triggers.md"));
+  out["steering/deliberation-triggers.md"] = steeringDoc(hostNeutralTriggers(S.readText(ctx.repoRoot, "rules/triggers.md")));
 
   return out;
 }
