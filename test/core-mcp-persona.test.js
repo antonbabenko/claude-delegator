@@ -148,6 +148,22 @@ function recordingProvider(name, sink, health = { ok: true }) {
   };
 }
 
+/**
+ * Like recordingProvider but ask() always throws, so the panel truly fails.
+ * @param {string} name
+ * @param {{calls:any[]}} sink
+ * @param {{ok:boolean}} [health]
+ * @returns {Provider}
+ */
+function throwingProvider(name, sink, health = { ok: true }) {
+  return {
+    name,
+    capabilities: { canImplement: false, fileUpload: false, multiTurn: false },
+    async health() { return health; },
+    async ask(req) { sink.calls.push({ provider: name, prompt: req.prompt }); throw new Error(`${name} down`); },
+  };
+}
+
 /** @param {string} arbiter @param {any[]} [models] */
 function cfg(arbiter, models = []) {
   return { providers: {}, openrouter: { maxFanout: 3, models }, consensus: { arbiter }, consensusWarnings: /** @type {string[]} */ ([]) };
@@ -266,4 +282,87 @@ test("AR9: consensusWarnings from config are surfaced in the consensus response"
   const srv = buildServer({ providers: [recordingProvider("codex", sink), recordingProvider("gemini", sink), recordingProvider("grok", sink)], getConfig: () => c });
   const out = await callConsensus(srv, { expert: "architect" });
   assert.ok(out.warnings.some((/** @type {string} */ w) => /config-level warning/.test(w)));
+});
+
+// IMPORTANT 1: 'auto' with no usable provider must NOT masquerade as host mode.
+test("AR10: auto + zero healthy providers => server mode + all-providers-failed, NOT host", async () => {
+  const sink = { calls: /** @type {any[]} */ ([]) };
+  const srv = buildServer({
+    // every provider unhealthy AND every ask throws, so the panel truly fails.
+    providers: [
+      throwingProvider("codex", sink, { ok: false }),
+      throwingProvider("grok", sink, { ok: false }),
+    ],
+    getConfig: () => cfg("auto"),
+  });
+  const out = await callConsensus(srv, { expert: "architect" });
+  assert.notDeepEqual(out.arbiter, { mode: "host" }, "must not masquerade as host");
+  assert.equal(out.arbiter.mode, "server");
+  assert.equal(out.verdict, null);
+  assert.equal(out.error, "all-providers-failed");
+});
+
+test("AR10b: auto + empty panel => server mode + all-providers-failed, NOT host", async () => {
+  const sink = { calls: /** @type {any[]} */ ([]) };
+  // No built-ins enabled and no OR models => selectForConsensus yields [].
+  const c = { providers: { codex: { enabled: false }, gemini: { enabled: false }, grok: { enabled: false } },
+    openrouter: { maxFanout: 3, models: [] }, consensus: { arbiter: "auto" }, consensusWarnings: /** @type {string[]} */ ([]) };
+  const srv = buildServer({
+    providers: [recordingProvider("codex", sink), recordingProvider("gemini", sink), recordingProvider("grok", sink)],
+    getConfig: () => c,
+  });
+  const out = await callConsensus(srv, { expert: "architect" });
+  assert.equal(out.arbiter.mode, "server");
+  assert.equal(out.verdict, null);
+  assert.equal(out.error, "all-providers-failed");
+});
+
+// IMPORTANT 2: a disabled provider named as arbiter must soft-degrade, not hard-fail.
+test("AR11: arbiter set to a DISABLED built-in degrades to auto + warning (no hard-fail)", async () => {
+  const sink = { calls: /** @type {any[]} */ ([]) };
+  // grok is registered but disabled in config; arbiter:"grok" must NOT be used.
+  const c = { providers: { grok: { enabled: false } },
+    openrouter: { maxFanout: 3, models: [] }, consensus: { arbiter: "grok" }, consensusWarnings: /** @type {string[]} */ ([]) };
+  const srv = buildServer({
+    providers: [recordingProvider("codex", sink), recordingProvider("gemini", sink), recordingProvider("grok", sink)],
+    getConfig: () => c,
+  });
+  const out = await callConsensus(srv, { expert: "architect" });
+  assert.equal(out.arbiter.mode, "server");
+  assert.notEqual(out.arbiter.provider, "grok", "disabled arbiter must not be selected");
+  assert.ok(out.warnings.length >= 1);
+  assert.ok(out.verdict, "degraded arbiter still produces a verdict");
+  // grok (disabled) is never asked as the arbiter
+  assert.equal(sink.calls.some((cl) => cl.provider === "grok"), false);
+});
+
+test("AR11b: arbiter openrouter:<alias> with openrouter DISABLED degrades to auto + warning", async () => {
+  const sink = { calls: /** @type {any[]} */ ([]) };
+  // No consensus delegates in the panel (the disabled openrouter contributes none),
+  // so the explicit-pin path must reject the disabled alias and fall back to a
+  // built-in via auto, surfacing the not-available warning.
+  const c = { providers: { openrouter: { enabled: false } },
+    openrouter: { enabled: false, maxFanout: 3, models: [{ alias: "k2", model: "x/k2", experts: null, askAll: true, consensus: false }] },
+    consensus: { arbiter: "openrouter:k2" }, consensusWarnings: /** @type {string[]} */ ([]) };
+  const srv = buildServer({
+    providers: [recordingProvider("codex", sink), recordingProvider("gemini", sink), recordingProvider("grok", sink), recordingProvider("openrouter", sink)],
+    getConfig: () => c,
+  });
+  const out = await callConsensus(srv, { expert: "architect" });
+  assert.equal(out.arbiter.mode, "server");
+  assert.notEqual(out.arbiter.provider, "openrouter:k2"); // disabled alias not pinned
+  assert.ok(out.warnings.some((/** @type {string} */ w) => /not available/i.test(w)));
+});
+
+// MINOR 5: config parse errors must surface as a warning, not be silently swallowed.
+test("AR12: a config parse error is surfaced in the consensus warnings", async () => {
+  const sink = { calls: /** @type {any[]} */ ([]) };
+  // getConfigError mirrors the reader returning {ok:false, error} on bad JSON.
+  const srv = buildServer({
+    providers: [recordingProvider("codex", sink), recordingProvider("gemini", sink), recordingProvider("grok", sink)],
+    getConfig: () => cfg("auto"),
+    getConfigError: () => "config JSON parse error: Unexpected token",
+  });
+  const out = await callConsensus(srv, { expert: "architect" });
+  assert.ok(out.warnings.some((/** @type {string} */ w) => /parse error/i.test(w)), "parse error surfaced");
 });

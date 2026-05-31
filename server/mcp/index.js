@@ -7,6 +7,7 @@
 const { makeRegistry, pinAlias } = require("../../core/registry.js");
 const { askAll, askOne, consensus } = require("../../core/orchestrate.js");
 const { PROMPTS } = require("../../core/prompts/index.js");
+const { OR_ARBITER_RE } = require("../openrouter/config.js");
 
 const ADVISORY = { readOnlyHint: true };
 /** @type {Record<string, string>} */
@@ -111,26 +112,44 @@ async function resolveArbiter(spec, selected, registry, getConfig) {
 
   if (spec === "auto") return auto(undefined);
 
+  const cfg = getConfig() || {};
+
   if (BUILTIN_NAMES.has(spec)) {
     const p = registry.get(spec);
-    if (p) return { mode: "server", provider: p };
+    // Mirror core/registry.js builtinsFor: a provider disabled in config is not
+    // a usable arbiter even though the registry still holds it (enablement is
+    // applied at selection time, not at registry build). Degrade, never hard-fail.
+    if (p && providerEnabled(cfg, spec)) return { mode: "server", provider: p };
     return auto(`configured arbiter '${spec}' is not available`);
   }
 
-  const orMatch = /^openrouter:([a-z0-9-]+)$/.exec(spec);
+  const orMatch = OR_ARBITER_RE.exec(spec);
   if (orMatch) {
     const alias = orMatch[1];
     const orProvider = registry.get("openrouter");
-    const cfg = getConfig() || {};
     const models = (cfg.openrouter && cfg.openrouter.models) || [];
     const model = models.find((/** @type {any} */ m) => m && m.alias === alias);
-    if (orProvider && model) return { mode: "server", provider: pinAlias(orProvider, model) };
+    // OpenRouter must be enabled both as a provider and as the openrouter block.
+    const orEnabled = providerEnabled(cfg, "openrouter") && !(cfg.openrouter && cfg.openrouter.enabled === false);
+    if (orProvider && model && orEnabled) return { mode: "server", provider: pinAlias(orProvider, model) };
     return auto(`configured arbiter '${spec}' is not available`);
   }
 
   // Unrecognized spec (config validation should have degraded it already; this
   // is a defensive second guard so the handler never trusts a raw spec).
   return auto(`configured arbiter '${spec}' is not recognized`);
+}
+
+/**
+ * Whether a provider is enabled in config. Mirrors core/registry.js: a missing
+ * flag means enabled; only an explicit enabled:false disables it.
+ * @param {any} cfg
+ * @param {string} name
+ * @returns {boolean}
+ */
+function providerEnabled(cfg, name) {
+  const p = cfg && cfg.providers && cfg.providers[name];
+  return !p || p.enabled !== false;
 }
 
 /**
@@ -152,8 +171,9 @@ async function isHealthy(p) {
  * @param {Object} deps
  * @param {Provider[]} deps.providers
  * @param {() => any} deps.getConfig
+ * @param {() => (string|null)} [deps.getConfigError]  // last config load error (e.g. JSON parse), or null
  */
-function buildServer({ providers, getConfig }) {
+function buildServer({ providers, getConfig, getConfigError }) {
   const registry = makeRegistry(providers);
 
   /**
@@ -212,14 +232,26 @@ function buildServer({ providers, getConfig }) {
       const { providers: selected } = registry.selectForConsensus({ config: cfg, expert: expert || "" });
       const arbiterSpec = (cfg.consensus && cfg.consensus.arbiter) || "auto";
       const warnings = Array.isArray(cfg.consensusWarnings) ? cfg.consensusWarnings.slice() : [];
+      // Surface a config load/parse error (e.g. bad config.json) instead of
+      // silently swallowing it via getConfig()'s {} fallback.
+      const cfgErr = typeof getConfigError === "function" ? getConfigError() : null;
+      if (cfgErr) warnings.push(`config not loaded: ${cfgErr}`);
 
       const resolved = await resolveArbiter(arbiterSpec, selected, registry, getConfig);
       if (resolved.warning) warnings.push(resolved.warning);
 
-      if (resolved.mode === "host" || !resolved.provider) {
+      if (resolved.mode === "host") {
         // Host arbitrates: return opinions only, no server-side arbiter pass.
         const opinions = await askAll(selected, withPersona(req, expert));
         return { content: [{ type: "text", text: JSON.stringify({ opinions, verdict: null, arbiter: { mode: "host" }, warnings }) }] };
+      }
+
+      if (!resolved.provider) {
+        // Server mode but no usable arbiter (empty / all-unhealthy panel). Route
+        // through consensus(selected, ...) so the documented all-providers-failed
+        // signal is preserved instead of masquerading as host mode.
+        const out = await consensus(selected, withPersona(req, expert), { arbiterInstructions: PROMPTS.arbiter });
+        return { content: [{ type: "text", text: JSON.stringify({ opinions: out.opinions, verdict: out.verdict, error: out.error, arbiter: { mode: "server", provider: null }, warnings }) }] };
       }
 
       const arbiter = resolved.provider;
@@ -279,6 +311,13 @@ function startStdio() {
   const reader = makeConfigReader(require("../../core/paths.js").resolveConfigPath());
   /** @returns {any} */
   const getConfig = () => (reader.get().resolved || { providers: {}, openrouter: {} });
+  // Expose the last config load error (e.g. JSON parse failure) so the consensus
+  // handler can surface a broken config.json as a warning rather than swallow it.
+  /** @returns {(string|null)} */
+  const getConfigError = () => {
+    const r = reader.get();
+    return r && r.ok === false ? (r.error || "config load failed") : null;
+  };
 
   const initialOr = (getConfig().openrouter) || {};
   /** @type {Provider[]} */
@@ -296,7 +335,7 @@ function startStdio() {
       bridge: require("../openrouter/index.js"),
     }),
   ];
-  const srv = buildServer({ providers, getConfig });
+  const srv = buildServer({ providers, getConfig, getConfigError });
 
   if (typeof globalThis.fetch !== "function") {
     console.error("deliberation-mcp requires Node 18+ (global fetch unavailable).");

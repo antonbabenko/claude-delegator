@@ -176,6 +176,12 @@ function validateConfig(raw) {
 // @returns {{consensus:{arbiter:string}, warnings:string[]}}
 function resolveConsensus(rawConsensus, models) {
   const warnings = [];
+  // A present-but-non-object consensus key is malformed (e.g. consensus:"host").
+  // Per the invalid->auto+warning rule it must warn, not degrade silently.
+  if (rawConsensus !== undefined && !isObject(rawConsensus)) {
+    warnings.push(`consensus must be an object (got ${JSON.stringify(rawConsensus)}); using "${DEFAULT_ARBITER}"`);
+    return { consensus: { arbiter: DEFAULT_ARBITER }, warnings };
+  }
   const block = isObject(rawConsensus) ? rawConsensus : {};
   const spec = block.arbiter;
   if (spec === undefined) return { consensus: { arbiter: DEFAULT_ARBITER }, warnings };
@@ -244,4 +250,4 @@ function makeConfigReader(filePath) {
   };
 }
 
-module.exports = { validateConfig, makeConfigReader, EXPERT_KEYS, RESERVED_ALIAS, DEFAULT_API_BASE, DEFAULT_API_KEY_ENV };
+module.exports = { validateConfig, makeConfigReader, EXPERT_KEYS, RESERVED_ALIAS, DEFAULT_API_BASE, DEFAULT_API_KEY_ENV, OR_ARBITER_RE };

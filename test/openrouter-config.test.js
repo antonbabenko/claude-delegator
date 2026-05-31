@@ -259,13 +259,26 @@ test("CB5b: openrouter:<missing-alias> soft-degrades to 'auto' with a warning", 
   assert.match(resolved.consensusWarnings[0], /ghost/);
 });
 
-test("CB6: non-string / non-object consensus block degrades to default auto", () => {
-  for (const bad of [{ arbiter: 5 }, { arbiter: null }, "host", 7]) {
+test("CB6: object consensus block with a non-string arbiter degrades to auto + warning", () => {
+  for (const bad of [{ arbiter: 5 }, { arbiter: null }]) {
     const c = base();
     c.consensus = bad;
     const { ok, resolved } = validateConfig(c);
     assert.equal(ok, true, `consensus=${JSON.stringify(bad)} should not hard-fail`);
     assert.equal(resolved.consensus.arbiter, "auto");
+    assert.equal(resolved.consensusWarnings.length, 1, `${JSON.stringify(bad)}: one warning`);
+  }
+});
+
+test("CB9: non-object consensus block degrades to auto AND warns (invalid->auto+warning rule)", () => {
+  for (const bad of ["host", 7, true, []]) {
+    const c = base();
+    c.consensus = bad;
+    const { ok, resolved } = validateConfig(c);
+    assert.equal(ok, true, `consensus=${JSON.stringify(bad)} should not hard-fail`);
+    assert.equal(resolved.consensus.arbiter, "auto");
+    assert.equal(resolved.consensusWarnings.length, 1, `${JSON.stringify(bad)}: must warn`);
+    assert.match(resolved.consensusWarnings[0], /object/i);
   }
 });
 
