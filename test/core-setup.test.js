@@ -179,3 +179,31 @@ test("SU7: legacy + canonical both present -> no copy, legacy ignored notice", (
     rmrf(home);
   }
 });
+
+// SU8: DELIBERATION_CONFIG override set + legacy present -> write STARTER to the
+// override (not the legacy body), and suppress any migration/ignored notice.
+test("SU8: override set + legacy present -> writes starter, no migration/ignored notice", () => {
+  const home = makeHome();
+  try {
+    // A legacy config exists under the temp HOME...
+    const legacy = legacyConfig(home);
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    const legacyBody = '{"version":1,"my":"legacy","openrouter":{"enabled":true,"models":[]}}';
+    fs.writeFileSync(legacy, legacyBody);
+
+    // ...but DELIBERATION_CONFIG points at an unrelated override path.
+    const override = path.join(home, "cfg", "config.json");
+    const { out, lines } = capture();
+    const code = runSetup({ home, env: { DELIBERATION_CONFIG: override }, out });
+
+    assert.equal(code, 0);
+    assert.equal(fs.existsSync(override), true);
+    const written = JSON.parse(fs.readFileSync(override, "utf8"));
+    assert.deepEqual(written, STARTER_CONFIG); // starter, NOT the legacy body
+    assert.equal(fs.readFileSync(legacy, "utf8"), legacyBody); // legacy untouched
+    assert.ok(lines.some((l) => l.includes("Wrote starter config")));
+    assert.ok(!lines.some((l) => /Migrated|ignored/.test(l)));
+  } finally {
+    rmrf(home);
+  }
+});

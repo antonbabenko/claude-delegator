@@ -182,6 +182,29 @@ test("CP12: win32 without APPDATA falls back to ~/AppData/Roaming", () => {
   assert.equal(got, path.join(home, "AppData", "Roaming", "deliberation", "config.json"));
 });
 
+// --- config: relative XDG base must be ignored (XDG spec) ---------------------
+
+test("CP13: relative XDG_CONFIG_HOME is ignored -> canonical default (~/.config)", () => {
+  const got = resolveConfigPath({
+    home: HOME,
+    env: { XDG_CONFIG_HOME: "relative/cfg" },
+    platform: "linux",
+    exists: noneExist,
+  });
+  assert.equal(got, canonicalConfig(HOME));
+});
+
+test("CP14: win32 relative APPDATA is ignored -> ~/AppData/Roaming fallback", () => {
+  const home = "C:\\Users\\tester";
+  const got = resolveConfigPath({
+    home,
+    env: { APPDATA: "relative\\roaming" },
+    platform: "win32",
+    exists: noneExist,
+  });
+  assert.equal(got, path.join(home, "AppData", "Roaming", "deliberation", "config.json"));
+});
+
 // --- cache: env override + precedence ----------------------------------------
 
 test("CC1: DELIBERATION_CACHE wins verbatim", () => {
@@ -235,6 +258,27 @@ test("CC5: XDG_CACHE_HOME relocates canonical cache", () => {
     exists: existsFor([canonical]),
   });
   assert.equal(got, canonical);
+});
+
+test("CC8: relative XDG_CACHE_HOME is ignored -> canonical default (~/.cache)", () => {
+  const got = resolveGrokCachePath({
+    home: HOME,
+    env: { XDG_CACHE_HOME: "relative/cache" },
+    platform: "linux",
+    exists: noneExist,
+  });
+  assert.equal(got, canonicalCache(HOME));
+});
+
+test("CC9: win32 relative LOCALAPPDATA is ignored -> ~/AppData/Local fallback", () => {
+  const home = "C:\\Users\\tester";
+  const got = resolveGrokCachePath({
+    home,
+    env: { LOCALAPPDATA: "relative\\local" },
+    platform: "win32",
+    exists: noneExist,
+  });
+  assert.equal(got, path.join(home, "AppData", "Local", "deliberation", "grok-files.json"));
 });
 
 test("CC6: win32 uses LOCALAPPDATA (Local, not Roaming) for canonical cache", () => {

@@ -53,9 +53,29 @@ function resolveInjection(opts) {
 }
 
 /**
+ * True only for a non-empty, absolute path string. Per the XDG Base Directory
+ * spec, a relative base-dir value MUST be ignored and the default used. The
+ * Windows `%APPDATA%`/`%LOCALAPPDATA%` branches apply the same gate for symmetry.
+ *
+ * Absoluteness is judged with the platform-appropriate implementation
+ * (`path.win32` vs `path.posix`) rather than the host default, so the resolver
+ * stays deterministic across hosts (a `C:\...` base is absolute for win32 even
+ * when this runs on POSIX, and vice versa).
+ * @param {unknown} value
+ * @param {NodeJS.Platform} platform
+ * @returns {value is string}
+ */
+function isUsableBase(value, platform) {
+  if (typeof value !== "string" || value.length === 0) return false;
+  const impl = platform === "win32" ? path.win32 : path.posix;
+  return impl.isAbsolute(value);
+}
+
+/**
  * Canonical config dir per platform (no filename). macOS/Linux use
  * `$XDG_CONFIG_HOME` or `~/.config`; Windows uses `%APPDATA%` or
- * `~/AppData/Roaming`.
+ * `~/AppData/Roaming`. A relative env base is ignored (XDG spec) and the default
+ * used instead.
  * @param {string} home
  * @param {NodeJS.ProcessEnv} env
  * @param {NodeJS.Platform} platform
@@ -64,13 +84,11 @@ function resolveInjection(opts) {
 function canonicalConfigDir(home, env, platform) {
   if (platform === "win32") {
     const appData = env.APPDATA;
-    const base = typeof appData === "string" && appData.length > 0
-      ? appData
-      : path.join(home, "AppData", "Roaming");
+    const base = isUsableBase(appData, platform) ? appData : path.join(home, "AppData", "Roaming");
     return path.join(base, "deliberation");
   }
   const xdg = env.XDG_CONFIG_HOME;
-  const base = typeof xdg === "string" && xdg.length > 0 ? xdg : path.join(home, ".config");
+  const base = isUsableBase(xdg, platform) ? xdg : path.join(home, ".config");
   return path.join(base, "deliberation");
 }
 
@@ -146,7 +164,8 @@ function legacyConfigPath(opts) {
 /**
  * Canonical cache dir per platform (no filename). macOS/Linux use
  * `$XDG_CACHE_HOME` or `~/.cache`; Windows uses `%LOCALAPPDATA%` (LOCAL, not
- * Roaming) or `~/AppData/Local`.
+ * Roaming) or `~/AppData/Local`. A relative env base is ignored (XDG spec) and
+ * the default used instead.
  * @param {string} home
  * @param {NodeJS.ProcessEnv} env
  * @param {NodeJS.Platform} platform
@@ -155,13 +174,11 @@ function legacyConfigPath(opts) {
 function canonicalCacheDir(home, env, platform) {
   if (platform === "win32") {
     const localAppData = env.LOCALAPPDATA;
-    const base = typeof localAppData === "string" && localAppData.length > 0
-      ? localAppData
-      : path.join(home, "AppData", "Local");
+    const base = isUsableBase(localAppData, platform) ? localAppData : path.join(home, "AppData", "Local");
     return path.join(base, "deliberation");
   }
   const xdg = env.XDG_CACHE_HOME;
-  const base = typeof xdg === "string" && xdg.length > 0 ? xdg : path.join(home, ".cache");
+  const base = isUsableBase(xdg, platform) ? xdg : path.join(home, ".cache");
   return path.join(base, "deliberation");
 }
 
