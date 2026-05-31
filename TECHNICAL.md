@@ -394,7 +394,7 @@ Config file schema (strict JSON, `version` must be `1`):
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config/config.schema.json",
   "version": 1,
   "providers": {
     "codex":  { "enabled": true },
@@ -508,7 +508,7 @@ of the arbiter feature.
 
 ### Editor validation (VS Code, no extension)
 
-The config carries a `$schema` key pointing at `config.schema.json` (JSON Schema draft
+The config carries a `$schema` key pointing at `config/config.schema.json` (JSON Schema draft
 2020-12). VS Code's built-in JSON support reads that key and gives you validation,
 autocomplete, and lint with **no third-party extension** - and it works on the user's real
 config outside this repo, because the file itself carries `$schema`. The in-repo `.vscode/`

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config/config.schema.json",
+  "version": 1,
+  "providers": {
+    "codex": { "enabled": true },
+    "gemini": { "enabled": true },
+    "grok": { "enabled": true, "apiKeyEnv": "XAI_API_KEY" },
+    "openrouter": {
+      "enabled": false,
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "defaultModel": "openai/gpt-4.1-mini",
+      "defaults": { "reasoningEffort": "medium" }
+    }
+  },
+  "models": {
+    "deepseek-v4-pro": {
+      "provider": "openrouter",
+      "model": "deepseek/deepseek-v4-pro",
+      "reasoningEffort": "high",
+      "askAll": false,
+      "consensus": false
+    },
+    "qwen3-7-max": {
+      "provider": "openrouter",
+      "model": "qwen/qwen3.7-max",
+      "askAll": false,
+      "consensus": false
+    }
+  },
+  "routing": { "maxFanout": 3 },
+  "consensus": { "arbiter": "auto" }
+}

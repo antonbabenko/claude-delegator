@@ -86,7 +86,7 @@ Retries use multi-turn (`*-reply` with `threadId`) so the expert remembers previ
 | `prompts/*.md` | Expert personalities | Injected via `developer-instructions` |
 | `commands/*.md` | Slash commands | `/setup`, `/uninstall` |
 | `config/providers.json` | Provider metadata | Not used at runtime |
-| `config.schema.json` | JSON Schema (repo root) | Validates `config.json` in editors (VS Code built-in JSON support, no extension); `.vscode/` wires it for in-repo example configs |
+| `config/config.schema.json` | JSON Schema (in `config/`) | Validates `config.json` in editors (VS Code built-in JSON support, no extension); `.vscode/` wires it for in-repo example configs |
 | `~/.config/deliberation/config.json` | Unified user config | Live SSOT; stat-gated hot-reload. Sections: `providers` (connection), `models` (named records map keyed by id), `routing` (fan-out), `consensus.arbiter`. Carries a `$schema` key for editor validation. Canonical XDG path (Windows: `%APPDATA%\deliberation\config.json`); override with `DELIBERATION_CONFIG` |
 
 > Expert prompts adapted from [oh-my-opencode](https://github.com/code-yeongyu/oh-my-opencode)

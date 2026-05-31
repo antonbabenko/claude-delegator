@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config.schema.json",
+  "$id": "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config/config.schema.json",
   "title": "deliberation config",
   "description": "User config for the deliberation MCP server. providers = transport/connection; models = named model records; routing = fan-out policy; consensus.arbiter = who synthesizes the verdict.",
   "type": "object",
@@ -154,7 +154,7 @@
   },
   "examples": [
     {
-      "$schema": "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config.schema.json",
+      "$schema": "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config/config.schema.json",
       "version": 1,
       "providers": {
         "codex": { "enabled": true },

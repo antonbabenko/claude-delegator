@@ -172,7 +172,7 @@ test("SU8: STARTER_CONFIG validates under validateConfig", () => {
 // SU9: the JSON Schema's worked example must also validate under validateConfig, so
 // the schema and the runtime validator agree on the unified v1 shape.
 test("SU9: config.schema.json example validates under validateConfig", () => {
-  const schema = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config.schema.json"), "utf8"));
+  const schema = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config", "config.schema.json"), "utf8"));
   assert.ok(Array.isArray(schema.examples) && schema.examples.length >= 1, "schema carries an example");
   const example = schema.examples[0];
   const { ok, resolved, error } = validateConfig(example);

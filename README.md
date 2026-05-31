@@ -254,7 +254,7 @@ Minimal example:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config/config.schema.json",
   "version": 1,
   "providers": {
     "codex":  { "enabled": true },

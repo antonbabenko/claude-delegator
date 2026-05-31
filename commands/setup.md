@@ -57,6 +57,19 @@ else
   CFG="$XDG_BASE/deliberation/config.json"
 fi
 
+# --- seed a default config on first run (never clobber an existing file) ---
+# Codex/Gemini/Grok enabled; OpenRouter disabled with two example model records
+# (also disabled). Edit $CFG to turn OpenRouter / the models on, then re-run setup.
+CONFIG_CREATED=0
+if [ ! -f "$CFG" ]; then
+  mkdir -p "$(dirname "$CFG")"
+  if cp "$PLUGIN_ROOT/config/config.default.json" "$CFG" 2>/dev/null; then
+    CONFIG_CREATED=1
+  else
+    echo "WARN: could not seed default config at $CFG"
+  fi
+fi
+
 json_eval() { node -e "$1" "$CFG" 2>/dev/null; }
 # providers.<name>.enabled: missing => enabled (returns 1); explicit false => 0.
 provider_enabled() {
@@ -108,7 +121,9 @@ echo "deliberation setup"
 echo "--------------------------------------------------"
 echo "Codex CLI:       $CODEX_STATUS"
 echo "Antigravity CLI: $AGY_STATUS"
-echo "config:          $([ -f "$CFG" ] && echo "$CFG" || echo "none (defaults: 3 built-ins on, no OpenRouter)")"
+echo "Config file:     $CFG"
+[ "$CONFIG_CREATED" = "1" ] && echo "                 (created from default - codex/gemini/grok on, OpenRouter off, 2 example models off)"
+echo "                 Edit it to enable OpenRouter and the example models, then re-run /deliberation:setup."
 echo "Rules:           $RULE_COUNT files in ~/.claude/rules/deliberation/"
 echo "Grok auth:       $([ -n "${XAI_API_KEY:-}" ] && echo "XAI_API_KEY set" || echo "XAI_API_KEY not set (calls return missing-auth)")"
 echo "OpenRouter auth: $([ -n "${OPENROUTER_API_KEY:-}" ] && echo set || echo "not set")"

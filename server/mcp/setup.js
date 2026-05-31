@@ -27,7 +27,7 @@ const path = require("node:path");
 const { resolveConfigPath } = require("../../core/paths.js");
 
 /** The JSON Schema URL the starter config points its `$schema` at (editor validation). */
-const SCHEMA_URL = "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config.schema.json";
+const SCHEMA_URL = "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config/config.schema.json";
 
 /**
  * Starter config written when none exists. Unified v1 shape: providers carry

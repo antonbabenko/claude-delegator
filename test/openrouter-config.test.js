@@ -9,7 +9,7 @@ const { validateConfig, makeConfigReader } = require("../server/openrouter/confi
 // whose entries carry `alias` === the map id), so registry/routing/wire are unchanged.
 function base() {
   return {
-    $schema: "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config.schema.json",
+    $schema: "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config/config.schema.json",
     version: 1,
     providers: {
       codex: { enabled: true },
