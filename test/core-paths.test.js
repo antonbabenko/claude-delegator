@@ -303,3 +303,39 @@ test("CC7: win32 without LOCALAPPDATA falls back to ~/AppData/Local", () => {
   });
   assert.equal(got, path.join(home, "AppData", "Local", "deliberation", "grok-files.json"));
 });
+
+// --- cache: forWrite (canonical-only, legacy is read-only) -------------------
+
+test("CC10: forWrite returns canonical even when only legacy exists", () => {
+  const got = resolveGrokCachePath({
+    home: HOME,
+    env: {},
+    platform: "linux",
+    exists: existsFor([legacyCache(HOME)]),
+    forWrite: true,
+  });
+  assert.equal(got, canonicalCache(HOME));
+});
+
+test("CC11: forWrite returns canonical when both exist (never legacy)", () => {
+  const got = resolveGrokCachePath({
+    home: HOME,
+    env: {},
+    platform: "linux",
+    exists: existsFor([canonicalCache(HOME), legacyCache(HOME)]),
+    forWrite: true,
+  });
+  assert.equal(got, canonicalCache(HOME));
+});
+
+test("CC12: forWrite honors DELIBERATION_CACHE verbatim", () => {
+  const override = "/somewhere/custom/grok-files.json";
+  const got = resolveGrokCachePath({
+    home: HOME,
+    env: { DELIBERATION_CACHE: override },
+    platform: "linux",
+    exists: existsFor([legacyCache(HOME)]),
+    forWrite: true,
+  });
+  assert.equal(got, override);
+});

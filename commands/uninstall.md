@@ -54,8 +54,15 @@ rm -rf "$HOME/.claude/rules/deliberation/" 2>/dev/null || true
 echo "Removed rules dir."
 
 # --- Grok dedup cache; metadata only, safe to drop. Canonical XDG + legacy ~/.claude. ---
-rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/deliberation/" 2>/dev/null || true
-rm -rf "$HOME/.claude/cache/deliberation/" 2>/dev/null || true
+# Mirror core/paths.js: a RELATIVE XDG_CACHE_HOME is ignored (else rm -rf would
+# target a path relative to $PWD). CLAUDE_CONFIG_DIR scopes only the legacy base.
+if [ -n "${XDG_CACHE_HOME:-}" ] && [ "${XDG_CACHE_HOME#/}" != "${XDG_CACHE_HOME}" ]; then
+  CACHE_BASE="$XDG_CACHE_HOME"
+else
+  CACHE_BASE="$HOME/.cache"
+fi
+rm -rf "$CACHE_BASE/deliberation/" 2>/dev/null || true
+rm -rf "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cache/deliberation/" 2>/dev/null || true
 echo "Removed Grok file cache (canonical + legacy)."
 
 # --- short command aliases: remove ONLY if byte-identical to the bundled command ---

@@ -7,7 +7,11 @@ const crypto = require("node:crypto");
 const { mkdirSync, readFileSync, writeFileSync, renameSync } = require("node:fs");
 const lock = require("./lock.js");
 
+// Read path (with legacy fallback) vs write path (canonical only). Reads honor an
+// existing legacy cache; writes always target canonical, so the first persist
+// migrates a legacy cache to canonical and stops mutating ~/.claude.
 const CACHE_FILE = require("../../core/paths.js").resolveGrokCachePath();
+const CACHE_WRITE_FILE = require("../../core/paths.js").resolveGrokCachePath({ forWrite: true });
 const CACHE_DIR = path.dirname(CACHE_FILE);
 const CACHE_VERSION = 1;
 
@@ -80,17 +84,27 @@ function lookup(file, key, { apiBase, keyFp } = {}) {
   return entry;
 }
 
+// Resolve where a persist should WRITE. The legacy cache is read-only, so a
+// write always targets canonical (CACHE_WRITE_FILE). When the caller passes a
+// custom `file` (e.g. tests, DELIBERATION_CACHE), honor it: only the default
+// legacy read path is redirected to canonical.
+function writeTargetFor(file) {
+  return file === CACHE_FILE ? CACHE_WRITE_FILE : file;
+}
+
 async function store(file, key, entry) {
   if (!file) return;
-  const handle = lock.acquire(file, { maxWaitMs: 1000 });
+  const writeFile = writeTargetFor(file);
+  const handle = lock.acquire(writeFile, { maxWaitMs: 1000 });
   if (!handle) {
     process.stderr.write("[grok] cache lock contention; skipping persist\n");
     return;
   }
   try {
+    // Read from the read path (may be legacy), write to the canonical target.
     const data = readCache(file);
     data.entries[key] = entry;
-    writeCache(file, data);
+    writeCache(writeFile, data);
   } finally {
     lock.release(handle);
   }
@@ -98,17 +112,18 @@ async function store(file, key, entry) {
 
 async function evict(file, fileId) {
   if (!file) return;
-  const handle = lock.acquire(file, { maxWaitMs: 1000 });
+  const writeFile = writeTargetFor(file);
+  const handle = lock.acquire(writeFile, { maxWaitMs: 1000 });
   if (!handle) return;
   try {
     const data = readCache(file);
     for (const k of Object.keys(data.entries)) {
       if (data.entries[k].fileId === fileId) delete data.entries[k];
     }
-    writeCache(file, data);
+    writeCache(writeFile, data);
   } finally {
     lock.release(handle);
   }
 }
 
-module.exports = { normalize, buildCacheKey, readCache, writeCache, withInflight, lookup, store, evict, CACHE_DIR, CACHE_FILE, CACHE_VERSION };
+module.exports = { normalize, buildCacheKey, readCache, writeCache, withInflight, lookup, store, evict, CACHE_DIR, CACHE_FILE, CACHE_WRITE_FILE, CACHE_VERSION };

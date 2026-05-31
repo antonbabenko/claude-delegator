@@ -61,21 +61,24 @@ test("SU2: existing config -> not overwritten, guidance emitted", () => {
   }
 });
 
-// SU3: unwritable parent -> non-zero exit, real error reported, nothing thrown.
-test("SU3: unwritable target -> exit 1 with error message", () => {
+// SU3: mkdir fails -> exit 1, reported as a DIRECTORY error (FIX 3), not as
+// "config already exists" and not as a write error. Write is never reached.
+test("SU3: mkdir failure -> exit 1 with dir-creation message", () => {
   const home = makeHome();
   try {
     const override = path.join(home, "cfg", "config.json");
     const fsImpl = {
       statSync: () => { const e = new Error("ENOENT"); /** @type {any} */ (e).code = "ENOENT"; throw e; },
-      mkdirSync: () => { throw new Error("EACCES: permission denied"); },
+      mkdirSync: () => { const e = new Error("ENOTDIR: not a directory"); /** @type {any} */ (e).code = "ENOTDIR"; throw e; },
       writeFileSync: () => { throw new Error("should not reach writeFileSync"); },
     };
     const { out, lines } = capture();
     const code = runSetup({ env: { DELIBERATION_CONFIG: override }, out, fsImpl });
 
     assert.equal(code, 1);
-    assert.ok(lines.some((l) => l.includes("Could not write config")));
+    assert.ok(lines.some((l) => l.includes("Could not create config directory")));
+    assert.ok(!lines.some((l) => l.includes("leaving it unchanged")));
+    assert.ok(!lines.some((l) => l.includes("Could not write config")));
   } finally {
     rmrf(home);
   }
@@ -203,6 +206,89 @@ test("SU8: override set + legacy present -> writes starter, no migration/ignored
     assert.equal(fs.readFileSync(legacy, "utf8"), legacyBody); // legacy untouched
     assert.ok(lines.some((l) => l.includes("Wrote starter config")));
     assert.ok(!lines.some((l) => /Migrated|ignored/.test(l)));
+  } finally {
+    rmrf(home);
+  }
+});
+
+// SU9 (FIX 1): legacy exists but its read THROWS (EACCES/transient). Setup must
+// refuse to write a starter that would shadow it -> exit 1, no canonical written.
+test("SU9: legacy unreadable -> exit 1, refuses to shadow, no canonical written", () => {
+  const home = makeHome();
+  try {
+    const legacy = legacyConfig(home);
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    fs.writeFileSync(legacy, '{"version":1,"my":"legacy"}');
+
+    // Delegate to real fs but force the legacy read to fail.
+    const fsImpl = {
+      statSync: (/** @type {string} */ p) => fs.statSync(p),
+      existsSync: (/** @type {string} */ p) => fs.existsSync(p),
+      mkdirSync: (/** @type {string} */ p, /** @type {any} */ o) => fs.mkdirSync(p, o),
+      writeFileSync: (/** @type {string} */ p, /** @type {string} */ d, /** @type {any} */ o) => fs.writeFileSync(p, d, o),
+      readFileSync: () => { const e = new Error("EACCES: permission denied"); /** @type {any} */ (e).code = "EACCES"; throw e; },
+    };
+    const { out, lines } = capture();
+    const code = runSetup({ home, env: {}, out, fsImpl });
+
+    assert.equal(code, 1);
+    assert.equal(fs.existsSync(canonicalConfig(home)), false); // no starter written
+    assert.equal(fs.existsSync(legacy), true); // legacy untouched
+    assert.ok(lines.some((l) => l.includes("Could not read legacy config") && l.includes("shadow")));
+  } finally {
+    rmrf(home);
+  }
+});
+
+// SU10 (FIX 2): a mid-write failure leaves a partial file at canonical. Setup must
+// unlink it before reporting, so a later read does not skip the legacy fallback
+// and crash on a truncated file. Exit 1.
+test("SU10: write failure -> partial canonical unlinked, exit 1", () => {
+  const home = makeHome();
+  try {
+    const override = path.join(home, "cfg", "config.json");
+    let unlinked = "";
+    let created = false;
+    const fsImpl = {
+      statSync: () => { const e = new Error("ENOENT"); /** @type {any} */ (e).code = "ENOENT"; throw e; },
+      // existsSync: the partial file "exists" only after the failed write created it.
+      existsSync: (/** @type {string} */ p) => (p === override ? created : false),
+      mkdirSync: () => undefined,
+      writeFileSync: () => {
+        created = true; // a truncated file landed
+        const e = new Error("ENOSPC: no space left on device"); /** @type {any} */ (e).code = "ENOSPC"; throw e;
+      },
+      unlinkSync: (/** @type {string} */ p) => { unlinked = p; created = false; },
+    };
+    const { out, lines } = capture();
+    const code = runSetup({ env: { DELIBERATION_CONFIG: override }, out, fsImpl });
+
+    assert.equal(code, 1);
+    assert.equal(unlinked, override); // partial file removed
+    assert.ok(lines.some((l) => l.includes("Could not write config")));
+  } finally {
+    rmrf(home);
+  }
+});
+
+// SU11 (FIX 3): mkdir throws EEXIST (a parent component is a regular file). This
+// must report a dir error, NOT be mistaken for the write-side TOCTOU EEXIST that
+// means "already exists, unchanged".
+test("SU11: mkdir EEXIST -> dir-creation error, not 'unchanged'", () => {
+  const home = makeHome();
+  try {
+    const override = path.join(home, "cfg", "config.json");
+    const fsImpl = {
+      statSync: () => { const e = new Error("ENOENT"); /** @type {any} */ (e).code = "ENOENT"; throw e; },
+      mkdirSync: () => { const e = new Error("EEXIST: file already exists"); /** @type {any} */ (e).code = "EEXIST"; throw e; },
+      writeFileSync: () => { throw new Error("should not reach writeFileSync"); },
+    };
+    const { out, lines } = capture();
+    const code = runSetup({ env: { DELIBERATION_CONFIG: override }, out, fsImpl });
+
+    assert.equal(code, 1);
+    assert.ok(lines.some((l) => l.includes("Could not create config directory")));
+    assert.ok(!lines.some((l) => l.includes("leaving it unchanged")));
   } finally {
     rmrf(home);
   }

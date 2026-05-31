@@ -104,6 +104,7 @@ function consensusBlockLines() {
  * @property {(p: string, data: string, opts?: { flag?: string }) => void} writeFileSync
  * @property {(p: string, enc: string) => string} [readFileSync] Used only by the legacy->canonical migration.
  * @property {(p: string) => boolean} [existsSync] Optional fast existence probe; falls back to statSync.
+ * @property {(p: string) => void} [unlinkSync] Optional cleanup of a partial file after a failed write.
  */
 
 /**
@@ -187,23 +188,37 @@ function runSetup(deps) {
 
   // Canonical is absent. If a legacy config exists, migrate it (copy legacy ->
   // canonical) instead of writing a fresh starter. The legacy file is left
-  // untouched - no delete, no .bak. If reading legacy fails, fall back to the
-  // starter rather than aborting setup.
+  // untouched - no delete, no .bak.
   let migrated = false;
   /** @type {string} */
   let payload = starterConfigText();
   if (legacyPath !== configPath && typeof fsImpl.readFileSync === "function" && fileExists(legacyPath)) {
+    // FIX 1: the legacy config exists but its read threw (EACCES/transient). Do
+    // NOT write a starter - a starter at canonical would win every future read
+    // and permanently shadow the user's real legacy config. Bail out so the user
+    // fixes the underlying error and re-runs.
     try {
       payload = fsImpl.readFileSync(legacyPath, "utf8");
       migrated = true;
-    } catch (_) {
-      payload = starterConfigText();
-      migrated = false;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      out(`Could not read legacy config at ${legacyPath}: ${message}. Refusing to write a starter that would shadow it - fix the permission and re-run.`);
+      return 1;
     }
   }
 
+  // FIX 3: create the parent dir in its own try so a mkdir failure (e.g. a parent
+  // component is a regular file -> EEXIST/ENOTDIR) is reported as a dir error and
+  // not mistaken for the write-side TOCTOU EEXIST that means "already exists".
   try {
     fsImpl.mkdirSync(path.dirname(configPath), { recursive: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    out(`Could not create config directory ${path.dirname(configPath)}: ${message}`);
+    return 1;
+  }
+
+  try {
     // Exclusive write: "wx" fails with EEXIST if a file appears between the stat
     // above and here (TOCTOU). Treat that race as "already exists, unchanged".
     fsImpl.writeFileSync(configPath, payload, { flag: "wx" });
@@ -211,6 +226,12 @@ function runSetup(deps) {
     const code = err && typeof err === "object" && "code" in err ? err.code : null;
     if (code === "EEXIST") return leaveUnchanged();
     const message = err instanceof Error ? err.message : String(err);
+    // FIX 2: a mid-write failure (ENOSPC/EACCES) can leave a truncated/empty file.
+    // Since canonical now exists, future reads skip the legacy fallback and crash
+    // on JSON.parse. Remove the partial file before reporting. Ignore unlink errors.
+    if (fileExists(configPath) && typeof fsImpl.unlinkSync === "function") {
+      try { fsImpl.unlinkSync(configPath); } catch (_) { /* best effort */ }
+    }
     out(`Could not write config at ${configPath}: ${message}`);
     return 1;
   }

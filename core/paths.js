@@ -197,14 +197,20 @@ function legacyCacheDir(home, env) {
 /**
  * Resolve the absolute path to the Grok files cache the caller should use.
  *
- * Precedence:
+ * Read precedence (default):
  *   1. DELIBERATION_CACHE if non-empty -> verbatim.
  *   2. Canonical XDG cache path IF it exists.
  *   3. Legacy `~/.claude/cache/deliberation/grok-files.json` IF it exists (read-only back-compat).
  *   4. Else canonical (the fresh-write default).
  *
- * Single resolver (reads-or-creates the cache): prefer canonical for a new
- * cache, fall back to reading legacy if it is already present.
+ * Write target (forWrite:true):
+ *   1. DELIBERATION_CACHE if non-empty -> verbatim.
+ *   2. Else canonical. NEVER legacy.
+ *
+ * The legacy cache is read for back-compat but never written to: a write always
+ * targets the canonical path, which migrates an existing legacy cache to
+ * canonical on the first persist (the orphaned legacy file is dropped by
+ * uninstall). Existence-only, no side effects.
  *
  * @param {ResolveOptions} [opts]
  * @returns {string} absolute path to the grok-files.json cache to use
@@ -218,6 +224,8 @@ function resolveGrokCachePath(opts) {
   }
 
   const canonical = path.join(canonicalCacheDir(home, env, platform), "grok-files.json");
+  if (opts && opts.forWrite) return canonical;
+
   if (exists(canonical)) return canonical;
 
   const legacy = path.join(legacyCacheDir(home, env), "grok-files.json");
