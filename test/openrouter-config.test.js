@@ -68,6 +68,37 @@ test("C1c: camelCase reasoningEffort maps to wire reasoning_effort on the resolv
   assert.equal(resolved.openrouter.defaults.timeout, 180000);
 });
 
+test("C1d: an invalid providers.openrouter.defaults value is DROPPED and surfaced (not sent to the wire)", () => {
+  const c = base();
+  // schema rejects a non-numeric temperature; the validator must agree.
+  c.providers.openrouter.defaults = { reasoningEffort: "high", temperature: "hot" };
+  const { ok, resolved } = validateConfig(c);
+  assert.equal(ok, true);
+  // bad temperature dropped; the good sibling survives
+  assert.equal(resolved.openrouter.defaults.temperature, undefined);
+  assert.equal(resolved.openrouter.defaults.reasoning_effort, "high");
+  // dropped value is surfaced on the consensusWarnings channel, not silent
+  assert.ok(resolved.consensusWarnings.some((w) => /defaults\.temperature/i.test(w)));
+});
+
+test("C1e: each bad defaults type is dropped with its own warning", () => {
+  for (const [bad, re] of [
+    [{ reasoningEffort: 5 }, /reasoningEffort/i],
+    [{ reasoningEffort: "" }, /reasoningEffort/i],
+    [{ temperature: "hot" }, /temperature/i],
+    [{ timeout: -1 }, /timeout/i],
+    [{ timeout: 2.5 }, /timeout/i],
+  ]) {
+    const c = base();
+    c.providers.openrouter.defaults = bad;
+    const { ok, resolved } = validateConfig(c);
+    assert.equal(ok, true, `defaults ${JSON.stringify(bad)} should not hard-fail`);
+    const key = Object.keys(bad)[0] === "reasoningEffort" ? "reasoning_effort" : Object.keys(bad)[0];
+    assert.equal(resolved.openrouter.defaults[key], undefined, `${JSON.stringify(bad)}: dropped`);
+    assert.ok(resolved.consensusWarnings.some((w) => re.test(w)), `${JSON.stringify(bad)}: warned`);
+  }
+});
+
 // Per-entry partial validation: a bad model entry is collected into invalidModels and
 // skipped; the remaining valid records are kept (config stays ok:true).
 

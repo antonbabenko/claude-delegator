@@ -455,10 +455,12 @@ the reserved `openrouter-default`):
 
 **On `temperature`:** most deliberation work is analytical - code review, debugging,
 security audits, architecture and plan verdicts - where you want focused, repeatable
-answers. Leave `temperature` unset (the bridge default is low) for those. Raise it
-(roughly `0.6`-`0.9`) only for generative fan-out where spread across models is the
-point: brainstorming, naming, "give me 20 options". Keep it low for `/consensus`
-rounds; you want the models reasoning, not improvising.
+answers. Leave `temperature` unset and the field is omitted, so the provider default
+applies (commonly around `1.0`); set a low value (roughly `0.1`-`0.3`) when you want
+that focused, repeatable behavior. Raise it (roughly `0.6`-`0.9`) only for generative
+fan-out where spread across models is the point: brainstorming, naming, "give me 20
+options". Keep it low for `/consensus` rounds; you want the models reasoning, not
+improvising.
 
 ### consensus.arbiter
 

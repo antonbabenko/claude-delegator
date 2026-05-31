@@ -13,7 +13,6 @@ const SUPPORTED_MAJOR = 1;
 
 const DEFAULT_API_BASE = "https://openrouter.ai/api/v1";
 const DEFAULT_API_KEY_ENV = "OPENROUTER_API_KEY";
-const DEFAULT_GROK_API_KEY_ENV = "XAI_API_KEY";
 const DEFAULT_MAX_FANOUT = 3;
 const DEFAULT_ARBITER = "auto";
 const BUILTIN_ARBITERS = new Set(["codex", "gemini", "grok"]);
@@ -76,12 +75,12 @@ function validateConfig(raw) {
   const allowRawModel = !!orProviderRaw && orProviderRaw.allowRawModel === true;
   const defaultModel = orProviderRaw && typeof orProviderRaw.defaultModel === "string" && orProviderRaw.defaultModel.trim()
     ? orProviderRaw.defaultModel.trim() : null;
-  const defaults = resolveDefaults(orProviderRaw && orProviderRaw.defaults);
+  const { defaults, warnings: defaultsWarnings } = resolveDefaults(orProviderRaw && orProviderRaw.defaults);
 
   // models = a MAP keyed by id. Resolve each entry into the legacy array shape with
   // alias === id. Per-entry soft-fail: a bad entry lands in invalidModels and does
   // NOT reject the whole config. Order follows Object.keys insertion order.
-  const { models, invalidModels } = resolveModels(raw.models, defaults);
+  const { models, invalidModels } = resolveModels(raw.models);
 
   const { consensus, warnings } = resolveConsensus(raw.consensus, models);
 
@@ -93,7 +92,9 @@ function validateConfig(raw) {
       providers: resolveProviders(providersRaw),
       openrouter: { enabled, apiKeyEnv, apiBase, allowRawModel, maxFanout, defaultModel, defaults, models, invalidModels },
       consensus,
-      consensusWarnings: warnings,
+      // Defaults-validation warnings ride the same consensusWarnings channel the
+      // bridge already surfaces, so a dropped bad default is visible, not silent.
+      consensusWarnings: [...defaultsWarnings, ...warnings],
     },
   };
 }
@@ -101,14 +102,27 @@ function validateConfig(raw) {
 // Resolve providers.openrouter.defaults. camelCase -> wire mapping happens HERE
 // (same place as model entries): on-disk `reasoningEffort` becomes the resolved
 // `.reasoning_effort` the bridge call site reads; `temperature`/`timeout` pass
-// through unchanged. Unknown keys are dropped so the wire stays clean.
+// through unchanged. Each value is type-checked with the SAME rules as per-model
+// overrides; a bad value is DROPPED (not sent to the wire) and surfaced as a warning,
+// so the validator agrees with config.schema.json. Unknown keys are dropped silently.
+// @returns {{defaults: object, warnings: string[]}}
 function resolveDefaults(raw) {
-  if (!isObject(raw)) return {};
   const out = {};
-  if (raw.reasoningEffort !== undefined) out.reasoning_effort = raw.reasoningEffort;
-  if (raw.temperature !== undefined) out.temperature = raw.temperature;
-  if (raw.timeout !== undefined) out.timeout = raw.timeout;
-  return out;
+  const warnings = [];
+  if (!isObject(raw)) return { defaults: out, warnings };
+  if (raw.reasoningEffort !== undefined) {
+    if (typeof raw.reasoningEffort === "string" && raw.reasoningEffort.trim()) out.reasoning_effort = raw.reasoningEffort;
+    else warnings.push(`providers.openrouter.defaults.reasoningEffort must be a non-empty string (got ${JSON.stringify(raw.reasoningEffort)}); dropped`);
+  }
+  if (raw.temperature !== undefined) {
+    if (typeof raw.temperature === "number" && Number.isFinite(raw.temperature)) out.temperature = raw.temperature;
+    else warnings.push(`providers.openrouter.defaults.temperature must be a finite number (got ${JSON.stringify(raw.temperature)}); dropped`);
+  }
+  if (raw.timeout !== undefined) {
+    if (Number.isInteger(raw.timeout) && raw.timeout > 0) out.timeout = raw.timeout;
+    else warnings.push(`providers.openrouter.defaults.timeout must be a positive integer (got ${JSON.stringify(raw.timeout)}); dropped`);
+  }
+  return { defaults: out, warnings };
 }
 
 // Build resolved.providers as { name: { enabled } }. Only the enable flag is part
@@ -126,7 +140,7 @@ function resolveProviders(providersRaw) {
 // Resolve the `models` MAP into the legacy resolved array (alias === id). Each entry
 // is validated; bad entries go to invalidModels[] with index/alias(=id)/reason and a
 // suggestedAlias when a safe id repair exists. The whole config never hard-fails here.
-function resolveModels(modelsRaw, defaults) {
+function resolveModels(modelsRaw) {
   const models = [];
   const invalidModels = [];
   if (modelsRaw !== undefined && !isObject(modelsRaw)) {
@@ -137,7 +151,9 @@ function resolveModels(modelsRaw, defaults) {
   const map = isObject(modelsRaw) ? modelsRaw : {};
   const ids = Object.keys(map);
 
-  const seen = new Set();
+  // ids come from Object.keys(map), so they are unique by construction - no
+  // duplicate detection needed. `taken` seeds the id-format repair suggester so a
+  // sanitized suggestion never collides with an existing id or the reserved id.
   const taken = new Set([RESERVED_ALIAS, ...ids.filter((id) => ALIAS_RE.test(id))]);
 
   // Pick a free id near `candidate`, reserving it so two repairs cannot collide.
@@ -170,7 +186,6 @@ function resolveModels(modelsRaw, defaults) {
       continue;
     }
     if (id === RESERVED_ALIAS) { addInvalid(i, id, `id "${RESERVED_ALIAS}" is reserved`); continue; }
-    if (seen.has(id)) { addInvalid(i, id, `duplicate id "${id}"`, suggestFree(id)); continue; }
     if (!isObject(m)) { addInvalid(i, id, `models["${id}"] must be an object`); continue; }
     // provider is required and MUST be "openrouter" in v1. codex/gemini/grok model
     // entries are rejected with a clear reason - they are CLI-managed / singleton
@@ -207,7 +222,6 @@ function resolveModels(modelsRaw, defaults) {
     if (m.apiBase !== undefined && !(typeof m.apiBase === "string" && m.apiBase.trim())) {
       addInvalid(i, id, `models["${id}"] apiBase must be a non-empty string`); continue;
     }
-    seen.add(id);
     models.push({
       alias: id,
       model: m.model.trim(),
@@ -319,5 +333,5 @@ function makeConfigReader(filePath) {
 
 module.exports = {
   validateConfig, makeConfigReader, EXPERT_KEYS, RESERVED_ALIAS,
-  DEFAULT_API_BASE, DEFAULT_API_KEY_ENV, DEFAULT_GROK_API_KEY_ENV,
+  DEFAULT_API_BASE, DEFAULT_API_KEY_ENV,
 };
