@@ -123,15 +123,18 @@ function startStdio() {
 
   const initialOr = (getConfig().openrouter) || {};
   /** @type {Provider[]} */
+  // Composition root: core is transport-agnostic, so wire each adapter to its
+  // bridge here. Codex spawns the `codex` CLI directly and needs no bridge.
   const providers = [
     makeCodexProvider({}),
-    makeAntigravityProvider({}),
-    makeGrokProvider({}),
+    makeAntigravityProvider({ bridge: require("../gemini/index.js") }),
+    makeGrokProvider({ bridge: require("../grok/index.js") }),
     makeOpenAICompatibleProvider({
       name: "openrouter",
       apiBase: initialOr.apiBase || DEFAULT_API_BASE,
       apiKeyEnv: DEFAULT_API_KEY_ENV,
       resolveModel: (req) => req.model || (getConfig().openrouter && getConfig().openrouter.defaultModel) || "",
+      bridge: require("../openrouter/index.js"),
     }),
   ];
   const srv = buildServer({ providers, getConfig });

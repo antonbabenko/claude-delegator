@@ -19,9 +19,11 @@ const MAX_SESSIONS = 100;
  */
 function makeOpenAICompatibleProvider(opts) {
   const { name = "openrouter", apiBase, apiKeyEnv, resolveModel } = opts;
-  // Cast the bridge to any: its CJS module.exports is typed as bare Object, and
-  // casting also stops tsc from deep-checking the legacy bridge transitively.
-  const bridge = /** @type {any} */ (opts.bridge || require("../../server/openrouter/index.js"));
+  // Core is transport-agnostic: the caller injects the bridge. Cast to any - the
+  // CJS bridge exports as a bare Object, and the cast also stops tsc from
+  // deep-checking the legacy bridge transitively.
+  const bridge = /** @type {any} */ (opts.bridge);
+  if (!bridge) throw new Error("makeOpenAICompatibleProvider requires opts.bridge (core is transport-agnostic; inject the bridge)");
   const sessions = new Map(); // threadId -> turns
 
   return /** @type {any} */ ({
