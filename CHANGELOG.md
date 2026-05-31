@@ -1,3 +1,10 @@
+## [2.4.0](https://github.com/antonbabenko/deliberation/compare/v2.3.0...v2.4.0) (2026-05-31)
+
+
+### Features
+
+* host-neutral XDG config + cache paths ([#73](https://github.com/antonbabenko/deliberation/issues/73)) ([0867b4d](https://github.com/antonbabenko/deliberation/commit/0867b4df6220203800d80836e3be9e2649accf46))
+
 ## [2.3.0](https://github.com/antonbabenko/deliberation/compare/v2.2.0...v2.3.0) (2026-05-31)
 
 
@@ -25,11 +32,4 @@
 ### Bug Fixes
 
 * add glama.json for Glama MCP directory ([#65](https://github.com/antonbabenko/deliberation/issues/65)) ([79479ac](https://github.com/antonbabenko/deliberation/commit/79479ac2b4b8ba3c1af34af61e096cf193b461e5))
-
-## [2.0.2](https://github.com/antonbabenko/deliberation/compare/v2.0.1...v2.0.2) (2026-05-31)
-
-
-### Bug Fixes
-
-* **core:** drop core->server bridge import so core is self-contained ([#62](https://github.com/antonbabenko/deliberation/issues/62)) ([7043c56](https://github.com/antonbabenko/deliberation/commit/7043c564784a796e2d946e1f9d3cd3e48967d71a))
 
