@@ -4,9 +4,10 @@
 /** @typedef {import("../../core/types.js").Provider} Provider */
 /** @typedef {import("../../core/types.js").DelegationRequest} DelegationRequest */
 
-const { makeRegistry } = require("../../core/registry.js");
+const { makeRegistry, pinAlias } = require("../../core/registry.js");
 const { askAll, askOne, consensus } = require("../../core/orchestrate.js");
 const { PROMPTS } = require("../../core/prompts/index.js");
+const { OR_ARBITER_RE } = require("../openrouter/config.js");
 
 const ADVISORY = { readOnlyHint: true };
 /** @type {Record<string, string>} */
@@ -69,12 +70,110 @@ function toolList() {
   return tools;
 }
 
+/** @typedef {{ mode: "host"|"server", provider: (Provider|null), warning?: string }} ArbiterResolution */
+
+const BUILTIN_NAMES = new Set(["codex", "gemini", "grok"]);
+
+/**
+ * Resolve the configured arbiter spec into an execution decision. Host-agnostic:
+ * any host can name a concrete arbiter instead of relying on the implicit
+ * providers[0]. Soft-degrade only - an unusable spec falls back to "auto" with a
+ * warning rather than failing the consensus call.
+ *
+ * - "host"   -> { mode:"host", provider:null }. The handler SKIPS the arbiter
+ *               pass entirely (verdict:null); the host (e.g. Claude) arbitrates.
+ * - "auto"   -> first provider in `selected` whose health() is ok, PREFERRING an
+ *               openrouter:* one; falls back to selected[0] if none report ok.
+ * - builtin  -> registry.get(name) if registered, else degrade to auto + warning.
+ * - openrouter:<alias> -> pinAlias on the openrouter provider for that alias,
+ *               else degrade to auto + warning. The alias need NOT be
+ *               consensus:true - arbiter eligibility != voting-panel membership.
+ *
+ * @param {string} spec
+ * @param {Provider[]} selected  the consensus voting panel
+ * @param {{get:(n:string)=>(Provider|undefined)}} registry
+ * @param {() => any} getConfig
+ * @returns {Promise<ArbiterResolution>}
+ */
+async function resolveArbiter(spec, selected, registry, getConfig) {
+  if (spec === "host") return { mode: "host", provider: null };
+
+  /** @param {string|undefined} warning @returns {Promise<ArbiterResolution>} pick first healthy, prefer openrouter:* */
+  async function auto(warning) {
+    const checked = await Promise.all(
+      selected.map(async (p) => ({ p, ok: await isHealthy(p) }))
+    );
+    const healthy = checked.filter((c) => c.ok).map((c) => c.p);
+    const pool = healthy.length ? healthy : selected;
+    const preferred = pool.find((p) => p.name.startsWith("openrouter:")) || pool[0] || null;
+    const base = `auto-selected arbiter '${preferred ? preferred.name : "none"}'; set consensus.arbiter to choose`;
+    return { mode: "server", provider: preferred, warning: warning ? `${warning}; ${base}` : base };
+  }
+
+  if (spec === "auto") return auto(undefined);
+
+  const cfg = getConfig() || {};
+
+  if (BUILTIN_NAMES.has(spec)) {
+    const p = registry.get(spec);
+    // Mirror core/registry.js builtinsFor: a provider disabled in config is not
+    // a usable arbiter even though the registry still holds it (enablement is
+    // applied at selection time, not at registry build). Degrade, never hard-fail.
+    if (p && providerEnabled(cfg, spec)) return { mode: "server", provider: p };
+    return auto(`configured arbiter '${spec}' is not available`);
+  }
+
+  const orMatch = OR_ARBITER_RE.exec(spec);
+  if (orMatch) {
+    const alias = orMatch[1];
+    const orProvider = registry.get("openrouter");
+    const models = (cfg.openrouter && cfg.openrouter.models) || [];
+    const model = models.find((/** @type {any} */ m) => m && m.alias === alias);
+    // OpenRouter must be enabled both as a provider and as the openrouter block.
+    const orEnabled = providerEnabled(cfg, "openrouter") && !(cfg.openrouter && cfg.openrouter.enabled === false);
+    if (orProvider && model && orEnabled) return { mode: "server", provider: pinAlias(orProvider, model) };
+    return auto(`configured arbiter '${spec}' is not available`);
+  }
+
+  // Unrecognized spec (config validation should have degraded it already; this
+  // is a defensive second guard so the handler never trusts a raw spec).
+  return auto(`configured arbiter '${spec}' is not recognized`);
+}
+
+/**
+ * Whether a provider is enabled in config. Mirrors core/registry.js: a missing
+ * flag means enabled; only an explicit enabled:false disables it.
+ * @param {any} cfg
+ * @param {string} name
+ * @returns {boolean}
+ */
+function providerEnabled(cfg, name) {
+  const p = cfg && cfg.providers && cfg.providers[name];
+  return !p || p.enabled !== false;
+}
+
+/**
+ * Best-effort health probe. A provider whose health() throws is treated as not
+ * healthy rather than crashing arbiter selection.
+ * @param {Provider} p
+ * @returns {Promise<boolean>}
+ */
+async function isHealthy(p) {
+  try {
+    const h = await p.health();
+    return !!(h && h.ok);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * @param {Object} deps
  * @param {Provider[]} deps.providers
  * @param {() => any} deps.getConfig
+ * @param {() => (string|null)} [deps.getConfigError]  // last config load error (e.g. JSON parse), or null
  */
-function buildServer({ providers, getConfig }) {
+function buildServer({ providers, getConfig, getConfigError }) {
   const registry = makeRegistry(providers);
 
   /**
@@ -126,11 +225,46 @@ function buildServer({ providers, getConfig }) {
       return { content: [{ type: "text", text: JSON.stringify({ results, omitted }) }] };
     }
     if (name === "consensus") {
-      // selectForConsensus returns a FLAT, uncapped provider list. consensus() fans out
-      // then runs ONE arbiter pass (default arbiter = providers[0]).
-      const { providers: selected } = registry.selectForConsensus({ config: getConfig(), expert: expert || "" });
-      const out = await consensus(selected, withPersona(req, expert));
-      return { content: [{ type: "text", text: JSON.stringify(out) }] };
+      // selectForConsensus returns a FLAT, uncapped voting panel. The arbiter is
+      // resolved from config (host/auto/builtin/openrouter:<alias>) instead of the
+      // implicit providers[0], so any host can synthesize a real verdict.
+      const cfg = getConfig() || {};
+      const { providers: selected } = registry.selectForConsensus({ config: cfg, expert: expert || "" });
+      const arbiterSpec = (cfg.consensus && cfg.consensus.arbiter) || "auto";
+      const warnings = Array.isArray(cfg.consensusWarnings) ? cfg.consensusWarnings.slice() : [];
+      // Surface a config load/parse error (e.g. bad config.json) instead of
+      // silently swallowing it via getConfig()'s {} fallback.
+      const cfgErr = typeof getConfigError === "function" ? getConfigError() : null;
+      if (cfgErr) warnings.push(`config not loaded: ${cfgErr}`);
+
+      const resolved = await resolveArbiter(arbiterSpec, selected, registry, getConfig);
+      if (resolved.warning) warnings.push(resolved.warning);
+
+      if (resolved.mode === "host") {
+        // Host arbitrates: return opinions only, no server-side arbiter pass.
+        const opinions = await askAll(selected, withPersona(req, expert));
+        return { content: [{ type: "text", text: JSON.stringify({ opinions, verdict: null, arbiter: { mode: "host" }, warnings }) }] };
+      }
+
+      if (!resolved.provider) {
+        // Server mode but no usable arbiter (empty / all-unhealthy panel). Route
+        // through consensus(selected, ...) so the documented all-providers-failed
+        // signal is preserved instead of masquerading as host mode.
+        const out = await consensus(selected, withPersona(req, expert), { arbiterInstructions: PROMPTS.arbiter });
+        return { content: [{ type: "text", text: JSON.stringify({ opinions: out.opinions, verdict: out.verdict, error: out.error, arbiter: { mode: "server", provider: null }, warnings }) }] };
+      }
+
+      const arbiter = resolved.provider;
+      // Exclude the arbiter from the peer panel so it does not review its own
+      // opinion. Floor of 2: never shrink the panel below two voices - if removing
+      // the arbiter would, keep it in and note it.
+      let peers = selected.filter((p) => p.name !== arbiter.name);
+      if (peers.length < 2) {
+        peers = selected;
+        warnings.push(`panel too small to exclude arbiter '${arbiter.name}'; kept it in the peer panel (floor of 2)`);
+      }
+      const out = await consensus(peers, withPersona(req, expert), { arbiter, arbiterInstructions: PROMPTS.arbiter });
+      return { content: [{ type: "text", text: JSON.stringify({ opinions: out.opinions, verdict: out.verdict, error: out.error, arbiter: { mode: "server", provider: arbiter.name }, warnings }) }] };
     }
     if (Object.prototype.hasOwnProperty.call(ASK_PROVIDER, name)) {
       const p = registry.get(ASK_PROVIDER[name]);
@@ -177,6 +311,13 @@ function startStdio() {
   const reader = makeConfigReader(require("../../core/paths.js").resolveConfigPath());
   /** @returns {any} */
   const getConfig = () => (reader.get().resolved || { providers: {}, openrouter: {} });
+  // Expose the last config load error (e.g. JSON parse failure) so the consensus
+  // handler can surface a broken config.json as a warning rather than swallow it.
+  /** @returns {(string|null)} */
+  const getConfigError = () => {
+    const r = reader.get();
+    return r && r.ok === false ? (r.error || "config load failed") : null;
+  };
 
   const initialOr = (getConfig().openrouter) || {};
   /** @type {Provider[]} */
@@ -194,7 +335,7 @@ function startStdio() {
       bridge: require("../openrouter/index.js"),
     }),
   ];
-  const srv = buildServer({ providers, getConfig });
+  const srv = buildServer({ providers, getConfig, getConfigError });
 
   if (typeof globalThis.fetch !== "function") {
     console.error("deliberation-mcp requires Node 18+ (global fetch unavailable).");

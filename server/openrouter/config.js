@@ -14,6 +14,9 @@ const SUPPORTED_MAJOR = 1;
 const DEFAULT_API_BASE = "https://openrouter.ai/api/v1";
 const DEFAULT_API_KEY_ENV = "OPENROUTER_API_KEY";
 const DEFAULT_MAX_FANOUT = 3;
+const DEFAULT_ARBITER = "auto";
+const BUILTIN_ARBITERS = new Set(["codex", "gemini", "grok"]);
+const OR_ARBITER_RE = /^openrouter:([a-z0-9-]+)$/;
 
 function isObject(v) {
   return v !== null && typeof v === "object" && !Array.isArray(v);
@@ -43,7 +46,8 @@ function validateConfig(raw) {
 
   const orRaw = isObject(raw.openrouter) ? raw.openrouter : null;
   if (!orRaw) {
-    return { ok: true, resolved: { version, providers, openrouter: disabledOpenRouter() }, error: null };
+    const { consensus, warnings } = resolveConsensus(raw.consensus, []);
+    return { ok: true, resolved: { version, providers, openrouter: disabledOpenRouter(), consensus, consensusWarnings: warnings }, error: null };
   }
 
   const enabled = orRaw.enabled !== false; // missing => enabled
@@ -146,14 +150,58 @@ function validateConfig(raw) {
     });
   }
 
+  const { consensus, warnings } = resolveConsensus(raw.consensus, models);
+
   return {
     ok: true,
     error: null,
     resolved: {
       version, providers,
       openrouter: { enabled, apiKeyEnv, apiBase, allowRawModel, maxFanout, defaultModel, defaults, models, invalidModels },
+      consensus,
+      consensusWarnings: warnings,
     },
   };
+}
+
+// Resolve the consensus.arbiter spec with soft-degrade semantics. An invalid
+// arbiter NEVER rejects the config (that would also kill providers/openrouter);
+// it degrades to "auto" and records a human-readable warning. Allowed values:
+// "host", "auto", a built-in provider ("codex"|"gemini"|"grok"), or
+// "openrouter:<alias>" where the alias exists in the resolved model list. An
+// openrouter arbiter does NOT require the alias to be consensus:true - arbiter
+// eligibility is separate from voting-panel membership.
+// @param {*} rawConsensus  the raw consensus block (untrusted)
+// @param {{alias:string}[]} models  resolved (valid) model entries
+// @returns {{consensus:{arbiter:string}, warnings:string[]}}
+function resolveConsensus(rawConsensus, models) {
+  const warnings = [];
+  // A present-but-non-object consensus key is malformed (e.g. consensus:"host").
+  // Per the invalid->auto+warning rule it must warn, not degrade silently.
+  if (rawConsensus !== undefined && !isObject(rawConsensus)) {
+    warnings.push(`consensus must be an object (got ${JSON.stringify(rawConsensus)}); using "${DEFAULT_ARBITER}"`);
+    return { consensus: { arbiter: DEFAULT_ARBITER }, warnings };
+  }
+  const block = isObject(rawConsensus) ? rawConsensus : {};
+  const spec = block.arbiter;
+  if (spec === undefined) return { consensus: { arbiter: DEFAULT_ARBITER }, warnings };
+
+  if (typeof spec !== "string") {
+    warnings.push(`consensus.arbiter must be a string (got ${JSON.stringify(spec)}); using "${DEFAULT_ARBITER}"`);
+    return { consensus: { arbiter: DEFAULT_ARBITER }, warnings };
+  }
+  if (spec === "host" || spec === "auto" || BUILTIN_ARBITERS.has(spec)) {
+    return { consensus: { arbiter: spec }, warnings };
+  }
+  const orMatch = OR_ARBITER_RE.exec(spec);
+  if (orMatch) {
+    const alias = orMatch[1];
+    if (models.some((m) => m.alias === alias)) return { consensus: { arbiter: spec }, warnings };
+    warnings.push(`consensus.arbiter "${spec}" references an unknown OpenRouter alias; using "${DEFAULT_ARBITER}"`);
+    return { consensus: { arbiter: DEFAULT_ARBITER }, warnings };
+  }
+  warnings.push(`consensus.arbiter "${spec}" is not host/auto/codex/gemini/grok/openrouter:<alias>; using "${DEFAULT_ARBITER}"`);
+  return { consensus: { arbiter: DEFAULT_ARBITER }, warnings };
 }
 
 function disabledOpenRouter() {
@@ -178,7 +226,7 @@ function makeConfigReader(filePath) {
     try {
       text = fs.readFileSync(filePath, "utf8");
     } catch (_) {
-      return { ok: true, error: null, resolved: { version: 1, providers: {}, openrouter: disabledOpenRouter() } };
+      return { ok: true, error: null, resolved: { version: 1, providers: {}, openrouter: disabledOpenRouter(), consensus: { arbiter: DEFAULT_ARBITER }, consensusWarnings: [] } };
     }
     let parsed;
     try {
@@ -202,4 +250,4 @@ function makeConfigReader(filePath) {
   };
 }
 
-module.exports = { validateConfig, makeConfigReader, EXPERT_KEYS, RESERVED_ALIAS, DEFAULT_API_BASE, DEFAULT_API_KEY_ENV };
+module.exports = { validateConfig, makeConfigReader, EXPERT_KEYS, RESERVED_ALIAS, DEFAULT_API_BASE, DEFAULT_API_KEY_ENV, OR_ARBITER_RE };
