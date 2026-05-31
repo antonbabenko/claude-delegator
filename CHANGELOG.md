@@ -1,3 +1,10 @@
+## [2.0.3](https://github.com/antonbabenko/deliberation/compare/v2.0.2...v2.0.3) (2026-05-31)
+
+
+### Bug Fixes
+
+* add glama.json for Glama MCP directory ([#65](https://github.com/antonbabenko/deliberation/issues/65)) ([79479ac](https://github.com/antonbabenko/deliberation/commit/79479ac2b4b8ba3c1af34af61e096cf193b461e5))
+
 ## [2.0.2](https://github.com/antonbabenko/deliberation/compare/v2.0.1...v2.0.2) (2026-05-31)
 
 
@@ -29,11 +36,4 @@
 ### Features
 
 * **openrouter:** add server-side delegate selection to openrouter-list ([#48](https://github.com/antonbabenko/deliberation/issues/48)) ([0ee7796](https://github.com/antonbabenko/deliberation/commit/0ee7796b80099829345f33a292b702e148ed6228))
-
-## [1.17.0](https://github.com/antonbabenko/deliberation/compare/v1.16.1...v1.17.0) (2026-05-30)
-
-
-### Features
-
-* **openrouter:** add OpenRouter as a config-driven advisory provider ([#40](https://github.com/antonbabenko/deliberation/issues/40)) ([51bff5b](https://github.com/antonbabenko/deliberation/commit/51bff5b79e16d77e155f95fa8a0820a712bd7316))
 
