@@ -9,9 +9,11 @@ const { toErrorResult } = require("../provider.js");
  * @returns {Provider}
  */
 function makeAntigravityProvider(opts = {}) {
-  // Cast the bridge to any: its CJS module.exports is typed as bare Object, and
-  // casting also stops tsc from deep-checking the legacy bridge transitively.
-  const bridge = /** @type {any} */ (opts.bridge || require("../../server/gemini/index.js"));
+  // Core is transport-agnostic: the caller injects the bridge (the composition
+  // root wires it). Cast to any - the CJS bridge exports as a bare Object, and
+  // the cast also stops tsc from deep-checking the legacy bridge transitively.
+  const bridge = /** @type {any} */ (opts.bridge);
+  if (!bridge) throw new Error("makeAntigravityProvider requires opts.bridge (core is transport-agnostic; inject the gemini bridge)");
   const model = opts.model || process.env.GEMINI_DEFAULT_MODEL || "auto-gemini-3";
 
   return {

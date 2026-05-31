@@ -10,9 +10,10 @@ const { toErrorResult } = require("../provider.js");
  * @returns {Provider}
  */
 function makeGrokProvider(opts = {}) {
-  // The bridge's module.exports is typed as bare Object (untyped CJS export);
-  // cast to any so adapter property access typechecks. Runtime is unchanged.
-  const bridge = /** @type {any} */ (opts.bridge || require("../../server/grok/index.js"));
+  // Core is transport-agnostic: the caller injects the bridge. Cast to any - the
+  // bridge's module.exports is typed as bare Object (untyped CJS export).
+  const bridge = /** @type {any} */ (opts.bridge);
+  if (!bridge) throw new Error("makeGrokProvider requires opts.bridge (core is transport-agnostic; inject the grok bridge)");
   const model = opts.model || process.env.GROK_DEFAULT_MODEL || "grok-4.3";
   const apiBase = opts.apiBase || process.env.XAI_API_BASE || "https://api.x.ai/v1";
 
