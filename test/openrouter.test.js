@@ -81,10 +81,44 @@ const osx = require("node:os");
 const pathx = require("node:path");
 const BRIDGE = pathx.join(__dirname, "..", "server", "openrouter", "index.js");
 
+// Build a unified v1 on-disk config from an old-style top-level { openrouter: {...} }
+// spec: connection keys move under providers.openrouter, the models ARRAY becomes a
+// MAP keyed by alias (id), maxFanout moves under routing, and reasoning_effort keys
+// are rewritten to camelCase reasoningEffort. Keeps the per-test call sites terse.
+function orCfg(spec) {
+  const or = (spec && spec.openrouter) || {};
+  const providerKeys = ["enabled", "apiKeyEnv", "apiBase", "allowRawModel", "defaultModel"];
+  const provider = {};
+  for (const k of providerKeys) if (or[k] !== undefined) provider[k] = or[k];
+  if (or.defaults !== undefined) {
+    const d = {};
+    if (or.defaults.reasoning_effort !== undefined) d.reasoningEffort = or.defaults.reasoning_effort;
+    if (or.defaults.reasoningEffort !== undefined) d.reasoningEffort = or.defaults.reasoningEffort;
+    if (or.defaults.temperature !== undefined) d.temperature = or.defaults.temperature;
+    if (or.defaults.timeout !== undefined) d.timeout = or.defaults.timeout;
+    provider.defaults = d;
+  }
+  const models = {};
+  for (const m of or.models || []) {
+    const { alias, reasoning_effort, ...rest } = m;
+    const entry = { provider: "openrouter", ...rest };
+    if (reasoning_effort !== undefined) entry.reasoningEffort = reasoning_effort;
+    models[alias] = entry;
+  }
+  const out = { version: 1, providers: { openrouter: provider }, models };
+  if (or.maxFanout !== undefined) out.routing = { maxFanout: or.maxFanout };
+  if (spec && spec.consensus !== undefined) out.consensus = spec.consensus;
+  return out;
+}
+
+// Write a config file. Legacy top-level { version, openrouter:{...} } specs are
+// auto-translated to the unified v1 shape via orCfg so the bridge (which only reads
+// the new shape) sees a valid config without rewriting every call site.
 function writeConfig(obj) {
   const dir = fsx.mkdtempSync(pathx.join(osx.tmpdir(), "cdg-orcfg-"));
   const file = pathx.join(dir, "config.json");
-  fsx.writeFileSync(file, JSON.stringify(obj));
+  const onDisk = obj && obj.openrouter !== undefined ? orCfg(obj) : obj;
+  fsx.writeFileSync(file, JSON.stringify(onDisk));
   return file;
 }
 function startBridge(env) {

@@ -13,16 +13,19 @@ const SUPPORTED_MAJOR = 1;
 
 const DEFAULT_API_BASE = "https://openrouter.ai/api/v1";
 const DEFAULT_API_KEY_ENV = "OPENROUTER_API_KEY";
+const DEFAULT_GROK_API_KEY_ENV = "XAI_API_KEY";
 const DEFAULT_MAX_FANOUT = 3;
 const DEFAULT_ARBITER = "auto";
 const BUILTIN_ARBITERS = new Set(["codex", "gemini", "grok"]);
-const OR_ARBITER_RE = /^openrouter:([a-z0-9-]+)$/;
+// The only provider a `models` entry may target in v1. codex/gemini/grok are
+// CLI-managed or singleton built-ins and are out of scope for named model records.
+const MODEL_PROVIDER = "openrouter";
 
 function isObject(v) {
   return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
-// Best-effort sanitize an alias to the [a-z0-9-]+ shape. Returns "" when nothing usable remains.
+// Best-effort sanitize an id to the [a-z0-9-]+ shape. Returns "" when nothing usable remains.
 function sanitizeAlias(raw) {
   if (typeof raw !== "string") return "";
   return raw
@@ -32,8 +35,17 @@ function sanitizeAlias(raw) {
     .replace(/^-+|-+$/g, "");
 }
 
-// Validate a parsed config object. Returns { ok, resolved, error }.
-// `resolved.openrouter` always exists (disabled when the block is absent).
+// Validate a parsed config object (the unified v1 on-disk schema). Returns
+// { ok, resolved, error }. The on-disk shape separates provider CONNECTION config
+// (providers.*) from named MODELS (models map), pulls fan-out into routing, and
+// lets consensus.arbiter name its own model. The RESOLVED shape is kept stable for
+// today's readers: resolved.openrouter.models is still an ARRAY whose entries carry
+// `alias` (= the map id), so core/registry.js, server/openrouter/routing.js, and the
+// openrouter-list wire keep working on `.alias`.
+//
+// camelCase config keys map to wire fields HERE in the resolved layer: a model
+// entry's `reasoningEffort` becomes resolved `.reasoning_effort` (the wire field the
+// bridge call site reads). One place to map, documented at the assignment below.
 function validateConfig(raw) {
   if (!isObject(raw)) return fail("config root must be a JSON object");
 
@@ -42,43 +54,93 @@ function validateConfig(raw) {
     return fail(`unsupported config version ${version}; this build supports version <= ${SUPPORTED_MAJOR}`);
   }
 
-  const providers = isObject(raw.providers) ? raw.providers : {};
+  // providers = connection config only, uniform per provider. resolved.providers
+  // keeps the same { name: { enabled } } shape today's readers consume; the
+  // openrouter-specific keys (apiKeyEnv/apiBase/allowRawModel/defaultModel/defaults)
+  // are hoisted into resolved.openrouter below.
+  const providersRaw = isObject(raw.providers) ? raw.providers : {};
+  const orProviderRaw = isObject(providersRaw.openrouter) ? providersRaw.openrouter : null;
 
-  const orRaw = isObject(raw.openrouter) ? raw.openrouter : null;
-  if (!orRaw) {
-    const { consensus, warnings } = resolveConsensus(raw.consensus, []);
-    return { ok: true, resolved: { version, providers, openrouter: disabledOpenRouter(), consensus, consensusWarnings: warnings }, error: null };
-  }
-
-  const enabled = orRaw.enabled !== false; // missing => enabled
-  const apiKeyEnv = orRaw.apiKeyEnv || DEFAULT_API_KEY_ENV;
-  const apiBase = orRaw.apiBase || DEFAULT_API_BASE;
-  const allowRawModel = orRaw.allowRawModel === true;
-
-  const maxFanout = orRaw.maxFanout === undefined ? DEFAULT_MAX_FANOUT : orRaw.maxFanout;
+  // routing = global fan-out policy. Pulled out of openrouter. Bad maxFanout hard-fails.
+  const routingRaw = isObject(raw.routing) ? raw.routing : {};
+  const maxFanout = routingRaw.maxFanout === undefined ? DEFAULT_MAX_FANOUT : routingRaw.maxFanout;
   if (!Number.isInteger(maxFanout) || maxFanout < 1) {
-    return fail(`maxFanout must be an integer >= 1 (got ${String(maxFanout)})`);
+    return fail(`routing.maxFanout must be an integer >= 1 (got ${String(maxFanout)})`);
   }
 
-  const defaultModel = typeof orRaw.defaultModel === "string" && orRaw.defaultModel.trim()
-    ? orRaw.defaultModel.trim() : null;
+  // Resolve the connection layer for openrouter. When the openrouter provider block
+  // is absent OR enabled:false, openrouter is disabled (no fan-out, no arbiter pin).
+  const enabled = !!orProviderRaw && orProviderRaw.enabled !== false; // present + not disabled
+  const apiKeyEnv = (orProviderRaw && orProviderRaw.apiKeyEnv) || DEFAULT_API_KEY_ENV;
+  const apiBase = (orProviderRaw && orProviderRaw.apiBase) || DEFAULT_API_BASE;
+  const allowRawModel = !!orProviderRaw && orProviderRaw.allowRawModel === true;
+  const defaultModel = orProviderRaw && typeof orProviderRaw.defaultModel === "string" && orProviderRaw.defaultModel.trim()
+    ? orProviderRaw.defaultModel.trim() : null;
+  const defaults = resolveDefaults(orProviderRaw && orProviderRaw.defaults);
 
-  const defaults = isObject(orRaw.defaults) ? orRaw.defaults : {};
+  // models = a MAP keyed by id. Resolve each entry into the legacy array shape with
+  // alias === id. Per-entry soft-fail: a bad entry lands in invalidModels and does
+  // NOT reject the whole config. Order follows Object.keys insertion order.
+  const { models, invalidModels } = resolveModels(raw.models, defaults);
 
-  // Per-entry partial validation: a single bad model entry no longer rejects the whole
-  // config. Valid entries are kept; bad ones are collected into `invalidModels` with a
-  // human-readable reason and (where a safe fix exists) a `suggestedAlias` the caller can
-  // apply to repair config.json. Top-level/schema errors above still hard-fail.
-  const modelsRaw = Array.isArray(orRaw.models) ? orRaw.models : [];
+  const { consensus, warnings } = resolveConsensus(raw.consensus, models);
+
+  return {
+    ok: true,
+    error: null,
+    resolved: {
+      version,
+      providers: resolveProviders(providersRaw),
+      openrouter: { enabled, apiKeyEnv, apiBase, allowRawModel, maxFanout, defaultModel, defaults, models, invalidModels },
+      consensus,
+      consensusWarnings: warnings,
+    },
+  };
+}
+
+// Resolve providers.openrouter.defaults. camelCase -> wire mapping happens HERE
+// (same place as model entries): on-disk `reasoningEffort` becomes the resolved
+// `.reasoning_effort` the bridge call site reads; `temperature`/`timeout` pass
+// through unchanged. Unknown keys are dropped so the wire stays clean.
+function resolveDefaults(raw) {
+  if (!isObject(raw)) return {};
+  const out = {};
+  if (raw.reasoningEffort !== undefined) out.reasoning_effort = raw.reasoningEffort;
+  if (raw.temperature !== undefined) out.temperature = raw.temperature;
+  if (raw.timeout !== undefined) out.timeout = raw.timeout;
+  return out;
+}
+
+// Build resolved.providers as { name: { enabled } }. Only the enable flag is part
+// of the registry/arbiter contract; openrouter-specific connection keys are hoisted
+// into resolved.openrouter, not duplicated here.
+function resolveProviders(providersRaw) {
+  const out = {};
+  for (const name of Object.keys(providersRaw)) {
+    const block = providersRaw[name];
+    out[name] = { enabled: !(isObject(block) && block.enabled === false) };
+  }
+  return out;
+}
+
+// Resolve the `models` MAP into the legacy resolved array (alias === id). Each entry
+// is validated; bad entries go to invalidModels[] with index/alias(=id)/reason and a
+// suggestedAlias when a safe id repair exists. The whole config never hard-fails here.
+function resolveModels(modelsRaw, defaults) {
   const models = [];
   const invalidModels = [];
-  const seen = new Set();           // aliases of entries that fully validated (for duplicate detection)
-  const taken = new Set([RESERVED_ALIAS]); // every existing alias + reserved + suggestions already made
-  for (const m of modelsRaw) {
-    if (isObject(m) && typeof m.alias === "string") taken.add(m.alias);
+  if (modelsRaw !== undefined && !isObject(modelsRaw)) {
+    // A present-but-non-object models key is malformed; treat as empty + one notice.
+    invalidModels.push({ index: 0, alias: null, reason: `models must be an object map (got ${JSON.stringify(modelsRaw)})` });
+    return { models, invalidModels };
   }
+  const map = isObject(modelsRaw) ? modelsRaw : {};
+  const ids = Object.keys(map);
 
-  // Pick a free alias near `candidate`, reserving it so two repairs cannot collide.
+  const seen = new Set();
+  const taken = new Set([RESERVED_ALIAS, ...ids.filter((id) => ALIAS_RE.test(id))]);
+
+  // Pick a free id near `candidate`, reserving it so two repairs cannot collide.
   function suggestFree(candidate) {
     if (!candidate || candidate === RESERVED_ALIAS) return undefined;
     let chosen = candidate;
@@ -99,85 +161,85 @@ function validateConfig(raw) {
     invalidModels.push(entry);
   }
 
-  for (let i = 0; i < modelsRaw.length; i++) {
-    const m = modelsRaw[i];
-    if (!isObject(m)) { addInvalid(i, null, `models[${i}] must be an object`); continue; }
-    const rawAlias = typeof m.alias === "string" ? m.alias : null;
-    if (typeof m.alias !== "string" || !ALIAS_RE.test(m.alias)) {
-      const sanitized = sanitizeAlias(m.alias);
-      addInvalid(i, rawAlias, `models[${i}] alias must match [a-z0-9-]+ (got ${JSON.stringify(m.alias)})`,
-        sanitized ? suggestFree(sanitized) : undefined);
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i];
+    const m = map[id];
+    if (!ALIAS_RE.test(id)) {
+      const sanitized = sanitizeAlias(id);
+      addInvalid(i, id, `models id "${id}" must match [a-z0-9-]+`, sanitized ? suggestFree(sanitized) : undefined);
       continue;
     }
-    if (m.alias === RESERVED_ALIAS) { addInvalid(i, m.alias, `alias "${RESERVED_ALIAS}" is reserved`); continue; }
-    if (seen.has(m.alias)) { addInvalid(i, m.alias, `duplicate alias "${m.alias}"`, suggestFree(m.alias)); continue; }
+    if (id === RESERVED_ALIAS) { addInvalid(i, id, `id "${RESERVED_ALIAS}" is reserved`); continue; }
+    if (seen.has(id)) { addInvalid(i, id, `duplicate id "${id}"`, suggestFree(id)); continue; }
+    if (!isObject(m)) { addInvalid(i, id, `models["${id}"] must be an object`); continue; }
+    // provider is required and MUST be "openrouter" in v1. codex/gemini/grok model
+    // entries are rejected with a clear reason - they are CLI-managed / singleton
+    // built-ins and out of scope. The field stays required so the shape is explicit.
+    if (typeof m.provider !== "string" || !m.provider.trim()) {
+      addInvalid(i, id, `models["${id}"] needs a provider (must be "${MODEL_PROVIDER}")`); continue;
+    }
+    if (m.provider !== MODEL_PROVIDER) {
+      addInvalid(i, id, `models["${id}"] provider "${m.provider}" is not supported; only "${MODEL_PROVIDER}" model entries are allowed (codex/gemini/grok are CLI-managed / singleton built-ins, out of scope)`);
+      continue;
+    }
     if (typeof m.model !== "string" || !m.model.trim()) {
-      addInvalid(i, m.alias, `models[${i}] (${m.alias}) needs a non-empty model slug`); continue;
+      addInvalid(i, id, `models["${id}"] needs a non-empty model slug`); continue;
     }
     let experts = null;
     if (m.experts !== undefined) {
-      if (!Array.isArray(m.experts)) { addInvalid(i, m.alias, `models[${i}] (${m.alias}) experts must be an array`); continue; }
+      if (!Array.isArray(m.experts)) { addInvalid(i, id, `models["${id}"] experts must be an array`); continue; }
       let badExpert = null;
       for (const e of m.experts) {
         if (!EXPERT_KEYS.has(e)) { badExpert = e; break; }
       }
-      if (badExpert !== null) { addInvalid(i, m.alias, `models[${i}] (${m.alias}) unknown expert "${badExpert}"`); continue; }
+      if (badExpert !== null) { addInvalid(i, id, `models["${id}"] unknown expert "${badExpert}"`); continue; }
       experts = m.experts.slice();
     }
-    if (m.reasoning_effort !== undefined && typeof m.reasoning_effort !== "string") {
-      addInvalid(i, m.alias, `models[${i}] (${m.alias}) reasoning_effort must be a string`); continue;
+    if (m.reasoningEffort !== undefined && typeof m.reasoningEffort !== "string") {
+      addInvalid(i, id, `models["${id}"] reasoningEffort must be a string`); continue;
     }
     if (m.timeout !== undefined && !(Number.isInteger(m.timeout) && m.timeout > 0)) {
-      addInvalid(i, m.alias, `models[${i}] (${m.alias}) timeout must be a positive integer`); continue;
+      addInvalid(i, id, `models["${id}"] timeout must be a positive integer`); continue;
     }
     if (m.temperature !== undefined && !(typeof m.temperature === "number" && Number.isFinite(m.temperature))) {
-      addInvalid(i, m.alias, `models[${i}] (${m.alias}) temperature must be a finite number`); continue;
+      addInvalid(i, id, `models["${id}"] temperature must be a finite number`); continue;
     }
     if (m.apiBase !== undefined && !(typeof m.apiBase === "string" && m.apiBase.trim())) {
-      addInvalid(i, m.alias, `models[${i}] (${m.alias}) apiBase must be a non-empty string`); continue;
+      addInvalid(i, id, `models["${id}"] apiBase must be a non-empty string`); continue;
     }
-    seen.add(m.alias);
+    seen.add(id);
     models.push({
-      alias: m.alias,
+      alias: id,
       model: m.model.trim(),
       experts,
       askAll: m.askAll !== false,
       consensus: m.consensus === true,
-      reasoning_effort: m.reasoning_effort,
+      // camelCase -> wire mapping happens HERE (the one place): the on-disk
+      // `reasoningEffort` becomes the resolved `.reasoning_effort` the bridge call
+      // site (server/openrouter/index.js) sends to the API as `reasoning_effort`.
+      reasoning_effort: m.reasoningEffort,
       timeout: m.timeout,
       temperature: m.temperature,
       apiBase: m.apiBase,
     });
   }
-
-  const { consensus, warnings } = resolveConsensus(raw.consensus, models);
-
-  return {
-    ok: true,
-    error: null,
-    resolved: {
-      version, providers,
-      openrouter: { enabled, apiKeyEnv, apiBase, allowRawModel, maxFanout, defaultModel, defaults, models, invalidModels },
-      consensus,
-      consensusWarnings: warnings,
-    },
-  };
+  return { models, invalidModels };
 }
 
 // Resolve the consensus.arbiter spec with soft-degrade semantics. An invalid
-// arbiter NEVER rejects the config (that would also kill providers/openrouter);
-// it degrades to "auto" and records a human-readable warning. Allowed values:
-// "host", "auto", a built-in provider ("codex"|"gemini"|"grok"), or
-// "openrouter:<alias>" where the alias exists in the resolved model list. An
-// openrouter arbiter does NOT require the alias to be consensus:true - arbiter
-// eligibility is separate from voting-panel membership.
+// arbiter NEVER rejects the config; it degrades to "auto" and records a warning.
+// Accepted forms:
+//   - shorthand string: "host" | "auto" | "codex" | "gemini" | "grok"
+//   - object { model: "<id>" } referencing ANY models entry (even askAll:false /
+//     consensus:false - that is the dedicated-arbiter case). Arbiter eligibility is
+//     separate from voting-panel membership.
+// The resolved arbiter is normalized to a value resolveArbiter() in
+// server/mcp/index.js consumes directly: a shorthand string, or { model: "<id>" }.
 // @param {*} rawConsensus  the raw consensus block (untrusted)
 // @param {{alias:string}[]} models  resolved (valid) model entries
-// @returns {{consensus:{arbiter:string}, warnings:string[]}}
+// @returns {{consensus:{arbiter: (string|{model:string})}, warnings:string[]}}
 function resolveConsensus(rawConsensus, models) {
   const warnings = [];
-  // A present-but-non-object consensus key is malformed (e.g. consensus:"host").
-  // Per the invalid->auto+warning rule it must warn, not degrade silently.
   if (rawConsensus !== undefined && !isObject(rawConsensus)) {
     warnings.push(`consensus must be an object (got ${JSON.stringify(rawConsensus)}); using "${DEFAULT_ARBITER}"`);
     return { consensus: { arbiter: DEFAULT_ARBITER }, warnings };
@@ -186,21 +248,26 @@ function resolveConsensus(rawConsensus, models) {
   const spec = block.arbiter;
   if (spec === undefined) return { consensus: { arbiter: DEFAULT_ARBITER }, warnings };
 
+  // Object form: { model: "<id>" } referencing a models entry.
+  if (isObject(spec)) {
+    const id = spec.model;
+    if (typeof id !== "string" || !id.trim()) {
+      warnings.push(`consensus.arbiter object must have a string "model" id (got ${JSON.stringify(spec)}); using "${DEFAULT_ARBITER}"`);
+      return { consensus: { arbiter: DEFAULT_ARBITER }, warnings };
+    }
+    if (models.some((m) => m.alias === id)) return { consensus: { arbiter: { model: id } }, warnings };
+    warnings.push(`consensus.arbiter model "${id}" is not a configured models id; using "${DEFAULT_ARBITER}"`);
+    return { consensus: { arbiter: DEFAULT_ARBITER }, warnings };
+  }
+
   if (typeof spec !== "string") {
-    warnings.push(`consensus.arbiter must be a string (got ${JSON.stringify(spec)}); using "${DEFAULT_ARBITER}"`);
+    warnings.push(`consensus.arbiter must be a string shorthand or { model: "<id>" } (got ${JSON.stringify(spec)}); using "${DEFAULT_ARBITER}"`);
     return { consensus: { arbiter: DEFAULT_ARBITER }, warnings };
   }
   if (spec === "host" || spec === "auto" || BUILTIN_ARBITERS.has(spec)) {
     return { consensus: { arbiter: spec }, warnings };
   }
-  const orMatch = OR_ARBITER_RE.exec(spec);
-  if (orMatch) {
-    const alias = orMatch[1];
-    if (models.some((m) => m.alias === alias)) return { consensus: { arbiter: spec }, warnings };
-    warnings.push(`consensus.arbiter "${spec}" references an unknown OpenRouter alias; using "${DEFAULT_ARBITER}"`);
-    return { consensus: { arbiter: DEFAULT_ARBITER }, warnings };
-  }
-  warnings.push(`consensus.arbiter "${spec}" is not host/auto/codex/gemini/grok/openrouter:<alias>; using "${DEFAULT_ARBITER}"`);
+  warnings.push(`consensus.arbiter "${spec}" is not host/auto/codex/gemini/grok or { model: "<id>" }; using "${DEFAULT_ARBITER}"`);
   return { consensus: { arbiter: DEFAULT_ARBITER }, warnings };
 }
 
@@ -250,4 +317,7 @@ function makeConfigReader(filePath) {
   };
 }
 
-module.exports = { validateConfig, makeConfigReader, EXPERT_KEYS, RESERVED_ALIAS, DEFAULT_API_BASE, DEFAULT_API_KEY_ENV, OR_ARBITER_RE };
+module.exports = {
+  validateConfig, makeConfigReader, EXPERT_KEYS, RESERVED_ALIAS,
+  DEFAULT_API_BASE, DEFAULT_API_KEY_ENV, DEFAULT_GROK_API_KEY_ENV,
+};

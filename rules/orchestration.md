@@ -18,7 +18,7 @@ You have access to GPT experts via MCP tools. Use them strategically based on th
 
 > **Grok notes:** the Grok bridge talks to the xAI HTTP API, so it is advisory-only (it cannot edit files). It reads attached files via `files:[{path|file_id|file_url}]` - attach referenced local files by default and set `cwd` to the repo root so paths resolve (a path outside `cwd` is refused). It needs `XAI_API_KEY`; a missing key surfaces `errorKind: "missing-auth"`.
 
-> **OpenRouter notes:** the OpenRouter bridge is advisory-only (it cannot edit files). Model aliases are declared in `~/.config/deliberation/config.json` (Windows: `%APPDATA%\deliberation\config.json`; override with `DELIBERATION_CONFIG`) and hot-reload without restarting. File attachment is text-inline only (`{path}`/`{dir}`; 256 KB per file, 1 MB aggregate). `/ask-all` fan-out is capped by `maxFanout` (default 3); `/consensus` is uncapped (warn if >3 models). Implementation tasks must route to Codex or Gemini.
+> **OpenRouter notes:** the OpenRouter bridge is advisory-only (it cannot edit files). Models are declared as named records in the `models` map of `~/.config/deliberation/config.json` (Windows: `%APPDATA%\deliberation\config.json`; override with `DELIBERATION_CONFIG`), each keyed by an id and naming `provider: "openrouter"` + a model slug; they hot-reload without restarting. File attachment is text-inline only (`{path}`/`{dir}`; 256 KB per file, 1 MB aggregate). `/ask-all` fan-out is capped by `routing.maxFanout` (default 3); `/consensus` is uncapped (warn if >3 models). Implementation tasks must route to Codex or Gemini.
 
 ## Available Experts
 

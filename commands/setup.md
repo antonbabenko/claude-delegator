@@ -62,12 +62,13 @@ json_eval() { node -e "$1" "$CFG" 2>/dev/null; }
 provider_enabled() {
   json_eval 'try{const c=require(process.argv[1]);const p=(c.providers&&c.providers[process.argv[2]])||{};process.stdout.write(p.enabled===false?"0":"1")}catch(e){process.stdout.write("1")}' "$1"
 }
-# openrouter on iff enabled!=false AND (non-empty models[] OR defaultModel).
+# openrouter on iff providers.openrouter.enabled!=false AND (>=1 models record OR defaultModel).
+# Unified v1 shape: connection lives under providers.openrouter; models is the top-level map.
 openrouter_enabled() {
-  json_eval 'try{const c=require(process.argv[1]);const o=c.openrouter||{};const on=o.enabled!==false&&((Array.isArray(o.models)&&o.models.length)||o.defaultModel);process.stdout.write(on?"1":"0")}catch(e){process.stdout.write("0")}'
+  json_eval 'try{const c=require(process.argv[1]);const p=(c.providers&&c.providers.openrouter)||{};const hasModel=(c.models&&typeof c.models==="object"&&Object.keys(c.models).length)||p.defaultModel;const on=p.enabled!==false&&hasModel;process.stdout.write(on?"1":"0")}catch(e){process.stdout.write("0")}'
 }
 or_key_env() {
-  json_eval 'try{const c=require(process.argv[1]);process.stdout.write((c.openrouter&&c.openrouter.apiKeyEnv)||"OPENROUTER_API_KEY")}catch(e){process.stdout.write("OPENROUTER_API_KEY")}'
+  json_eval 'try{const c=require(process.argv[1]);const p=(c.providers&&c.providers.openrouter)||{};process.stdout.write(p.apiKeyEnv||"OPENROUTER_API_KEY")}catch(e){process.stdout.write("OPENROUTER_API_KEY")}'
 }
 
 remove_mcp() { claude mcp remove "$1" >/dev/null 2>&1 || true; }

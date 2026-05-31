@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config.schema.json",
+  "title": "deliberation config",
+  "description": "User config for the deliberation MCP server. providers = transport/connection; models = named model records; routing = fan-out policy; consensus.arbiter = who synthesizes the verdict.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema URL for editor validation and autocomplete."
+    },
+    "version": {
+      "const": 1,
+      "description": "Config schema version. Always 1."
+    },
+    "providers": {
+      "type": "object",
+      "description": "Per-provider CONNECTION config only (enable + auth/endpoint). Not where models live.",
+      "additionalProperties": false,
+      "properties": {
+        "codex": { "$ref": "#/$defs/simpleProvider" },
+        "gemini": { "$ref": "#/$defs/simpleProvider" },
+        "grok": { "$ref": "#/$defs/grokProvider" },
+        "openrouter": { "$ref": "#/$defs/openrouterProvider" }
+      }
+    },
+    "models": {
+      "type": "object",
+      "description": "Named model records, keyed by id (^[a-z0-9-]+$). Each record names its provider and model slug. In v1 every record must target provider \"openrouter\".",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[a-z0-9-]+$": { "$ref": "#/$defs/modelRecord" }
+      }
+    },
+    "routing": {
+      "type": "object",
+      "description": "Global routing policy.",
+      "additionalProperties": false,
+      "properties": {
+        "maxFanout": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3,
+          "description": "Max number of OpenRouter delegates fanned out by /ask-all.",
+          "examples": [3]
+        }
+      }
+    },
+    "consensus": {
+      "type": "object",
+      "description": "Consensus settings.",
+      "additionalProperties": false,
+      "properties": {
+        "arbiter": {
+          "description": "Who synthesizes the consensus verdict: a shorthand string, or a dedicated model record by id.",
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["auto", "host", "codex", "gemini", "grok"],
+              "description": "Shorthand: auto (pick a healthy voice), host (the host arbitrates), or a built-in provider."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["model"],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "description": "id of a models record to use as the arbiter (any record, even askAll:false / consensus:false).",
+                  "examples": ["claude-arb"]
+                }
+              }
+            }
+          ],
+          "examples": ["auto", { "model": "claude-arb" }]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "simpleProvider": {
+      "type": "object",
+      "description": "A CLI-managed provider (Codex, Gemini). Connection is handled by its CLI; only the enable flag applies.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true, "description": "Whether this provider participates." }
+      }
+    },
+    "grokProvider": {
+      "type": "object",
+      "description": "Grok (xAI) connection config.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "apiKeyEnv": { "type": "string", "default": "XAI_API_KEY", "description": "Env var holding the xAI API key." }
+      }
+    },
+    "openrouterProvider": {
+      "type": "object",
+      "description": "OpenRouter connection config (advisory-only HTTP). Holds the keys specific to OpenRouter; named models live under the top-level models map.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "apiKeyEnv": { "type": "string", "default": "OPENROUTER_API_KEY", "description": "Env var holding the OpenRouter API key." },
+        "apiBase": { "type": "string", "default": "https://openrouter.ai/api/v1", "description": "OpenAI-compatible base URL." },
+        "allowRawModel": { "type": "boolean", "default": false, "description": "Allow raw model slugs (not just configured records)." },
+        "defaultModel": { "type": "string", "description": "Model slug used for bare /ask-openrouter calls.", "examples": ["openai/gpt-4.1-mini"] },
+        "defaults": {
+          "type": "object",
+          "description": "Per-call defaults applied to OpenRouter requests unless a record or call overrides them.",
+          "additionalProperties": false,
+          "properties": {
+            "reasoningEffort": { "type": "string", "examples": ["high"] },
+            "temperature": { "type": "number", "examples": [0.2] },
+            "timeout": { "type": "integer", "minimum": 1, "examples": [120000] }
+          }
+        }
+      }
+    },
+    "modelRecord": {
+      "type": "object",
+      "description": "A named model record. provider + model are required.",
+      "additionalProperties": false,
+      "required": ["provider", "model"],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["openrouter"],
+          "description": "Transport for this record. Only \"openrouter\" is supported in v1 (codex/gemini/grok are CLI-managed / singleton built-ins)."
+        },
+        "model": { "type": "string", "minLength": 1, "description": "Model slug.", "examples": ["anthropic/claude-3.7-sonnet"] },
+        "askAll": { "type": "boolean", "default": true, "description": "Participate in /ask-all fan-out." },
+        "consensus": { "type": "boolean", "default": false, "description": "Participate in the /consensus voting panel." },
+        "experts": {
+          "type": "array",
+          "description": "Restrict this record to specific experts. Absent = all experts.",
+          "items": {
+            "type": "string",
+            "enum": ["architect", "plan-reviewer", "scope-analyst", "code-reviewer", "security-analyst", "researcher", "debugger"]
+          }
+        },
+        "reasoningEffort": { "type": "string", "examples": ["high"] },
+        "temperature": { "type": "number", "examples": [0.2] },
+        "timeout": { "type": "integer", "minimum": 1, "examples": [60000] },
+        "apiBase": { "type": "string", "description": "Override the provider apiBase for this record only." }
+      }
+    }
+  },
+  "examples": [
+    {
+      "$schema": "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config.schema.json",
+      "version": 1,
+      "providers": {
+        "codex": { "enabled": true },
+        "gemini": { "enabled": true },
+        "grok": { "enabled": true, "apiKeyEnv": "XAI_API_KEY" },
+        "openrouter": {
+          "enabled": true,
+          "apiKeyEnv": "OPENROUTER_API_KEY",
+          "apiBase": "https://openrouter.ai/api/v1",
+          "allowRawModel": false,
+          "defaultModel": "openai/gpt-4.1-mini",
+          "defaults": { "reasoningEffort": "high", "temperature": 0.2, "timeout": 120000 }
+        }
+      },
+      "models": {
+        "claude-arb": {
+          "provider": "openrouter",
+          "model": "anthropic/claude-3.7-sonnet",
+          "askAll": true,
+          "consensus": true,
+          "experts": ["architect"],
+          "reasoningEffort": "high",
+          "temperature": 0.2,
+          "timeout": 60000
+        }
+      },
+      "routing": { "maxFanout": 3 },
+      "consensus": { "arbiter": { "model": "claude-arb" } }
+    }
+  ]
+}

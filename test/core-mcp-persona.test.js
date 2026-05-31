@@ -164,7 +164,7 @@ function throwingProvider(name, sink, health = { ok: true }) {
   };
 }
 
-/** @param {string} arbiter @param {any[]} [models] */
+/** @param {string|{model:string}} arbiter @param {any[]} [models] */
 function cfg(arbiter, models = []) {
   return { providers: {}, openrouter: { maxFanout: 3, models }, consensus: { arbiter }, consensusWarnings: /** @type {string[]} */ ([]) };
 }
@@ -229,23 +229,23 @@ test("AR4: built-in arbiter name selects that provider and excludes it from peer
   assert.equal(grokCalls[0].di, PROMPTS["arbiter"]);
 });
 
-test("AR5: openrouter:<alias> arbiter pins that alias as the arbiter", async () => {
+test("AR5: { model: <id> } arbiter pins that record as the arbiter", async () => {
   const sink = { calls: /** @type {any[]} */ ([]) };
   const models = [{ alias: "k2", model: "x/k2", experts: null, askAll: true, consensus: true }];
   const srv = buildServer({
     providers: [recordingProvider("codex", sink), recordingProvider("gemini", sink), recordingProvider("grok", sink), recordingProvider("openrouter", sink)],
-    getConfig: () => cfg("openrouter:k2", models),
+    getConfig: () => cfg({ model: "k2" }, models),
   });
   const out = await callConsensus(srv, { expert: "architect" });
   assert.equal(out.arbiter.provider, "openrouter:k2");
   assert.equal(out.opinions.some((/** @type {any} */ o) => o.provider === "openrouter:k2"), false); // excluded from peers
 });
 
-test("AR6: openrouter:<missing-alias> arbiter degrades to auto + warning", async () => {
+test("AR6: { model: <missing-id> } arbiter degrades to auto + warning", async () => {
   const sink = { calls: /** @type {any[]} */ ([]) };
   const srv = buildServer({
     providers: [recordingProvider("codex", sink), recordingProvider("gemini", sink), recordingProvider("grok", sink)],
-    getConfig: () => cfg("openrouter:ghost"),
+    getConfig: () => cfg({ model: "ghost" }),
   });
   const out = await callConsensus(srv, { expert: "architect" });
   assert.equal(out.arbiter.mode, "server");
@@ -336,14 +336,14 @@ test("AR11: arbiter set to a DISABLED built-in degrades to auto + warning (no ha
   assert.equal(sink.calls.some((cl) => cl.provider === "grok"), false);
 });
 
-test("AR11b: arbiter openrouter:<alias> with openrouter DISABLED degrades to auto + warning", async () => {
+test("AR11b: arbiter { model: <id> } with openrouter DISABLED degrades to auto + warning", async () => {
   const sink = { calls: /** @type {any[]} */ ([]) };
   // No consensus delegates in the panel (the disabled openrouter contributes none),
-  // so the explicit-pin path must reject the disabled alias and fall back to a
+  // so the explicit-pin path must reject the disabled record and fall back to a
   // built-in via auto, surfacing the not-available warning.
   const c = { providers: { openrouter: { enabled: false } },
     openrouter: { enabled: false, maxFanout: 3, models: [{ alias: "k2", model: "x/k2", experts: null, askAll: true, consensus: false }] },
-    consensus: { arbiter: "openrouter:k2" }, consensusWarnings: /** @type {string[]} */ ([]) };
+    consensus: { arbiter: { model: "k2" } }, consensusWarnings: /** @type {string[]} */ ([]) };
   const srv = buildServer({
     providers: [recordingProvider("codex", sink), recordingProvider("gemini", sink), recordingProvider("grok", sink), recordingProvider("openrouter", sink)],
     getConfig: () => c,

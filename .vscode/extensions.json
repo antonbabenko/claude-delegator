@@ -1,0 +1,4 @@
+{
+  "// note": "JSON Schema validation is built into VS Code. No extension is needed - the editor reads the `$schema` key in config.json (and the json.schemas mapping in settings.json for in-repo example configs) and gives you validation, autocomplete, and lint out of the box.",
+  "recommendations": []
+}

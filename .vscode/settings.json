@@ -1,0 +1,8 @@
+{
+  "json.schemas": [
+    {
+      "fileMatch": ["**/deliberation/config.json", "config.json"],
+      "url": "./config.schema.json"
+    }
+  ]
+}

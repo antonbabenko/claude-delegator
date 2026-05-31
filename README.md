@@ -241,61 +241,73 @@ Every expert supports two modes, chosen automatically from your request:
 OpenRouter models are declared in `~/.config/deliberation/config.json` - the canonical
 XDG path (Windows: `%APPDATA%\deliberation\config.json`). You can override the path
 with `DELIBERATION_CONFIG`. The file is the live single source of
-truth: changes to the `openrouter` block hot-reload without restarting Claude Code.
-Toggling a built-in provider (codex / gemini / grok) still requires `/setup`.
+truth: changes to `models`, `routing`, or the `providers.openrouter` block hot-reload
+without restarting Claude Code. Toggling a built-in provider (codex / gemini / grok)
+still requires `/setup`.
+
+The config has four sections: `providers` (transport / connection per provider),
+`models` (named model records keyed by id), `routing` (fan-out policy), and
+`consensus.arbiter` (who synthesizes the verdict). The `$schema` key gives editors
+validation and autocomplete - VS Code needs no extension.
 
 Minimal example:
 
 ```json
 {
+  "$schema": "https://raw.githubusercontent.com/antonbabenko/deliberation/master/config.schema.json",
   "version": 1,
   "providers": {
     "codex":  { "enabled": true },
     "gemini": { "enabled": true },
-    "grok":   { "enabled": true }
+    "grok":   { "enabled": true, "apiKeyEnv": "XAI_API_KEY" },
+    "openrouter": {
+      "enabled": true,
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "defaultModel": "openai/gpt-4.1-mini",
+      "defaults": { "reasoningEffort": "medium" }
+    }
   },
-  "openrouter": {
-    "enabled": true,
-    "apiKeyEnv": "OPENROUTER_API_KEY",
-    "apiBase": "https://openrouter.ai/api/v1",
-    "maxFanout": 3,
-    "defaultModel": "openai/gpt-4.1-mini",
-    "defaults": { "reasoning_effort": "medium" },
-    "models": [
-      {
-        "alias": "gpt-4-or",
-        "model": "openai/gpt-4.1",
-        "askAll": true,
-        "consensus": false
-      },
-      {
-        "alias": "claude-haiku-or",
-        "model": "anthropic/claude-haiku-4-5",
-        "askAll": true,
-        "consensus": true,
-        "reasoning_effort": "high"
-      }
-    ]
-  }
+  "models": {
+    "gpt-4-or": {
+      "provider": "openrouter",
+      "model": "openai/gpt-4.1",
+      "askAll": true,
+      "consensus": false
+    },
+    "claude-arb": {
+      "provider": "openrouter",
+      "model": "anthropic/claude-haiku-4-5",
+      "askAll": true,
+      "consensus": true,
+      "reasoningEffort": "high"
+    }
+  },
+  "routing": { "maxFanout": 3 },
+  "consensus": { "arbiter": { "model": "claude-arb" } }
 }
 ```
 
 Browse model slugs at [openrouter.ai/models](https://openrouter.ai/models?input_modalities=text);
-the `model` field takes any slug listed there.
+the `model` field takes any slug listed there. Each record's `provider` must be
+`"openrouter"` in v1 (codex / gemini / grok are managed by their own CLI / API).
 
-`reasoning_effort` (`low` / `medium` / `high`) sets how hard a reasoning model
-thinks. Put it on `openrouter.defaults` to cover every model, or on a single model
-entry to override the default for that one. Precedence runs call argument over
-per-model override over `defaults`.
+`reasoningEffort` (`low` / `medium` / `high`) sets how hard a reasoning model
+thinks. Put it on `providers.openrouter.defaults` to cover every model, or on a single
+record to override the default for that one. Precedence runs call argument over
+per-record override over `defaults`.
 
-`/ask-all` includes models where `askAll !== false`, capped to `maxFanout`.
-`/consensus` includes models where `consensus === true`, with no fanout cap (a warning
-is emitted when more than 3 models participate). Implementation tasks always route to
-Codex or Gemini - never OpenRouter.
+`/ask-all` includes records where `askAll !== false`, capped to `routing.maxFanout`.
+`/consensus` includes records where `consensus === true`, with no fanout cap (a warning
+is emitted when more than 3 models participate). `consensus.arbiter` picks who synthesizes:
+a shorthand string (`"auto"` / `"host"` / `"codex"` / `"gemini"` / `"grok"`) or
+`{ "model": "<id>" }` naming a record (even an out-of-panel one). Implementation tasks
+always route to Codex or Gemini - never OpenRouter.
 
-For the full schema, apiBase override matrix (Ollama, vLLM, LM Studio, HuggingFace),
-file-attachment caps, session model persistence, consensus cost model, and error kinds,
-see [TECHNICAL.md - OpenRouter bridge](TECHNICAL.md#openrouter-bridge).
+For the full schema, the `$schema` / VS Code validation story, apiBase override matrix
+(Ollama, vLLM, LM Studio, HuggingFace), file-attachment caps, session model persistence,
+consensus cost model, and error kinds, see
+[TECHNICAL.md - OpenRouter bridge](TECHNICAL.md#openrouter-bridge).
 
 For provider defaults, environment variables, and manual MCP setup, see [TECHNICAL.md](TECHNICAL.md#environment-variables).
 
