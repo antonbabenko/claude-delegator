@@ -86,10 +86,19 @@ The orchestration server is also published on its own - npm [`@antonbabenko/deli
 ```json
 {
   "mcpServers": {
-    "deliberation": { "command": "npx", "args": ["-y", "@antonbabenko/deliberation-mcp"] }
+    "deliberation": {
+      "command": "npx",
+      "args": ["-y", "@antonbabenko/deliberation-mcp"],
+      "env": {
+        "XAI_API_KEY": "xai-...",
+        "OPENROUTER_API_KEY": "sk-or-v1-..."
+      }
+    }
   }
 }
 ```
+
+The `env` block is how you set provider keys outside Claude Code. GPT and Gemini do not read keys here - they use the `codex` and `agy` CLIs (logged in separately), so drop those lines if you only use GPT/Gemini. `XAI_API_KEY` enables Grok; `OPENROUTER_API_KEY` enables OpenRouter (which also needs models declared in `~/.claude/deliberation/config.json`, or point elsewhere with `DELIBERATION_CONFIG`). The one-click buttons above cannot carry secrets - add the `env` block by hand after installing.
 
 Per-host config location and the key it expects:
 
