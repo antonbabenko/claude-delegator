@@ -71,6 +71,21 @@ Claude now routes complex tasks to your GPT, Gemini, Grok, and OpenRouter expert
 The canonical marketplace is [`antonbabenko/agent-plugins`](https://github.com/antonbabenko/agent-plugins) (above), which also bundles the other plugins.
 
 <details>
+<summary>Use in any MCP host (standalone, without the Claude Code plugin)</summary>
+
+The orchestration server is also published on its own - npm [`@antonbabenko/deliberation-mcp`](https://www.npmjs.com/package/@antonbabenko/deliberation-mcp), Official MCP Registry name `io.github.antonbabenko/deliberation`. Add it to any stdio MCP host:
+
+```json
+{ "command": "npx", "args": ["-y", "@antonbabenko/deliberation-mcp"], "type": "stdio" }
+```
+
+Provider prerequisites are the same as the plugin (see [Requirements](#requirements)): the Codex CLI for GPT, `agy` for Gemini, `XAI_API_KEY` for Grok, and `OPENROUTER_API_KEY` plus `~/.claude/deliberation/config.json` for OpenRouter (override the config path with `DELIBERATION_CONFIG`).
+
+Tools exposed: `ask-all`, `consensus`, `ask-gpt` / `ask-gemini` / `ask-grok` / `ask-openrouter`, and the seven experts (`architect`, `plan-reviewer`, `scope-analyst`, `code-reviewer`, `security-analyst`, `researcher`, `debugger`).
+
+</details>
+
+<details>
 <summary>Updating an existing install</summary>
 
 After editing plugin code or upgrading the plugin version:
