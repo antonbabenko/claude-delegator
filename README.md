@@ -49,7 +49,7 @@ accordingly. OpenRouter is advisory-only and config-driven: models are declared 
 
 ## Install
 
-### Cloud Code plugin (recommended):
+### Claude Code plugin (recommended):
 
 **1. Add the marketplace - [antonbabenko/agent-plugins](https://github.com/antonbabenko/agent-plugins)**
 ```
