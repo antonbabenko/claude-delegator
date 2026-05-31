@@ -1,3 +1,10 @@
+## [2.1.0](https://github.com/antonbabenko/deliberation/compare/v2.0.3...v2.1.0) (2026-05-31)
+
+
+### Features
+
+* **core:** expert personas as data + server-side injection + self-describing tool schema ([#67](https://github.com/antonbabenko/deliberation/issues/67)) ([8aa4e6e](https://github.com/antonbabenko/deliberation/commit/8aa4e6e16ed27e68b9dcadf89d1a6062f32b39a5))
+
 ## [2.0.3](https://github.com/antonbabenko/deliberation/compare/v2.0.2...v2.0.3) (2026-05-31)
 
 
@@ -29,11 +36,4 @@
 ### Features
 
 * rebrand to deliberation v2 core + drop 1.x compat ([#55](https://github.com/antonbabenko/deliberation/issues/55)) ([4cdc2b4](https://github.com/antonbabenko/deliberation/commit/4cdc2b47b9594576eee475eee2ef533603ace614))
-
-## [1.18.0](https://github.com/antonbabenko/deliberation/compare/v1.17.0...v1.18.0) (2026-05-30)
-
-
-### Features
-
-* **openrouter:** add server-side delegate selection to openrouter-list ([#48](https://github.com/antonbabenko/deliberation/issues/48)) ([0ee7796](https://github.com/antonbabenko/deliberation/commit/0ee7796b80099829345f33a292b702e148ed6228))
 
