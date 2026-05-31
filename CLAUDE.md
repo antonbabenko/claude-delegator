@@ -90,6 +90,21 @@ Retries use multi-turn (`*-reply` with `threadId`) so the expert remembers previ
 
 > Expert prompts adapted from [oh-my-opencode](https://github.com/code-yeongyu/oh-my-opencode)
 
+## AGENTS.md vs CLAUDE.md
+
+Two host-facing docs, read by different agents:
+
+- **CLAUDE.md** (this file) - read natively by Claude Code. Holds the plugin-dev,
+  architecture, and release content above.
+- **AGENTS.md** - read by other hosts (Cursor, Codex, Kiro, and any agent that
+  picks up an `AGENTS.md`). It is the host-neutral tool guide: what deliberation
+  is, the MCP tool surface, and when to delegate.
+
+AGENTS.md is intentionally standalone - it is NOT an `@CLAUDE.md` include. The
+plugin-dev and release content here is internal to this repo and would mislead a
+non-Claude host. Keep AGENTS.md self-contained so a future edit does not re-merge
+CLAUDE.md into it. Per-host rule snippets live in `examples/`.
+
 ## Seven GPT Experts
 
 | Expert | Prompt | Specialty | Triggers |

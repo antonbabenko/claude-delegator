@@ -116,6 +116,8 @@ Provider prerequisites are the same as the plugin (see [Requirements](#requireme
 
 Tools exposed: `ask-all`, `consensus`, `ask-gpt` / `ask-gemini` / `ask-grok` / `ask-openrouter`, and the seven experts (`architect`, `plan-reviewer`, `scope-analyst`, `code-reviewer`, `security-analyst`, `researcher`, `debugger`).
 
+The package also ships a `deliberation-setup` bin. Run it once with `npx -y --package @antonbabenko/deliberation-mcp deliberation-setup` to write a starter `~/.claude/deliberation/config.json` (it never overwrites an existing one). The plain `npx -y @antonbabenko/deliberation-mcp` form runs the default bin (the server), which is what your MCP host launches. For host rule wiring, see [`AGENTS.md`](AGENTS.md) and the per-host snippets in [`examples/`](examples/).
+
 </details>
 
 ## Requirements
