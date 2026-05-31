@@ -1,3 +1,10 @@
+## [2.5.0](https://github.com/antonbabenko/deliberation/compare/v2.4.0...v2.5.0) (2026-05-31)
+
+
+### Features
+
+* unified config schema (providers + models map + routing + arbiter model) with JSON Schema + .vscode ([#75](https://github.com/antonbabenko/deliberation/issues/75)) ([54ec4ed](https://github.com/antonbabenko/deliberation/commit/54ec4ed385e44a9bc498a6407534d994bede1f80))
+
 ## [2.4.0](https://github.com/antonbabenko/deliberation/compare/v2.3.0...v2.4.0) (2026-05-31)
 
 
@@ -25,11 +32,4 @@
 ### Features
 
 * **core:** expert personas as data + server-side injection + self-describing tool schema ([#67](https://github.com/antonbabenko/deliberation/issues/67)) ([8aa4e6e](https://github.com/antonbabenko/deliberation/commit/8aa4e6e16ed27e68b9dcadf89d1a6062f32b39a5))
-
-## [2.0.3](https://github.com/antonbabenko/deliberation/compare/v2.0.2...v2.0.3) (2026-05-31)
-
-
-### Bug Fixes
-
-* add glama.json for Glama MCP directory ([#65](https://github.com/antonbabenko/deliberation/issues/65)) ([79479ac](https://github.com/antonbabenko/deliberation/commit/79479ac2b4b8ba3c1af34af61e096cf193b461e5))
 
