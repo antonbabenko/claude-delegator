@@ -6,8 +6,9 @@
  * Claude Delegator - OpenRouter MCP Bridge
  *
  * Zero-dependency MCP server (JSON-RPC 2.0 over stdio) calling the OpenAI-compatible
- * POST {apiBase}/chat/completions endpoint. Config in ~/.claude/deliberation/config.json
- * (stat-gated hot-reload). Advisory-only. Tools: openrouter, openrouter-reply, openrouter-list.
+ * POST {apiBase}/chat/completions endpoint. Config in ~/.config/deliberation/config.json
+ * (override with DELIBERATION_CONFIG; stat-gated hot-reload). Advisory-only.
+ * Tools: openrouter, openrouter-reply, openrouter-list.
  */
 
 const DEFAULT_TIMEOUT_MS = 180_000;

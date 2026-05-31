@@ -42,8 +42,20 @@ resolve_plugin_root() {
 }
 PLUGIN_ROOT="$(resolve_plugin_root)" || { echo "Error: cannot locate the deliberation plugin root. Install via /plugin, run from the plugin checkout, or set CLAUDE_PLUGIN_ROOT."; exit 1; }
 
-# --- config path: env override > default deliberation path ---
-CFG="${DELIBERATION_CONFIG:-$HOME/.claude/deliberation/config.json}"
+# --- config path: env override > canonical XDG ---
+# Mirrors core/paths.js: DELIBERATION_CONFIG wins; else the canonical
+# ${XDG_CONFIG_HOME or ~/.config}/deliberation/config.json. Per the XDG spec a
+# RELATIVE XDG_CONFIG_HOME is ignored and the default used.
+if [ -n "${DELIBERATION_CONFIG:-}" ]; then
+  CFG="$DELIBERATION_CONFIG"
+else
+  if [ -n "${XDG_CONFIG_HOME:-}" ] && [ "${XDG_CONFIG_HOME#/}" != "${XDG_CONFIG_HOME}" ]; then
+    XDG_BASE="$XDG_CONFIG_HOME"
+  else
+    XDG_BASE="$HOME/.config"
+  fi
+  CFG="$XDG_BASE/deliberation/config.json"
+fi
 
 json_eval() { node -e "$1" "$CFG" 2>/dev/null; }
 # providers.<name>.enabled: missing => enabled (returns 1); explicit false => 0.

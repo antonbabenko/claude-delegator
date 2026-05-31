@@ -7,7 +7,8 @@
  *
  *   prune  - deletes REMOTE xAI files by filename prefix + created_at cutoff.
  *            Safe without the local cache.
- *   gc     - syncs the LOCAL cache (~/.claude/cache/deliberation/grok-files.json)
+ *   gc     - syncs the LOCAL cache (~/.cache/deliberation/grok-files.json;
+ *            override with DELIBERATION_CACHE)
  *            with the remote file list via ONE paginated GET /v1/files. Prunes
  *            local rows whose fileId no longer exists remotely. Default scope:
  *            current XAI_API_KEY + XAI_API_BASE rows only. --all-keys widens;

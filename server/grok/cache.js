@@ -7,6 +7,7 @@ const crypto = require("node:crypto");
 const { mkdirSync, readFileSync, writeFileSync, renameSync } = require("node:fs");
 const lock = require("./lock.js");
 
+// Single cache path: DELIBERATION_CACHE override else the canonical XDG path.
 const CACHE_FILE = require("../../core/paths.js").resolveGrokCachePath();
 const CACHE_DIR = path.dirname(CACHE_FILE);
 const CACHE_VERSION = 1;

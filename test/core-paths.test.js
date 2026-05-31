@@ -1,76 +1,175 @@
 "use strict";
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const os = require("node:os");
 const path = require("node:path");
-const fs = require("node:fs");
 
 const { resolveConfigPath, resolveGrokCachePath } = require("../core/paths.js");
 
 // --- helpers -----------------------------------------------------------------
+//
+// Pure unit tests: the resolver does no FS access. A fixed HOME, a fake env, and
+// a fixed platform fully determine the result.
 
-/** Make an isolated temp HOME; never touches the real ~/.claude. */
-function makeHome() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "delib-paths-"));
+const HOME = "/home/tester";
+
+function canonicalConfig(/** @type {string} */ home) {
+  return path.join(home, ".config", "deliberation", "config.json");
+}
+function canonicalCache(/** @type {string} */ home) {
+  return path.join(home, ".cache", "deliberation", "grok-files.json");
 }
 
-function rmrf(/** @type {string} */ dir) {
-  fs.rmSync(dir, { recursive: true, force: true });
-}
+// --- config: env override ----------------------------------------------------
 
-function configNewPath(/** @type {string} */ home) {
-  return path.join(home, ".claude", "deliberation", "config.json");
-}
-function grokNewPath(/** @type {string} */ home) {
-  return path.join(home, ".claude", "cache", "deliberation", "grok-files.json");
-}
-
-// --- tests -------------------------------------------------------------------
-
-// CP1: no env -> returns the deliberation config path, creates nothing.
-test("CP1: no env -> returns ~/.claude/deliberation/config.json, no file created", () => {
-  const home = makeHome();
-  try {
-    const got = resolveConfigPath({ home, env: {} });
-    assert.equal(got, configNewPath(home));
-    assert.equal(fs.existsSync(configNewPath(home)), false);
-  } finally {
-    rmrf(home);
-  }
+test("CP1: DELIBERATION_CONFIG wins verbatim", () => {
+  const override = "/somewhere/custom/my-config.json";
+  const got = resolveConfigPath({
+    home: HOME,
+    env: { DELIBERATION_CONFIG: override },
+    platform: "linux",
+  });
+  assert.equal(got, override);
 });
 
-// CP2: DELIBERATION_CONFIG set -> returned verbatim, deliberation path untouched.
-test("CP2: DELIBERATION_CONFIG wins verbatim", () => {
-  const home = makeHome();
-  try {
-    const override = path.join(home, "custom", "my-config.json");
-    const got = resolveConfigPath({ home, env: { DELIBERATION_CONFIG: override } });
-    assert.equal(got, override);
-    assert.equal(fs.existsSync(configNewPath(home)), false);
-  } finally {
-    rmrf(home);
-  }
+test("CP2: empty DELIBERATION_CONFIG falls through to canonical", () => {
+  const got = resolveConfigPath({
+    home: HOME,
+    env: { DELIBERATION_CONFIG: "" },
+    platform: "linux",
+  });
+  assert.equal(got, canonicalConfig(HOME));
 });
 
-// CP3: empty DELIBERATION_CONFIG -> falls through to the deliberation config path.
-test("CP3: empty DELIBERATION_CONFIG falls through to deliberation config path", () => {
-  const home = makeHome();
-  try {
-    const got = resolveConfigPath({ home, env: { DELIBERATION_CONFIG: "" } });
-    assert.equal(got, configNewPath(home));
-  } finally {
-    rmrf(home);
-  }
+// --- config: canonical default -----------------------------------------------
+
+test("CP3: no override -> canonical XDG config", () => {
+  const got = resolveConfigPath({
+    home: HOME,
+    env: {},
+    platform: "linux",
+  });
+  assert.equal(got, canonicalConfig(HOME));
 });
 
-// CP4: grok cache -> always the deliberation cache path, creates nothing.
-test("CP4: grok cache -> ~/.claude/cache/deliberation/grok-files.json, no file created", () => {
-  const home = makeHome();
-  try {
-    const got = resolveGrokCachePath({ home });
-    assert.equal(got, grokNewPath(home));
-    assert.equal(fs.existsSync(grokNewPath(home)), false);
-  } finally {
-    rmrf(home);
-  }
+test("CP4: XDG_CONFIG_HOME relocates the canonical config", () => {
+  const xdg = "/xdg/cfg";
+  const got = resolveConfigPath({
+    home: HOME,
+    env: { XDG_CONFIG_HOME: xdg },
+    platform: "linux",
+  });
+  assert.equal(got, path.join(xdg, "deliberation", "config.json"));
+});
+
+// --- config: windows shape ---------------------------------------------------
+
+test("CP5: win32 uses APPDATA (Roaming) for canonical config", () => {
+  const appData = "C:\\Users\\tester\\AppData\\Roaming";
+  const got = resolveConfigPath({
+    home: "C:\\Users\\tester",
+    env: { APPDATA: appData },
+    platform: "win32",
+  });
+  assert.equal(got, path.join(appData, "deliberation", "config.json"));
+});
+
+test("CP6: win32 without APPDATA falls back to ~/AppData/Roaming", () => {
+  const home = "C:\\Users\\tester";
+  const got = resolveConfigPath({
+    home,
+    env: {},
+    platform: "win32",
+  });
+  assert.equal(got, path.join(home, "AppData", "Roaming", "deliberation", "config.json"));
+});
+
+// --- config: relative XDG base must be ignored (XDG spec) ---------------------
+
+test("CP7: relative XDG_CONFIG_HOME is ignored -> canonical default (~/.config)", () => {
+  const got = resolveConfigPath({
+    home: HOME,
+    env: { XDG_CONFIG_HOME: "relative/cfg" },
+    platform: "linux",
+  });
+  assert.equal(got, canonicalConfig(HOME));
+});
+
+test("CP8: win32 relative APPDATA is ignored -> ~/AppData/Roaming fallback", () => {
+  const home = "C:\\Users\\tester";
+  const got = resolveConfigPath({
+    home,
+    env: { APPDATA: "relative\\roaming" },
+    platform: "win32",
+  });
+  assert.equal(got, path.join(home, "AppData", "Roaming", "deliberation", "config.json"));
+});
+
+// --- cache: env override + canonical default ---------------------------------
+
+test("CC1: DELIBERATION_CACHE wins verbatim", () => {
+  const override = "/somewhere/custom/grok-files.json";
+  const got = resolveGrokCachePath({
+    home: HOME,
+    env: { DELIBERATION_CACHE: override },
+    platform: "linux",
+  });
+  assert.equal(got, override);
+});
+
+test("CC2: no override -> canonical XDG cache", () => {
+  const got = resolveGrokCachePath({
+    home: HOME,
+    env: {},
+    platform: "linux",
+  });
+  assert.equal(got, canonicalCache(HOME));
+});
+
+test("CC3: XDG_CACHE_HOME relocates the canonical cache", () => {
+  const xdg = "/xdg/cache";
+  const got = resolveGrokCachePath({
+    home: HOME,
+    env: { XDG_CACHE_HOME: xdg },
+    platform: "linux",
+  });
+  assert.equal(got, path.join(xdg, "deliberation", "grok-files.json"));
+});
+
+test("CC4: relative XDG_CACHE_HOME is ignored -> canonical default (~/.cache)", () => {
+  const got = resolveGrokCachePath({
+    home: HOME,
+    env: { XDG_CACHE_HOME: "relative/cache" },
+    platform: "linux",
+  });
+  assert.equal(got, canonicalCache(HOME));
+});
+
+test("CC5: win32 uses LOCALAPPDATA (Local, not Roaming) for canonical cache", () => {
+  const localAppData = "C:\\Users\\tester\\AppData\\Local";
+  const got = resolveGrokCachePath({
+    home: "C:\\Users\\tester",
+    env: { LOCALAPPDATA: localAppData },
+    platform: "win32",
+  });
+  assert.equal(got, path.join(localAppData, "deliberation", "grok-files.json"));
+});
+
+test("CC6: win32 without LOCALAPPDATA falls back to ~/AppData/Local", () => {
+  const home = "C:\\Users\\tester";
+  const got = resolveGrokCachePath({
+    home,
+    env: {},
+    platform: "win32",
+  });
+  assert.equal(got, path.join(home, "AppData", "Local", "deliberation", "grok-files.json"));
+});
+
+test("CC7: win32 relative LOCALAPPDATA is ignored -> ~/AppData/Local fallback", () => {
+  const home = "C:\\Users\\tester";
+  const got = resolveGrokCachePath({
+    home,
+    env: { LOCALAPPDATA: "relative\\local" },
+    platform: "win32",
+  });
+  assert.equal(got, path.join(home, "AppData", "Local", "deliberation", "grok-files.json"));
 });

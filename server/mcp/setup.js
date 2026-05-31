@@ -9,8 +9,7 @@
  * setup guidance freely.
  *
  * Behavior:
- *   - Resolve the config path the server uses (resolveConfigPath, honoring
- *     DELIBERATION_CONFIG), the same logic the bridges use.
+ *   - Resolve the config path (canonical XDG, honoring DELIBERATION_CONFIG).
  *   - Safe write, never clobber: if the config already exists, print the
  *     suggested consensus block plus guidance and leave the file untouched so
  *     the user merges by hand. If it is absent, create the parent dir and write
@@ -19,9 +18,8 @@
  *     arbiter.
  *   - Exit 0 on success, non-zero only on a real error (e.g. unwritable dir).
  *
- * Zero runtime deps, bundle-safe: no fs reads of bundled repo files. It reads
- * and writes the user's config path at runtime - that is user data, not a
- * bundled asset.
+ * Zero runtime deps, bundle-safe: no fs reads of bundled repo files. It writes
+ * the user's config path at runtime - that is user data, not a bundled asset.
  */
 
 const fs = require("node:fs");
@@ -97,6 +95,8 @@ function consensusBlockLines() {
  * @property {(p: string) => { isFile: () => boolean }} statSync
  * @property {(p: string, opts?: { recursive?: boolean }) => string | undefined} mkdirSync
  * @property {(p: string, data: string, opts?: { flag?: string }) => void} writeFileSync
+ * @property {(p: string) => boolean} [existsSync] Optional fast existence probe; falls back to statSync.
+ * @property {(p: string) => void} [unlinkSync] Optional cleanup of a partial file after a failed write.
  */
 
 /**
@@ -126,6 +126,19 @@ function runSetup(deps) {
   out("deliberation setup");
   out("");
 
+  /**
+   * Best-effort existence check via the injected fs. Returns false on any error
+   * so an unstattable path never aborts setup.
+   * @param {string} p
+   * @returns {boolean}
+   */
+  const fileExists = (p) => {
+    if (typeof fsImpl.existsSync === "function") {
+      try { return fsImpl.existsSync(p); } catch (_) { return false; }
+    }
+    try { return fsImpl.statSync(p).isFile(); } catch (_) { return false; }
+  };
+
   /** Guidance printed when a regular-file config already exists: leave it, merge by hand. */
   const leaveUnchanged = () => {
     out(`Config already exists at ${configPath} - leaving it unchanged.`);
@@ -153,8 +166,18 @@ function runSetup(deps) {
     return 1;
   }
 
+  // Create the parent dir in its own try so a mkdir failure (e.g. a parent
+  // component is a regular file -> EEXIST/ENOTDIR) is reported as a dir error and
+  // not mistaken for the write-side TOCTOU EEXIST that means "already exists".
   try {
     fsImpl.mkdirSync(path.dirname(configPath), { recursive: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    out(`Could not create config directory ${path.dirname(configPath)}: ${message}`);
+    return 1;
+  }
+
+  try {
     // Exclusive write: "wx" fails with EEXIST if a file appears between the stat
     // above and here (TOCTOU). Treat that race as "already exists, unchanged".
     fsImpl.writeFileSync(configPath, starterConfigText(), { flag: "wx" });
@@ -162,6 +185,12 @@ function runSetup(deps) {
     const code = err && typeof err === "object" && "code" in err ? err.code : null;
     if (code === "EEXIST") return leaveUnchanged();
     const message = err instanceof Error ? err.message : String(err);
+    // A mid-write failure (ENOSPC/EACCES) can leave a truncated/empty file. Since
+    // the config now exists, a later read would crash on JSON.parse. Remove the
+    // partial file before reporting. Ignore unlink errors.
+    if (fileExists(configPath) && typeof fsImpl.unlinkSync === "function") {
+      try { fsImpl.unlinkSync(configPath); } catch (_) { /* best effort */ }
+    }
     out(`Could not write config at ${configPath}: ${message}`);
     return 1;
   }

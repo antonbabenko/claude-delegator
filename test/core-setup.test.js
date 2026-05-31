@@ -61,21 +61,24 @@ test("SU2: existing config -> not overwritten, guidance emitted", () => {
   }
 });
 
-// SU3: unwritable parent -> non-zero exit, real error reported, nothing thrown.
-test("SU3: unwritable target -> exit 1 with error message", () => {
+// SU3: mkdir fails -> exit 1, reported as a DIRECTORY error, not as "config
+// already exists" and not as a write error. Write is never reached.
+test("SU3: mkdir failure -> exit 1 with dir-creation message", () => {
   const home = makeHome();
   try {
     const override = path.join(home, "cfg", "config.json");
     const fsImpl = {
       statSync: () => { const e = new Error("ENOENT"); /** @type {any} */ (e).code = "ENOENT"; throw e; },
-      mkdirSync: () => { throw new Error("EACCES: permission denied"); },
+      mkdirSync: () => { const e = new Error("ENOTDIR: not a directory"); /** @type {any} */ (e).code = "ENOTDIR"; throw e; },
       writeFileSync: () => { throw new Error("should not reach writeFileSync"); },
     };
     const { out, lines } = capture();
     const code = runSetup({ env: { DELIBERATION_CONFIG: override }, out, fsImpl });
 
     assert.equal(code, 1);
-    assert.ok(lines.some((l) => l.includes("Could not write config")));
+    assert.ok(lines.some((l) => l.includes("Could not create config directory")));
+    assert.ok(!lines.some((l) => l.includes("leaving it unchanged")));
+    assert.ok(!lines.some((l) => l.includes("Could not write config")));
   } finally {
     rmrf(home);
   }
@@ -116,6 +119,59 @@ test("SU5: write race (EEXIST) -> leave unchanged, exit 0", () => {
 
     assert.equal(code, 0);
     assert.ok(lines.some((l) => l.includes("leaving it unchanged")));
+  } finally {
+    rmrf(home);
+  }
+});
+
+// SU6 (FIX 2): a mid-write failure leaves a partial file. Setup must unlink it
+// before reporting, so a later read does not crash on a truncated file. Exit 1.
+test("SU6: write failure -> partial config unlinked, exit 1", () => {
+  const home = makeHome();
+  try {
+    const override = path.join(home, "cfg", "config.json");
+    let unlinked = "";
+    let created = false;
+    const fsImpl = {
+      statSync: () => { const e = new Error("ENOENT"); /** @type {any} */ (e).code = "ENOENT"; throw e; },
+      // existsSync: the partial file "exists" only after the failed write created it.
+      existsSync: (/** @type {string} */ p) => (p === override ? created : false),
+      mkdirSync: () => undefined,
+      writeFileSync: () => {
+        created = true; // a truncated file landed
+        const e = new Error("ENOSPC: no space left on device"); /** @type {any} */ (e).code = "ENOSPC"; throw e;
+      },
+      unlinkSync: (/** @type {string} */ p) => { unlinked = p; created = false; },
+    };
+    const { out, lines } = capture();
+    const code = runSetup({ env: { DELIBERATION_CONFIG: override }, out, fsImpl });
+
+    assert.equal(code, 1);
+    assert.equal(unlinked, override); // partial file removed
+    assert.ok(lines.some((l) => l.includes("Could not write config")));
+  } finally {
+    rmrf(home);
+  }
+});
+
+// SU7: mkdir throws EEXIST (a parent component is a regular file). This must
+// report a dir error, NOT be mistaken for the write-side TOCTOU EEXIST that
+// means "already exists, unchanged".
+test("SU7: mkdir EEXIST -> dir-creation error, not 'unchanged'", () => {
+  const home = makeHome();
+  try {
+    const override = path.join(home, "cfg", "config.json");
+    const fsImpl = {
+      statSync: () => { const e = new Error("ENOENT"); /** @type {any} */ (e).code = "ENOENT"; throw e; },
+      mkdirSync: () => { const e = new Error("EEXIST: file already exists"); /** @type {any} */ (e).code = "EEXIST"; throw e; },
+      writeFileSync: () => { throw new Error("should not reach writeFileSync"); },
+    };
+    const { out, lines } = capture();
+    const code = runSetup({ env: { DELIBERATION_CONFIG: override }, out, fsImpl });
+
+    assert.equal(code, 1);
+    assert.ok(lines.some((l) => l.includes("Could not create config directory")));
+    assert.ok(!lines.some((l) => l.includes("leaving it unchanged")));
   } finally {
     rmrf(home);
   }

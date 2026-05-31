@@ -2,7 +2,8 @@
 /** @typedef {import("./types.js").Provider} Provider */
 
 /**
- * A configured OpenRouter model entry from ~/.claude/deliberation/config.json.
+ * A configured OpenRouter model entry from the deliberation config
+ * (~/.config/deliberation/config.json; override with DELIBERATION_CONFIG).
  * @typedef {Object} OrModel
  * @property {string}  alias
  * @property {string}  model
