@@ -23,6 +23,26 @@ No build step, no dependencies. Codex exposes a native MCP server; Gemini, Grok,
 
 ## Architecture
 
+### Repository layout
+
+- **`core/`** - host-neutral, zero runtime deps, strict-typed. Provider interface +
+  `toErrorResult` (`types.js` / `provider.js`); `registry.js` (`selectForAskAll` /
+  `selectForConsensus`); `orchestrate.js` (`askAll` / `askOne` / `consensus`); `providers/*.js`
+  adapters (`codex.js` spawns the Codex CLI; `antigravity.js` / `grok.js` /
+  `openai-compatible.js` wrap their bridge via an injectable `opts.bridge`); `paths.js`
+  (config + cache path resolver, `DELIBERATION_CONFIG` override).
+- **`server/mcp/`** - stdio JSON-RPC MCP server over `core`. Published as
+  `@antonbabenko/deliberation-mcp`: an esbuild `prepack` step bundles `core` + the three bridges
+  into a self-contained `dist/index.js` (build-time devDep only; `dist/` gitignored). `server.json`
+  at the repo root is the Official MCP Registry manifest.
+- **`server/{gemini,grok,openrouter}/`** - the provider bridges (gemini wraps the `agy` CLI;
+  grok = xAI HTTP; openrouter = any OpenAI-compatible HTTP) plus openrouter `config.js`
+  (`validateConfig` / `makeConfigReader`, the config SSOT). Registered as their own MCP servers in
+  `.claude-plugin/mcp.json` for the single-provider commands.
+- **Typecheck gate** - `tsconfig.json` strict `checkJs` over `core/**` + `server/mcp/**/*.js`
+  (excludes `server/mcp/dist`). `npm run check` = `typecheck` + `node --test test/*.test.js`,
+  enforced in CI by `.github/workflows/validate.yml`.
+
 ### Orchestration Flow
 
 Claude acts as orchestrator - delegates to specialized experts based on task type. Supports both **single-shot** (independent calls) and **multi-turn** (context preserved via `threadId`).

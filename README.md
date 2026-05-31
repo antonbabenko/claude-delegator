@@ -49,7 +49,7 @@ accordingly. OpenRouter is advisory-only and config-driven: models are declared 
 
 ## Install
 
-Inside a Claude Code instance, run:
+### Claude Code plugin (recommended):
 
 **1. Add the marketplace - [antonbabenko/agent-plugins](https://github.com/antonbabenko/agent-plugins)**
 ```
@@ -68,7 +68,55 @@ Inside a Claude Code instance, run:
 
 Claude now routes complex tasks to your GPT, Gemini, Grok, and OpenRouter experts (Grok and OpenRouter advise; GPT and Gemini can also implement).
 
-The canonical marketplace is [`antonbabenko/agent-plugins`](https://github.com/antonbabenko/agent-plugins) (above), which also bundles the other plugins.
+### Alternative: Use `deliberation` MCP server (standalone, works with any agents)
+
+The orchestration server is also published on its own - npm [`@antonbabenko/deliberation-mcp`](https://www.npmjs.com/package/@antonbabenko/deliberation-mcp), Official MCP Registry name `io.github.antonbabenko/deliberation`.
+
+**One-click install:**
+
+[![Install in Cursor](https://img.shields.io/badge/Install-Cursor-blue?style=flat-square&logo=cursor)](https://cursor.com/en-US/install-mcp?name=deliberation&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBhbnRvbmJhYmVua28vZGVsaWJlcmF0aW9uLW1jcCJdfQ==) [![Install in VS Code](https://img.shields.io/badge/Install-VS_Code-FF9900?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=deliberation&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40antonbabenko%2Fdeliberation-mcp%22%5D%7D) [![Install in Kiro](https://img.shields.io/badge/Install-Kiro-9046FF?style=flat-square&logo=kiro)](https://kiro.dev/launch/mcp/add?name=deliberation&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40antonbabenko%2Fdeliberation-mcp%22%5D%7D)
+
+<details>
+<summary>Manual config for any MCP clients</summary>
+
+Add this to your host's MCP config (most hosts use the `mcpServers` key):
+
+```json
+{
+  "mcpServers": {
+    "deliberation": {
+      "command": "npx",
+      "args": ["-y", "@antonbabenko/deliberation-mcp"],
+      "env": {
+        "XAI_API_KEY": "xai-...",
+        "OPENROUTER_API_KEY": "sk-or-v1-..."
+      }
+    }
+  }
+}
+```
+
+The `env` block is how you set provider keys outside Claude Code. GPT and Gemini do not read keys here - they use the `codex` and `agy` CLIs (logged in separately), so drop those lines if you only use GPT/Gemini. `XAI_API_KEY` enables Grok; `OPENROUTER_API_KEY` enables OpenRouter (which also needs models declared in `~/.claude/deliberation/config.json`, or point elsewhere with `DELIBERATION_CONFIG`). The one-click buttons above cannot carry secrets - add the `env` block by hand after installing.
+
+Per-host config location and the key it expects:
+
+| Host | Config | Key |
+|------|--------|-----|
+| Claude Code | `claude mcp add deliberation -- npx -y @antonbabenko/deliberation-mcp` (or project `.mcp.json`) | `mcpServers` |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS), `%APPDATA%\Claude\claude_desktop_config.json` (Windows) | `mcpServers` |
+| Cursor | `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project) | `mcpServers` |
+| VS Code | `.vscode/mcp.json` - note: each entry needs `"type": "stdio"` | `servers` |
+| Codex CLI | `~/.codex/config.toml` - TOML, e.g. `[mcp_servers.deliberation]` | `mcp_servers` |
+| Gemini CLI | `~/.gemini/settings.json` | `mcpServers` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` | `mcpServers` |
+| Zed | `settings.json` | `context_servers` |
+| Cline | the extension's MCP settings (Cline panel -> MCP Servers) | `mcpServers` |
+
+Provider prerequisites are the same as the plugin (see [Requirements](#requirements)): the Codex CLI for GPT, `agy` for Gemini, `XAI_API_KEY` for Grok, and `OPENROUTER_API_KEY` plus `~/.claude/deliberation/config.json` for OpenRouter (override the config path with `DELIBERATION_CONFIG`).
+
+Tools exposed: `ask-all`, `consensus`, `ask-gpt` / `ask-gemini` / `ask-grok` / `ask-openrouter`, and the seven experts (`architect`, `plan-reviewer`, `scope-analyst`, `code-reviewer`, `security-analyst`, `researcher`, `debugger`).
+
+</details>
 
 <details>
 <summary>Updating an existing install</summary>
