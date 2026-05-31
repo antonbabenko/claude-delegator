@@ -4,7 +4,7 @@
 const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
-const { mkdirSync, readFileSync, writeFileSync, renameSync } = require("node:fs");
+const { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } = require("node:fs");
 const lock = require("./lock.js");
 
 // Read path (with legacy fallback) vs write path (canonical only). Reads honor an
@@ -73,8 +73,15 @@ function withInflight(key, worker) {
   return p;
 }
 
+function readTargetFor(file) {
+  if (file === CACHE_FILE && existsSync(CACHE_WRITE_FILE)) {
+    return CACHE_WRITE_FILE;
+  }
+  return file;
+}
+
 function lookup(file, key, { apiBase, keyFp } = {}) {
-  const data = readCache(file);
+  const data = readCache(readTargetFor(file));
   const entry = data.entries[key];
   if (!entry) return null;
   const now = Math.floor(Date.now() / 1000);
@@ -102,7 +109,7 @@ async function store(file, key, entry) {
   }
   try {
     // Read from the read path (may be legacy), write to the canonical target.
-    const data = readCache(file);
+    const data = readCache(readTargetFor(file));
     data.entries[key] = entry;
     writeCache(writeFile, data);
   } finally {
@@ -116,7 +123,7 @@ async function evict(file, fileId) {
   const handle = lock.acquire(writeFile, { maxWaitMs: 1000 });
   if (!handle) return;
   try {
-    const data = readCache(file);
+    const data = readCache(readTargetFor(file));
     for (const k of Object.keys(data.entries)) {
       if (data.entries[k].fileId === fileId) delete data.entries[k];
     }
