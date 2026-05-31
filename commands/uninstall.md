@@ -53,9 +53,10 @@ echo "Removed MCP registrations (user scope)."
 rm -rf "$HOME/.claude/rules/deliberation/" 2>/dev/null || true
 echo "Removed rules dir."
 
-# --- Grok dedup cache; metadata only, safe to drop ---
+# --- Grok dedup cache; metadata only, safe to drop. Canonical XDG + legacy ~/.claude. ---
+rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/deliberation/" 2>/dev/null || true
 rm -rf "$HOME/.claude/cache/deliberation/" 2>/dev/null || true
-echo "Removed Grok file cache."
+echo "Removed Grok file cache (canonical + legacy)."
 
 # --- short command aliases: remove ONLY if byte-identical to the bundled command ---
 removed=""; kept=""
@@ -93,5 +94,7 @@ only cleans up the user-scope MCP registrations, rules, cache, and copied aliase
 - Grok remote uploads: if you still have `XAI_API_KEY` and want to drain xAI-side uploads before
   uninstalling, run `/grok-files prune --older-than 0s --yes` (or `/grok-files gc` to see what is
   already gone) BEFORE Step 2.
-- Config (`~/.claude/deliberation/config.json`) is left in place - it holds your OpenRouter model
-  setup and API-key env names. Remove it manually if you want a full wipe.
+- Config is left in place - it holds your OpenRouter model setup and API-key env names. Remove it
+  manually if you want a full wipe. Check both the canonical `~/.config/deliberation/config.json`
+  (Windows: `%APPDATA%\deliberation\config.json`) and the legacy `~/.claude/deliberation/config.json`
+  (still read for back-compat).

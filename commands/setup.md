@@ -42,8 +42,21 @@ resolve_plugin_root() {
 }
 PLUGIN_ROOT="$(resolve_plugin_root)" || { echo "Error: cannot locate the deliberation plugin root. Install via /plugin, run from the plugin checkout, or set CLAUDE_PLUGIN_ROOT."; exit 1; }
 
-# --- config path: env override > default deliberation path ---
-CFG="${DELIBERATION_CONFIG:-$HOME/.claude/deliberation/config.json}"
+# --- config path: env override > canonical XDG > legacy ~/.claude (read-only back-compat) ---
+# Mirrors core/paths.js: DELIBERATION_CONFIG wins; else canonical
+# ${XDG_CONFIG_HOME:-$HOME/.config}/deliberation/config.json; else the legacy
+# ~/.claude/deliberation/config.json IF it already exists. Canonical is the
+# fresh default so Claude Code and standalone hosts converge (no silent recreate
+# of the legacy file).
+if [ -n "${DELIBERATION_CONFIG:-}" ]; then
+  CFG="$DELIBERATION_CONFIG"
+else
+  CANONICAL_CFG="${XDG_CONFIG_HOME:-$HOME/.config}/deliberation/config.json"
+  LEGACY_CFG="$HOME/.claude/deliberation/config.json"
+  if [ -f "$CANONICAL_CFG" ]; then CFG="$CANONICAL_CFG"
+  elif [ -f "$LEGACY_CFG" ]; then CFG="$LEGACY_CFG"
+  else CFG="$CANONICAL_CFG"; fi
+fi
 
 json_eval() { node -e "$1" "$CFG" 2>/dev/null; }
 # providers.<name>.enabled: missing => enabled (returns 1); explicit false => 0.

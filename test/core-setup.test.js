@@ -120,3 +120,62 @@ test("SU5: write race (EEXIST) -> leave unchanged, exit 0", () => {
     rmrf(home);
   }
 });
+
+// Canonical config path under a temp HOME (no DELIBERATION_CONFIG override).
+function canonicalConfig(/** @type {string} */ home) {
+  return path.join(home, ".config", "deliberation", "config.json");
+}
+function legacyConfig(/** @type {string} */ home) {
+  return path.join(home, ".claude", "deliberation", "config.json");
+}
+
+// SU6: legacy exists + canonical absent -> copies legacy -> canonical, legacy left intact.
+test("SU6: legacy present, canonical absent -> migrate copy, legacy untouched", () => {
+  const home = makeHome();
+  try {
+    const legacy = legacyConfig(home);
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    const legacyBody = '{"version":1,"my":"legacy","openrouter":{"enabled":true,"models":[]}}';
+    fs.writeFileSync(legacy, legacyBody);
+
+    const { out, lines } = capture();
+    // env without XDG_CONFIG_HOME -> canonical is ~/.config/deliberation; force a
+    // clean env so the host's real XDG_CONFIG_HOME does not leak in.
+    const code = runSetup({ home, env: {}, out });
+
+    assert.equal(code, 0);
+    const canonical = canonicalConfig(home);
+    assert.equal(fs.existsSync(canonical), true);
+    assert.equal(fs.readFileSync(canonical, "utf8"), legacyBody); // copied verbatim
+    assert.equal(fs.readFileSync(legacy, "utf8"), legacyBody); // legacy intact
+    assert.ok(lines.some((l) => l.includes("Migrated legacy config")));
+  } finally {
+    rmrf(home);
+  }
+});
+
+// SU7: both exist -> canonical wins, no copy, one-line "ignored" notice.
+test("SU7: legacy + canonical both present -> no copy, legacy ignored notice", () => {
+  const home = makeHome();
+  try {
+    const legacy = legacyConfig(home);
+    const canonical = canonicalConfig(home);
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    fs.mkdirSync(path.dirname(canonical), { recursive: true });
+    const canonicalBody = '{"version":1,"my":"canonical"}';
+    const legacyBody = '{"version":1,"my":"legacy"}';
+    fs.writeFileSync(canonical, canonicalBody);
+    fs.writeFileSync(legacy, legacyBody);
+
+    const { out, lines } = capture();
+    const code = runSetup({ home, env: {}, out });
+
+    assert.equal(code, 0);
+    assert.equal(fs.readFileSync(canonical, "utf8"), canonicalBody); // untouched
+    assert.equal(fs.readFileSync(legacy, "utf8"), legacyBody); // untouched
+    assert.ok(lines.some((l) => l.includes("leaving it unchanged")));
+    assert.ok(lines.some((l) => l.includes("legacy config") && l.includes("ignored")));
+  } finally {
+    rmrf(home);
+  }
+});

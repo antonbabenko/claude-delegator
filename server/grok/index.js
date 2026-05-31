@@ -15,8 +15,10 @@
  *   - dir entries are expanded by the bundled glob walker (./glob.js) with
  *     prune-before-descend, symlink-safe containment, and maxFiles/maxBytes caps.
  *   - Uploads are SHA-256 deduplicated via the local cache at
- *     ~/.claude/cache/deliberation/grok-files.json (./cache.js). Cache key
- *     scopes by content + API key + normalised apiBase + effective filename.
+ *     ~/.cache/deliberation/grok-files.json (canonical; legacy
+ *     ~/.claude/cache/deliberation/grok-files.json still read for back-compat;
+ *     override with DELIBERATION_CACHE) (./cache.js). Cache key scopes by
+ *     content + API key + normalised apiBase + effective filename.
  *   - Cross-process cache safety via mkdir-based lock with token-specific
  *     owner markers and heartbeat (./lock.js).
  *   - 4xx mid-/v1/responses whose body names a known file_/file- id triggers

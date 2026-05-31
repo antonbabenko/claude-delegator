@@ -319,7 +319,10 @@ Uploads are deduplicated by SHA-256 content hash. A reuse hit requires the SAME 
 (see cache-key below); identical bytes uploaded under a different filename or a different
 key produce separate cache rows:
 
-- Cache file: `~/.claude/cache/deliberation/grok-files.json`
+- Cache file: `~/.cache/deliberation/grok-files.json` (canonical XDG path; Windows
+  `%LOCALAPPDATA%\deliberation\grok-files.json`). The legacy
+  `~/.claude/cache/deliberation/grok-files.json` is still read for back-compat. Override
+  with `DELIBERATION_CACHE`.
 - Cache key: `sha256(bytes)@sha256(XAI_API_KEY)[:16]@normalize(apiBase)@effectiveFilename`
   - Key rotation auto-invalidates entries (different `keyFp`).
   - Different `apiBase` (including port/protocol differences) → separate rows.
@@ -370,8 +373,10 @@ It is **advisory-only** - it cannot edit files or run shell commands.
 ### Configuration file
 
 The bridge and the fan-out commands (`/ask-all`, `/consensus`) read
-`~/.claude/deliberation/config.json` at call time. Override the path with
-`DELIBERATION_CONFIG`. The file is stat-gated: the bridge re-reads it only when
+`~/.config/deliberation/config.json` at call time - the canonical XDG path (Windows:
+`%APPDATA%\deliberation\config.json`). The legacy `~/.claude/deliberation/config.json` is
+still read for back-compat when no canonical file exists; `deliberation-setup` migrates a
+legacy config to the canonical path. Override the path with `DELIBERATION_CONFIG`. The file is stat-gated: the bridge re-reads it only when
 the mtime changes, so edits to the `openrouter` block (models, flags, defaults) take
 effect immediately without restarting Claude Code or re-running `/setup`. Toggling a
 **built-in** provider (codex / gemini / grok) still requires `/setup` to re-register

@@ -9,12 +9,17 @@
  * setup guidance freely.
  *
  * Behavior:
- *   - Resolve the config path the server uses (resolveConfigPath, honoring
- *     DELIBERATION_CONFIG), the same logic the bridges use.
- *   - Safe write, never clobber: if the config already exists, print the
- *     suggested consensus block plus guidance and leave the file untouched so
- *     the user merges by hand. If it is absent, create the parent dir and write
- *     a starter config with a consensus block and a commented openrouter example.
+ *   - Resolve the WRITE path (canonical XDG, honoring DELIBERATION_CONFIG; never
+ *     legacy) and, separately, the legacy `~/.claude/...` read path.
+ *   - Safe write, never clobber: if the canonical config already exists, print
+ *     the suggested consensus block plus guidance and leave the file untouched
+ *     so the user merges by hand. If it is absent, create the parent dir and
+ *     write a starter config with a consensus block and a commented openrouter
+ *     example.
+ *   - Migration: if the canonical config is ABSENT and a legacy config exists,
+ *     copy legacy -> canonical (exclusive write), print what it did, and leave
+ *     the legacy file untouched (no delete, no .bak). If BOTH exist, canonical
+ *     wins and a one-line notice says the legacy file is ignored. No merge.
  *   - Print which env key each provider needs and the recommended cross-host
  *     arbiter.
  *   - Exit 0 on success, non-zero only on a real error (e.g. unwritable dir).
@@ -26,7 +31,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { resolveConfigPath } = require("../../core/paths.js");
+const { resolveConfigPath, legacyConfigPath } = require("../../core/paths.js");
 
 /** Starter config written when none exists. Consensus arbiter defaults to "auto". */
 const STARTER_CONFIG = {
@@ -97,6 +102,8 @@ function consensusBlockLines() {
  * @property {(p: string) => { isFile: () => boolean }} statSync
  * @property {(p: string, opts?: { recursive?: boolean }) => string | undefined} mkdirSync
  * @property {(p: string, data: string, opts?: { flag?: string }) => void} writeFileSync
+ * @property {(p: string, enc: string) => string} [readFileSync] Used only by the legacy->canonical migration.
+ * @property {(p: string) => boolean} [existsSync] Optional fast existence probe; falls back to statSync.
  */
 
 /**
@@ -116,7 +123,14 @@ function runSetup(deps) {
   const out = (deps && deps.out) || ((line) => console.log(line));
   const home = deps && deps.home;
 
-  const configPath = resolveConfigPath({ home, env });
+  // Write to the canonical (XDG) target, never legacy. The legacy path is read
+  // only for the one-time migration below. When DELIBERATION_CONFIG is set it
+  // replaces BOTH branches, so migration is moot - suppress the legacy path so
+  // we never copy an unrelated `~/.claude` config into an explicit override.
+  const configPath = resolveConfigPath({ home, env, forWrite: true });
+  const override = env.DELIBERATION_CONFIG;
+  const hasOverride = typeof override === "string" && override.length > 0;
+  const legacyPath = hasOverride ? configPath : legacyConfigPath({ home, env });
 
   /** @param {string[]} lines */
   const print = (lines) => {
@@ -126,9 +140,27 @@ function runSetup(deps) {
   out("deliberation setup");
   out("");
 
+  /**
+   * Best-effort existence check via the injected fs. Returns false on any error
+   * so a missing or unstattable legacy path never aborts setup.
+   * @param {string} p
+   * @returns {boolean}
+   */
+  const fileExists = (p) => {
+    if (typeof fsImpl.existsSync === "function") {
+      try { return fsImpl.existsSync(p); } catch (_) { return false; }
+    }
+    try { return fsImpl.statSync(p).isFile(); } catch (_) { return false; }
+  };
+
   /** Guidance printed when a regular-file config already exists: leave it, merge by hand. */
   const leaveUnchanged = () => {
     out(`Config already exists at ${configPath} - leaving it unchanged.`);
+    // Canonical wins. If a legacy config also exists, say so once - it is read
+    // for back-compat only when the canonical one is absent, so it is ignored here.
+    if (legacyPath !== configPath && fileExists(legacyPath)) {
+      out(`Note: a legacy config at ${legacyPath} is ignored (canonical wins). No merge.`);
+    }
     out("");
     print(consensusBlockLines());
     out("");
@@ -153,11 +185,28 @@ function runSetup(deps) {
     return 1;
   }
 
+  // Canonical is absent. If a legacy config exists, migrate it (copy legacy ->
+  // canonical) instead of writing a fresh starter. The legacy file is left
+  // untouched - no delete, no .bak. If reading legacy fails, fall back to the
+  // starter rather than aborting setup.
+  let migrated = false;
+  /** @type {string} */
+  let payload = starterConfigText();
+  if (legacyPath !== configPath && typeof fsImpl.readFileSync === "function" && fileExists(legacyPath)) {
+    try {
+      payload = fsImpl.readFileSync(legacyPath, "utf8");
+      migrated = true;
+    } catch (_) {
+      payload = starterConfigText();
+      migrated = false;
+    }
+  }
+
   try {
     fsImpl.mkdirSync(path.dirname(configPath), { recursive: true });
     // Exclusive write: "wx" fails with EEXIST if a file appears between the stat
     // above and here (TOCTOU). Treat that race as "already exists, unchanged".
-    fsImpl.writeFileSync(configPath, starterConfigText(), { flag: "wx" });
+    fsImpl.writeFileSync(configPath, payload, { flag: "wx" });
   } catch (err) {
     const code = err && typeof err === "object" && "code" in err ? err.code : null;
     if (code === "EEXIST") return leaveUnchanged();
@@ -166,7 +215,11 @@ function runSetup(deps) {
     return 1;
   }
 
-  out(`Wrote starter config at ${configPath}.`);
+  if (migrated) {
+    out(`Migrated legacy config ${legacyPath} -> ${configPath} (legacy left untouched).`);
+  } else {
+    out(`Wrote starter config at ${configPath}.`);
+  }
   out("");
   print(openrouterExampleLines());
   out("");
