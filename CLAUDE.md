@@ -125,10 +125,16 @@ Releases are automated from Conventional Commits on `master`. Do not hand-edit v
 | `feat!:` or `BREAKING CHANGE:` | Major |
 | `feat:` | Minor |
 | `fix:` | Patch |
-| Other (`chore`, `docs`, `refactor`, ...) | Patch |
+| `docs`, `refactor`, `build`, `chore`, `style`, `test`, `ci`, `perf` | No release |
 
-`version.json` is the single source of truth. On merge to `master`, `automated-release.yml`
-bumps it, regenerates `CHANGELOG.md`, and runs `.github/release/pre-commit.js` to sync the
+Only `feat:` / `fix:` / breaking cut a release. The release uses the `conventionalcommits`
+preset with `skip-on-empty: true`; the other types are "hidden" in that preset, so a push that
+contains ONLY hidden-type commits produces an empty changelog and is skipped (no bump, no PR).
+Those commits still ship - they ride along in the next `feat:` / `fix:` release's tag and
+changelog. (The release-PR job also self-skips its own `chore(release):` commit as a loop guard.)
+
+`version.json` is the single source of truth. When a releasable commit lands on `master`,
+`automated-release.yml` bumps it, regenerates `CHANGELOG.md`, and runs `.github/release/pre-commit.js` to sync the
 version in `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, and
 `package.json`. After the release PR merges, `tag-release.yml` tags `vX.Y.Z`, publishes the
 GitHub Release, and nudges the `antonbabenko/agent-plugins` marketplace to re-pin. The
