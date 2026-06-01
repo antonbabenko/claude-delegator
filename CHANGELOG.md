@@ -1,3 +1,10 @@
+## [2.12.0](https://github.com/antonbabenko/deliberation/compare/v2.11.0...v2.12.0) (2026-06-01)
+
+
+### Features
+
+* runToConvergence - non-Claude consensus loop driver (PR2b-2) ([#96](https://github.com/antonbabenko/deliberation/issues/96)) ([cc0dddc](https://github.com/antonbabenko/deliberation/commit/cc0dddc5bcbbea6a324f68a33abfa2d0eecb4ead))
+
 ## [2.11.0](https://github.com/antonbabenko/deliberation/compare/v2.10.0...v2.11.0) (2026-06-01)
 
 
@@ -25,11 +32,4 @@
 ### Bug Fixes
 
 * surface sandbox-blocked MCP registration in setup and strip codex PATH warning ([#87](https://github.com/antonbabenko/deliberation/issues/87)) ([27188ff](https://github.com/antonbabenko/deliberation/commit/27188ff5306d8cfa4fcd8be5d760a2ee4f192d62))
-
-## [2.8.0](https://github.com/antonbabenko/deliberation/compare/v2.7.1...v2.8.0) (2026-06-01)
-
-
-### Features
-
-* opt-in session store + session tools (PLAN_1c) ([#84](https://github.com/antonbabenko/deliberation/issues/84)) ([f2a5a32](https://github.com/antonbabenko/deliberation/commit/f2a5a325b0cfbbaefaa8d9da0c3fc8adab8fd872))
 
