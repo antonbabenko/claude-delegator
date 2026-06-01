@@ -179,3 +179,30 @@ test("P15: a parseOpinion structured envelope is wellFormed; an unstructured one
   // confidence degraded to "unknown" -> not wellFormed (provenance false, quality false).
   assert.equal(validateOpinion(prose).wellFormed, false);
 });
+
+test("P16: parseOpinion reads a BARE fence (``` with no language tag)", () => {
+  const text = "verdict below:\n```\n" + JSON.stringify({ recommendation: "bare", confidence: "low" }) + "\n```";
+  const env = parseOpinion(text);
+  assert.equal(env.structured, true);
+  assert.equal(env.recommendation, "bare");
+});
+
+test("P17: the LAST parseable block always wins, even one without a recommendation", () => {
+  // Contract: OPINION_INSTRUCTIONS says the opinion block is LAST. An earlier
+  // block carrying a recommendation must NOT override a later parseable object.
+  const text =
+    '```json\n' + JSON.stringify({ recommendation: "EARLY-EXAMPLE", confidence: "high" }) + '\n```\n' +
+    '```json\n' + JSON.stringify({ confidence: "low" }) + '\n```';
+  const env = parseOpinion(text);
+  assert.equal(env.structured, true); // parsed an object (the last one)
+  assert.notEqual(env.recommendation, "EARLY-EXAMPLE"); // the early example did not win
+  assert.equal(env.recommendation, env.raw); // last block had no recommendation -> raw fallback
+  assert.ok(env.warnings.some((w) => /recommendation/.test(w)));
+});
+
+test("P18: validateOpinion on a raw object missing recommendation is valid:false (no throw)", () => {
+  const r = validateOpinion({ confidence: "high", dissent_points: [], assumptions: [], tradeoffs: [] });
+  assert.equal(r.valid, false);
+  assert.equal(r.wellFormed, false);
+  assert.ok(r.warnings.some((w) => /recommendation/.test(w)));
+});

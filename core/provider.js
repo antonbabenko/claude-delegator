@@ -169,11 +169,12 @@ function envelopeFromObject(obj, raw) {
 /**
  * Parse a provider's text reply into a normalized OpinionEnvelope. Best-effort
  * and NEVER throws: it scans every JSON candidate and picks the LAST one that
- * parses to an object, PREFERRING the last that carries a `recommendation`
- * (the instructions say the opinion block is last; earlier example/reasoning
- * blocks must not win). On no parseable object it returns an unstructured
- * envelope (`structured:false`, raw text as `recommendation`, empty arrays) so a
- * prose provider is never dropped and a malformed reply never fails the batch.
+ * parses to an object - matching the OPINION_INSTRUCTIONS contract that the
+ * opinion block is LAST, so an earlier example/reasoning block can never win
+ * (malformed blocks are skipped, not chosen). On no parseable object it returns
+ * an unstructured envelope (`structured:false`, raw text as `recommendation`,
+ * empty arrays) so a prose provider is never dropped and a malformed reply never
+ * fails the batch.
  * @param {string} text
  * @returns {OpinionEnvelope}
  */
@@ -181,21 +182,15 @@ function parseOpinion(text) {
   const raw = safeString(text);
   /** @type {Record<string, unknown>|null} */
   let lastObj = null;
-  /** @type {Record<string, unknown>|null} */
-  let lastWithRec = null;
   for (const candidate of extractJsonCandidates(raw)) {
     try {
       const obj = JSON.parse(candidate);
-      if (obj && typeof obj === "object" && !Array.isArray(obj)) {
-        lastObj = obj;
-        if (typeof obj.recommendation === "string") lastWithRec = obj;
-      }
+      if (obj && typeof obj === "object" && !Array.isArray(obj)) lastObj = obj;
     } catch {
       // skip this candidate; a malformed block must not win or throw
     }
   }
-  const chosen = lastWithRec || lastObj;
-  if (chosen) return envelopeFromObject(chosen, raw);
+  if (lastObj) return envelopeFromObject(lastObj, raw);
   return {
     recommendation: raw,
     confidence: CONFIDENCE_FALLBACK,
