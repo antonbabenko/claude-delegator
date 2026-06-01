@@ -16,7 +16,10 @@ function peer(name, reply) {
 }
 const approve = (n) => peer(n, () => "**Verdict**: APPROVE");
 const revSensitive = (n) => peer(n, (p) => (p.includes("REVISED") ? "**Verdict**: APPROVE" : "**Verdict**: REQUEST_CHANGES\n- [scope] thin"));
+const reject = (n) => peer(n, () => "**Verdict**: REQUEST_CHANGES\n- [ops] needs work");
 const config = { providers: {}, openrouter: { maxFanout: 3, models: [] } };
+/** config carrying a low consensus.maxRounds, so the step loop hits the cap fast. */
+const configCap = (n) => ({ providers: {}, openrouter: { maxFanout: 3, models: [] }, consensus: { maxRounds: n } });
 
 /** Drive one consensus-step action; return the parsed payload. */
 async function step(srv, args, id) {
@@ -115,4 +118,38 @@ test("CS6: no-silent-dismissal - a dismiss without a reason is rejected", async 
   await step(srv, { action: "dispatch_peers", sessionId: sid }, 22);
   const adj = await step(srv, { action: "submit_adjudication", sessionId: sid, verdict: "REQUEST_CHANGES", decisions: [{ source: "codex", category: "ops", description: "x", action: "dismiss" }] }, 23);
   assert.ok(adj.error); // submitAdjudication throws -> structured error
+});
+
+test("CS9: config consensus.maxRounds caps the step loop -> unresolved (engine owns the cap)", async () => {
+  // Persistent dissent: peers never APPROVE, so the loop can only end by hitting the cap.
+  const srv = buildServer({ providers: [reject("codex"), reject("grok")], getConfig: () => configCap(2) });
+  let calls = 0;
+  const drive = async (args) => { calls++; return step(srv, args, 40 + calls); };
+
+  const init = await drive({ action: "init", prompt: "ship it", expert: "architect" });
+  assert.equal(init.round, 1);
+  const sid = init.sessionId;
+
+  // Round 1: blind -> peers -> adjudicate (accept the issue, stays REQUEST_CHANGES) -> revise.
+  await drive({ action: "record_blind", sessionId: sid, blindVerdict: "needs work" });
+  const dp1 = await drive({ action: "dispatch_peers", sessionId: sid });
+  assert.ok(dp1.opinions.every((o) => o.verdict === "REQUEST_CHANGES"));
+  const adj1 = await drive({ action: "submit_adjudication", sessionId: sid, verdict: "REQUEST_CHANGES", decisions: [{ source: "codex", category: "ops", description: "needs work", action: "accept" }] });
+  assert.equal(adj1.status, "await_revision");
+  const rev1 = await drive({ action: "submit_revision", sessionId: sid, revisedPlan: "v2", diffSummary: "tried" });
+  assert.equal(rev1.status, "await_blind");
+  assert.equal(rev1.round, 2); // engine advanced the round from config maxRounds=2
+
+  // Round 2 == cap: another revision must terminate as unresolved, not open round 3.
+  await drive({ action: "record_blind", sessionId: sid, blindVerdict: "still not there" });
+  await drive({ action: "dispatch_peers", sessionId: sid });
+  await drive({ action: "submit_adjudication", sessionId: sid, verdict: "REQUEST_CHANGES", decisions: [{ source: "codex", category: "ops", description: "needs work", action: "accept" }] });
+  const rev2 = await drive({ action: "submit_revision", sessionId: sid, revisedPlan: "v3", diffSummary: "tried again" });
+
+  assert.equal(rev2.status, "unresolved");
+  assert.equal(rev2.converged, false);
+  assert.equal(calls, 9); // bounded: init + 2 rounds x 4 actions; the cap held (no round 3)
+  // The unresolved report carries the host's LAST revision (v3), not the stale reviewed plan.
+  assert.ok(typeof rev2.finalReport === "string" && rev2.finalReport.includes("v3"));
+  assert.equal(rev2.confidence, "none");
 });
