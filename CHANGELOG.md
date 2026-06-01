@@ -1,3 +1,10 @@
+## [2.14.0](https://github.com/antonbabenko/deliberation/compare/v2.13.0...v2.14.0) (2026-06-01)
+
+
+### Features
+
+* consensus-auto MCP tool - server-side convergence loop (PR2b-3b) ([#100](https://github.com/antonbabenko/deliberation/issues/100)) ([2d7b63d](https://github.com/antonbabenko/deliberation/commit/2d7b63d3240f96f593a37b9caca93239cc9a33fa))
+
 ## [2.13.0](https://github.com/antonbabenko/deliberation/compare/v2.12.0...v2.13.0) (2026-06-01)
 
 
@@ -25,11 +32,4 @@
 ### Features
 
 * consensus-loop core state machine (PR2a, SSOT) ([#92](https://github.com/antonbabenko/deliberation/issues/92)) ([33460da](https://github.com/antonbabenko/deliberation/commit/33460dadc5cc4c14e357dfdefa17d763fc6cd357))
-
-## [2.9.0](https://github.com/antonbabenko/deliberation/compare/v2.8.1...v2.9.0) (2026-06-01)
-
-
-### Features
-
-* opinion envelope + advisory schema (1a) ([#90](https://github.com/antonbabenko/deliberation/issues/90)) ([58deca6](https://github.com/antonbabenko/deliberation/commit/58deca63a639a0322993b8d08ee9d9da06846c46))
 
