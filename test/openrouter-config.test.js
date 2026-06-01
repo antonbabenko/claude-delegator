@@ -1,7 +1,7 @@
 "use strict";
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { validateConfig, makeConfigReader } = require("../server/openrouter/config.js");
+const { validateConfig, makeConfigReader, resolveSessions } = require("../server/openrouter/config.js");
 
 // Unified v1 on-disk shape: providers carry connection config; models is a named-record
 // map keyed by id; routing holds fan-out; consensus.arbiter is a shorthand string or
@@ -446,4 +446,67 @@ test("CB8: missing config file => disabled openrouter + consensus default auto",
   const r = reader.get();
   assert.equal(r.ok, true);
   assert.deepEqual(r.resolved.consensus, { arbiter: "auto", arbiterDefaulted: true, blindVote: false });
+});
+
+// --- sessions block ----------------------------------------------------------
+
+test("SESS1: absent sessions block -> default OFF", () => {
+  const { resolved } = validateConfig(base());
+  assert.deepEqual(resolved.sessions, { persist: false, maxRecords: 200, maxAgeDays: 30 });
+});
+
+test("SESS2: a valid sessions block is honored", () => {
+  const cfg = base();
+  cfg.sessions = { persist: true, maxRecords: 50, maxAgeDays: 7 };
+  const { resolved } = validateConfig(cfg);
+  assert.deepEqual(resolved.sessions, { persist: true, maxRecords: 50, maxAgeDays: 7 });
+});
+
+test("SESS3: non-boolean persist degrades to false + warning", () => {
+  const { sessions, warnings } = resolveSessions({ persist: "yes" });
+  assert.equal(sessions.persist, false);
+  assert.ok(warnings.some((w) => /persist must be a boolean/.test(w)));
+});
+
+test("SESS4: invalid maxRecords/maxAgeDays degrade to defaults + warnings", () => {
+  const { sessions, warnings } = resolveSessions({ persist: true, maxRecords: 0, maxAgeDays: -3 });
+  assert.equal(sessions.maxRecords, 200);
+  assert.equal(sessions.maxAgeDays, 30);
+  assert.ok(warnings.some((w) => /maxRecords must be -1 \(unlimited\) or a positive integer/.test(w)));
+  assert.ok(warnings.some((w) => /maxAgeDays must be -1 \(unlimited\) or a positive integer/.test(w)));
+});
+
+test("SESS4b: maxRecords/maxAgeDays accept -1 (unlimited) with no warning", () => {
+  const { sessions, warnings } = resolveSessions({ persist: true, maxRecords: -1, maxAgeDays: -1 });
+  assert.equal(sessions.maxRecords, -1);
+  assert.equal(sessions.maxAgeDays, -1);
+  assert.equal(warnings.length, 0);
+});
+
+test("SESS4c: -2 and other negatives still degrade to defaults + warnings", () => {
+  const { sessions, warnings } = resolveSessions({ maxRecords: -2, maxAgeDays: -5 });
+  assert.equal(sessions.maxRecords, 200);
+  assert.equal(sessions.maxAgeDays, 30);
+  assert.ok(warnings.some((w) => /maxRecords must be -1/.test(w)));
+  assert.ok(warnings.some((w) => /maxAgeDays must be -1/.test(w)));
+});
+
+test("SESS5: a non-object sessions block degrades to default OFF + warning", () => {
+  const { sessions, warnings } = resolveSessions("nope");
+  assert.deepEqual(sessions, { persist: false, maxRecords: 200, maxAgeDays: 30 });
+  assert.ok(warnings.some((w) => /sessions must be an object/.test(w)));
+});
+
+test("SESS6: sessions warnings ride the consensusWarnings channel", () => {
+  const cfg = base();
+  cfg.sessions = { persist: "maybe" };
+  const { resolved } = validateConfig(cfg);
+  assert.ok(resolved.consensusWarnings.some((w) => /sessions\.persist must be a boolean/.test(w)));
+});
+
+test("SESS7: missing config file -> reader yields default-OFF sessions", () => {
+  const reader = makeConfigReader(path.join(os.tmpdir(), "definitely-absent-cdg-sessions.json"));
+  const r = reader.get();
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.resolved.sessions, { persist: false, maxRecords: 200, maxAgeDays: 30 });
 });

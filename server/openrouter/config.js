@@ -15,6 +15,9 @@ const DEFAULT_API_BASE = "https://openrouter.ai/api/v1";
 const DEFAULT_API_KEY_ENV = "OPENROUTER_API_KEY";
 const DEFAULT_MAX_FANOUT = 3;
 const DEFAULT_ARBITER = "auto";
+// sessions block defaults (opt-in store; default OFF).
+const DEFAULT_SESSIONS_MAX_RECORDS = 200;
+const DEFAULT_SESSIONS_MAX_AGE_DAYS = 30;
 const BUILTIN_ARBITERS = new Set(["codex", "gemini", "grok"]);
 // The only provider a `models` entry may target in v1. codex/gemini/grok are
 // CLI-managed or singleton built-ins and are out of scope for named model records.
@@ -90,6 +93,7 @@ function validateConfig(raw) {
   const invalidModels = enabled ? parsed.invalidModels : [];
 
   const { consensus, warnings } = resolveConsensus(raw.consensus, models);
+  const { sessions, warnings: sessionsWarnings } = resolveSessions(raw.sessions);
 
   return {
     ok: true,
@@ -99,11 +103,45 @@ function validateConfig(raw) {
       providers: resolveProviders(providersRaw),
       openrouter: { enabled, apiKeyEnv, apiBase, allowRawModel, maxFanout, defaultModel, defaults, models, invalidModels },
       consensus,
-      // Defaults-validation warnings ride the same consensusWarnings channel the
-      // bridge already surfaces, so a dropped bad default is visible, not silent.
-      consensusWarnings: [...defaultsWarnings, ...warnings],
+      sessions,
+      // Defaults- and sessions-validation warnings ride the same consensusWarnings
+      // channel the bridge already surfaces, so a dropped/degraded value is
+      // visible, not silent.
+      consensusWarnings: [...defaultsWarnings, ...warnings, ...sessionsWarnings],
     },
   };
+}
+
+// Resolve the optional `sessions` block (opt-in per-session store) with
+// soft-degrade semantics, mirroring resolveConsensus: an invalid value NEVER
+// rejects the config; it degrades to the default and records a warning.
+//   - persist: boolean (non-bool -> false + warning); default false (store OFF).
+//   - maxRecords / maxAgeDays: positive ints (invalid -> default + warning).
+// @param {*} raw  the raw sessions block (untrusted)
+// @returns {{sessions:{persist:boolean, maxRecords:number, maxAgeDays:number}, warnings:string[]}}
+function resolveSessions(raw) {
+  const warnings = [];
+  const out = { persist: false, maxRecords: DEFAULT_SESSIONS_MAX_RECORDS, maxAgeDays: DEFAULT_SESSIONS_MAX_AGE_DAYS };
+  if (raw === undefined) return { sessions: out, warnings };
+  if (!isObject(raw)) {
+    warnings.push(`sessions must be an object (got ${JSON.stringify(raw)}); persistence disabled`);
+    return { sessions: out, warnings };
+  }
+  if (raw.persist !== undefined) {
+    if (typeof raw.persist === "boolean") out.persist = raw.persist;
+    else warnings.push(`sessions.persist must be a boolean (got ${JSON.stringify(raw.persist)}); using false`);
+  }
+  // -1 means UNLIMITED (keep forever / no count cap); otherwise a positive integer.
+  // 0 and other values are invalid -> default + warning.
+  if (raw.maxRecords !== undefined) {
+    if (Number.isInteger(raw.maxRecords) && (raw.maxRecords === -1 || raw.maxRecords > 0)) out.maxRecords = raw.maxRecords;
+    else warnings.push(`sessions.maxRecords must be -1 (unlimited) or a positive integer (got ${JSON.stringify(raw.maxRecords)}); using ${DEFAULT_SESSIONS_MAX_RECORDS}`);
+  }
+  if (raw.maxAgeDays !== undefined) {
+    if (Number.isInteger(raw.maxAgeDays) && (raw.maxAgeDays === -1 || raw.maxAgeDays > 0)) out.maxAgeDays = raw.maxAgeDays;
+    else warnings.push(`sessions.maxAgeDays must be -1 (unlimited) or a positive integer (got ${JSON.stringify(raw.maxAgeDays)}); using ${DEFAULT_SESSIONS_MAX_AGE_DAYS}`);
+  }
+  return { sessions: out, warnings };
 }
 
 // Resolve providers.openrouter.defaults. camelCase -> wire mapping happens HERE
@@ -340,7 +378,7 @@ function makeConfigReader(filePath) {
     try {
       text = fs.readFileSync(filePath, "utf8");
     } catch (_) {
-      return { ok: true, error: null, resolved: { version: 1, providers: {}, openrouter: disabledOpenRouter(), consensus: { arbiter: DEFAULT_ARBITER, arbiterDefaulted: true, blindVote: false }, consensusWarnings: [] } };
+      return { ok: true, error: null, resolved: { version: 1, providers: {}, openrouter: disabledOpenRouter(), consensus: { arbiter: DEFAULT_ARBITER, arbiterDefaulted: true, blindVote: false }, sessions: { persist: false, maxRecords: DEFAULT_SESSIONS_MAX_RECORDS, maxAgeDays: DEFAULT_SESSIONS_MAX_AGE_DAYS }, consensusWarnings: [] } };
     }
     let parsed;
     try {
@@ -365,6 +403,6 @@ function makeConfigReader(filePath) {
 }
 
 module.exports = {
-  validateConfig, makeConfigReader, EXPERT_KEYS, RESERVED_ALIAS,
+  validateConfig, makeConfigReader, resolveSessions, EXPERT_KEYS, RESERVED_ALIAS,
   DEFAULT_API_BASE, DEFAULT_API_KEY_ENV,
 };

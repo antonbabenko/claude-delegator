@@ -55,7 +55,20 @@ function inputSchema() {
   };
 }
 
+// Session tools take a sessionId (+ note for annotate), NOT a prompt - so they
+// need their OWN input schemas rather than the prompt-required inputSchema().
+function sessionGetInputSchema() {
+  // `cwd` is advertised (optional) so session-revisit can resolve the original
+  // file refs against the caller's workspace, not the server process dir. It
+  // flows through req.cwd -> childReq.cwd. session-get ignores it harmlessly.
+  return { type: "object", required: ["sessionId"], properties: { sessionId: { type: "string" }, cwd: { type: "string" } } };
+}
+function sessionAnnotateInputSchema() {
+  return { type: "object", required: ["sessionId", "note"], properties: { sessionId: { type: "string" }, note: { type: "string" } } };
+}
+
 function toolList() {
+  /** @type {any[]} */
   const tools = [
     { name: "ask-all", description: "Fan out one question to GPT, Gemini, Grok, and any configured OpenRouter models in parallel for independent second opinions, then return all results (advisory, no cross-contamination). Pass `expert` to apply a persona to every delegate.", inputSchema: inputSchema(), annotations: ADVISORY },
     { name: "consensus", description: "Fan out one question to all enabled providers, then run a single arbiter pass that cross-reviews the independent opinions and returns one synthesized verdict (advisory). Pass `expert` to apply a persona to the fan-out and arbiter.", inputSchema: inputSchema(), annotations: ADVISORY },
@@ -66,6 +79,10 @@ function toolList() {
   for (const e of EXPERTS) {
     tools.push({ name: e, description: EXPERT_DESCRIPTIONS[e], inputSchema: inputSchema(), annotations: ADVISORY });
   }
+  // Session store tools (opt-in; report "disabled" when sessions.persist is off).
+  tools.push({ name: "session-get", description: "Fetch a persisted consensus/ask-all session record by id (opinions, verdict, arbiter, annotations). Requires sessions.persist; advisory, read-only.", inputSchema: sessionGetInputSchema(), annotations: ADVISORY });
+  tools.push({ name: "session-revisit", description: "Re-run a persisted session's original question with the CURRENT providers/config and save a linked child record (parentId). Requires sessions.persist; advisory.", inputSchema: sessionGetInputSchema(), annotations: ADVISORY });
+  tools.push({ name: "session-annotate", description: "Append a freeform note to a persisted session's audit trail. Requires sessions.persist; writes to the local session store.", inputSchema: sessionAnnotateInputSchema() });
   return tools;
 }
 
@@ -174,9 +191,11 @@ async function isHealthy(p) {
  * @param {Provider[]} deps.providers
  * @param {() => any} deps.getConfig
  * @param {() => (string|null)} [deps.getConfigError]  // last config load error (e.g. JSON parse), or null
+ * @param {string} [deps.sessionsDir]  // dir for the opt-in session store; omit to disable persistence
  */
-function buildServer({ providers, getConfig, getConfigError }) {
+function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
   const registry = makeRegistry(providers);
+  const sessions = /** @type {any} */ (require("../../core/sessions.js"));
 
   // Client identity for arbiter-default selection. Connection-scoped: set from the
   // MCP `initialize` handshake (clientInfo.name) for the life of this stdio session.
@@ -215,6 +234,177 @@ function buildServer({ providers, getConfig, getConfigError }) {
     return { ...request, developerInstructions: persona };
   }
 
+  // --- session store wiring -------------------------------------------------
+  // Persistence is opt-in (sessions.persist) AND requires a configured dir. When
+  // either is missing, the session-* tools report "disabled" and the
+  // consensus/ask-all paths write nothing / return no sessionId.
+
+  /** @returns {{persist:boolean, maxRecords:number, maxAgeDays:number}} */
+  function sessionsCfg() {
+    const c = getConfig() || {};
+    const s = c.sessions || {};
+    return {
+      persist: !!s.persist,
+      maxRecords: typeof s.maxRecords === "number" ? s.maxRecords : sessions.DEFAULT_MAX_RECORDS,
+      maxAgeDays: typeof s.maxAgeDays === "number" ? s.maxAgeDays : sessions.DEFAULT_MAX_AGE_DAYS,
+    };
+  }
+  /** @returns {boolean} */
+  function persistEnabled() {
+    return !!sessionsDir && sessionsCfg().persist;
+  }
+
+  /** @param {any} obj @returns {{content:{type:string,text:string}[]}} */
+  function jsonResult(obj) {
+    return { content: [{ type: "text", text: JSON.stringify(obj) }] };
+  }
+  function disabledMsg() {
+    return jsonResult({ error: "session persistence is disabled (set sessions.persist)" });
+  }
+  /** @param {unknown} id */
+  function notFoundMsg(id) {
+    return jsonResult({ error: `session not found: ${String(id)}` });
+  }
+
+  /** @param {any} files @returns {(any[]|null)} input attachment REFS only (never bodies); preserves path/dir/file_id/file_url/mode so a revisit re-runs with the same context regardless of ref kind */
+  function refsFromFiles(files) {
+    if (!Array.isArray(files)) return null;
+    /** @type {any[]} */
+    const refs = [];
+    for (const f of files) {
+      if (!f || typeof f !== "object") continue;
+      /** @type {any} */
+      const ref = {};
+      if (typeof f.path === "string") ref.path = f.path;
+      if (typeof f.dir === "string") ref.dir = f.dir;
+      if (typeof f.file_id === "string") ref.file_id = f.file_id;
+      if (typeof f.file_url === "string") ref.file_url = f.file_url;
+      if (typeof f.mode === "string") ref.mode = f.mode;
+      if (Object.keys(ref).length) refs.push(ref);
+    }
+    return refs.length ? refs : null;
+  }
+  /** @param {any} results @returns {{provider:string, model:string, text:(string|undefined)}[]} */
+  function opinionsFrom(results) {
+    if (!Array.isArray(results)) return [];
+    return results.map((r) => ({
+      provider: r && r.provider,
+      model: r && r.model,
+      text: r && r.isError === false && typeof r.text === "string" ? r.text : undefined,
+    }));
+  }
+  /** @param {any} result @returns {(string|null)} the verdict text, or null */
+  function textOf(result) {
+    if (!result) return null;
+    if (typeof result === "string") return result;
+    if (result.isError === false && typeof result.text === "string") return result.text;
+    return null;
+  }
+
+  /**
+   * Persist a completed run when persistence is on. Best-effort: a write failure
+   * never fails the tool call. Returns the new sessionId, or null when off.
+   * @param {("consensus"|"ask-all")} tool
+   * @param {DelegationRequest} req
+   * @param {string|undefined} expert
+   * @param {any} parts  // { opinions, blindVerdict?, verdict?, arbiter?, warnings?, parentId? }
+   * @returns {(string|null)}
+   */
+  function persistRun(tool, req, expert, parts) {
+    if (!persistEnabled()) return null;
+    const cfg = sessionsCfg();
+    const id = sessions.newSessionId();
+    const record = {
+      id,
+      parentId: parts.parentId == null ? null : parts.parentId,
+      schemaVersion: sessions.SCHEMA_VERSION,
+      createdAt: new Date().toISOString(),
+      tool,
+      question: typeof req.prompt === "string" ? req.prompt : "",
+      expert: expert || null,
+      files: refsFromFiles(req.files),
+      opinions: opinionsFrom(parts.opinions),
+      blindVerdict: textOf(parts.blindVerdict),
+      verdict: textOf(parts.verdict),
+      arbiter: parts.arbiter || null,
+      warnings: Array.isArray(parts.warnings) ? parts.warnings : [],
+      annotations: [],
+    };
+    try {
+      sessions.writeSession(record, { dir: sessionsDir, maxRecords: cfg.maxRecords, maxAgeDays: cfg.maxAgeDays });
+      return id;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Run the ask-all fan-out. Returns the response payload plus the parts needed
+   * to persist a record. Shared by the ask-all tool and session-revisit.
+   * @param {DelegationRequest} req
+   * @param {string|undefined} expert
+   * @returns {Promise<{payload:any, parts:any}>}
+   */
+  async function runAskAll(req, expert) {
+    const { providers: selected, omitted } = registry.selectForAskAll({ config: getConfig(), expert: expert || "" });
+    const results = await askAll(selected, withPersona(req, expert));
+    return {
+      payload: { results, omitted },
+      parts: { opinions: results, blindVerdict: null, verdict: null, arbiter: null, warnings: [] },
+    };
+  }
+
+  /**
+   * Run the consensus fan-out + arbiter resolution. Returns the response payload
+   * plus the parts needed to persist a record. Shared by the consensus tool and
+   * session-revisit.
+   * @param {DelegationRequest} req
+   * @param {string|undefined} expert
+   * @returns {Promise<{payload:any, parts:any}>}
+   */
+  async function runConsensus(req, expert) {
+    const cfg = getConfig() || {};
+    const { providers: selected } = registry.selectForConsensus({ config: cfg, expert: expert || "" });
+    const cc = cfg.consensus || {};
+    const arbiterSpec = cc.arbiterDefaulted ? (isClaudeHost() ? "host" : "auto") : (cc.arbiter || "auto");
+    const blindVote = !!cc.blindVote;
+    const warnings = Array.isArray(cfg.consensusWarnings) ? cfg.consensusWarnings.slice() : [];
+    const cfgErr = typeof getConfigError === "function" ? getConfigError() : null;
+    if (cfgErr) warnings.push(`config not loaded: ${cfgErr}`);
+
+    const resolved = await resolveArbiter(arbiterSpec, selected, registry, getConfig);
+    if (resolved.warning) warnings.push(resolved.warning);
+
+    if (resolved.mode === "host") {
+      const opinions = await askAll(selected, withPersona(req, expert));
+      const arbiter = { mode: "host" };
+      const body = { opinions, blindVerdict: null, verdict: null, arbiter, warnings };
+      return { payload: body, parts: body };
+    }
+
+    if (!resolved.provider) {
+      const out = await consensus(selected, withPersona(req, expert), { arbiterInstructions: PROMPTS.arbiter });
+      const arbiter = { mode: "server", provider: null };
+      return {
+        payload: { opinions: out.opinions, blindVerdict: out.blindVerdict, verdict: out.verdict, error: out.error, arbiter, warnings },
+        parts: { opinions: out.opinions, blindVerdict: out.blindVerdict, verdict: out.verdict, arbiter, warnings },
+      };
+    }
+
+    const arbiterP = resolved.provider;
+    let peers = selected.filter((p) => p.name !== arbiterP.name);
+    if (peers.length < 2) {
+      peers = selected;
+      warnings.push(`panel too small to exclude arbiter '${arbiterP.name}'; kept it in the peer panel (floor of 2)`);
+    }
+    const out = await consensus(peers, withPersona(req, expert), { arbiter: arbiterP, arbiterInstructions: PROMPTS.arbiter, blindVote });
+    const arbiter = { mode: "server", provider: arbiterP.name };
+    return {
+      payload: { opinions: out.opinions, blindVerdict: out.blindVerdict, verdict: out.verdict, error: out.error, arbiter, warnings },
+      parts: { opinions: out.opinions, blindVerdict: out.blindVerdict, verdict: out.verdict, arbiter, warnings },
+    };
+  }
+
   /**
    * @param {string} name
    * @param {any} args  // untrusted JSON-RPC tool arguments
@@ -239,56 +429,67 @@ function buildServer({ providers, getConfig, getConfigError }) {
     };
     if (name === "ask-all") {
       // selectForAskAll returns a FLAT provider list: enabled built-ins + per-alias OR wrappers.
-      const { providers: selected, omitted } = registry.selectForAskAll({ config: getConfig(), expert: expert || "" });
-      const results = await askAll(selected, withPersona(req, expert));
-      return { content: [{ type: "text", text: JSON.stringify({ results, omitted }) }] };
+      const { payload, parts } = await runAskAll(req, expert);
+      const sid = persistRun("ask-all", req, expert, parts);
+      if (sid) payload.sessionId = sid;
+      return jsonResult(payload);
     }
     if (name === "consensus") {
       // selectForConsensus returns a FLAT, uncapped voting panel. The arbiter is
       // resolved from config (host/auto/builtin/openrouter:<alias>) instead of the
-      // implicit providers[0], so any host can synthesize a real verdict.
-      const cfg = getConfig() || {};
-      const { providers: selected } = registry.selectForConsensus({ config: cfg, expert: expert || "" });
-      const cc = cfg.consensus || {};
-      // When the user did NOT set an arbiter (arbiterDefaulted), pick the default by
-      // host: Claude Code -> "host" (the host model synthesizes); any other host ->
-      // "auto" (a real server-side verdict). An explicit arbiter always wins.
-      const arbiterSpec = cc.arbiterDefaulted ? (isClaudeHost() ? "host" : "auto") : (cc.arbiter || "auto");
-      const blindVote = !!cc.blindVote;
-      const warnings = Array.isArray(cfg.consensusWarnings) ? cfg.consensusWarnings.slice() : [];
-      // Surface a config load/parse error (e.g. bad config.json) instead of
-      // silently swallowing it via getConfig()'s {} fallback.
-      const cfgErr = typeof getConfigError === "function" ? getConfigError() : null;
-      if (cfgErr) warnings.push(`config not loaded: ${cfgErr}`);
-
-      const resolved = await resolveArbiter(arbiterSpec, selected, registry, getConfig);
-      if (resolved.warning) warnings.push(resolved.warning);
-
-      if (resolved.mode === "host") {
-        // Host arbitrates: return opinions only, no server-side arbiter pass.
-        const opinions = await askAll(selected, withPersona(req, expert));
-        return { content: [{ type: "text", text: JSON.stringify({ opinions, blindVerdict: null, verdict: null, arbiter: { mode: "host" }, warnings }) }] };
-      }
-
-      if (!resolved.provider) {
-        // Server mode but no usable arbiter (empty / all-unhealthy panel). Route
-        // through consensus(selected, ...) so the documented all-providers-failed
-        // signal is preserved instead of masquerading as host mode.
-        const out = await consensus(selected, withPersona(req, expert), { arbiterInstructions: PROMPTS.arbiter });
-        return { content: [{ type: "text", text: JSON.stringify({ opinions: out.opinions, blindVerdict: out.blindVerdict, verdict: out.verdict, error: out.error, arbiter: { mode: "server", provider: null }, warnings }) }] };
-      }
-
-      const arbiter = resolved.provider;
-      // Exclude the arbiter from the peer panel so it does not review its own
-      // opinion. Floor of 2: never shrink the panel below two voices - if removing
-      // the arbiter would, keep it in and note it.
-      let peers = selected.filter((p) => p.name !== arbiter.name);
-      if (peers.length < 2) {
-        peers = selected;
-        warnings.push(`panel too small to exclude arbiter '${arbiter.name}'; kept it in the peer panel (floor of 2)`);
-      }
-      const out = await consensus(peers, withPersona(req, expert), { arbiter, arbiterInstructions: PROMPTS.arbiter, blindVote });
-      return { content: [{ type: "text", text: JSON.stringify({ opinions: out.opinions, blindVerdict: out.blindVerdict, verdict: out.verdict, error: out.error, arbiter: { mode: "server", provider: arbiter.name }, warnings }) }] };
+      // implicit providers[0], so any host can synthesize a real verdict. The whole
+      // pass lives in runConsensus so session-revisit can re-run it identically.
+      const { payload, parts } = await runConsensus(req, expert);
+      const sid = persistRun("consensus", req, expert, parts);
+      if (sid) payload.sessionId = sid;
+      return jsonResult(payload);
+    }
+    if (name === "session-get") {
+      if (!persistEnabled()) return disabledMsg();
+      const rec = sessions.readSession(String(args.sessionId == null ? "" : args.sessionId), { dir: sessionsDir });
+      if (!rec) return notFoundMsg(args.sessionId);
+      return jsonResult({ session: rec });
+    }
+    if (name === "session-annotate") {
+      if (!persistEnabled()) return disabledMsg();
+      const cfg = sessionsCfg();
+      const updated = sessions.annotateSession(
+        String(args.sessionId == null ? "" : args.sessionId),
+        String(args.note == null ? "" : args.note),
+        { dir: sessionsDir, maxRecords: cfg.maxRecords, maxAgeDays: cfg.maxAgeDays }
+      );
+      if (!updated) return notFoundMsg(args.sessionId);
+      return jsonResult({ session: updated });
+    }
+    if (name === "session-revisit") {
+      if (!persistEnabled()) return disabledMsg();
+      const rec = sessions.readSession(String(args.sessionId == null ? "" : args.sessionId), { dir: sessionsDir });
+      if (!rec) return notFoundMsg(args.sessionId);
+      // Re-run the ORIGINAL question with the CURRENT providers/config via the same
+      // path, then write a CHILD record linked by parentId. Re-run (not replay):
+      // revisit's purpose is to re-evaluate against the current context.
+      const childExpert = rec.expert || undefined;
+      // Carry the original attachment REFS so the re-run sees the same file
+      // context the parent did (paths were scrubbed on write).
+      const childFiles = Array.isArray(rec.files) && rec.files.length ? rec.files : undefined;
+      // Build childReq EXPLICITLY from the persisted record (+ cwd) - do NOT spread
+      // `req`, or a raw caller could smuggle developerInstructions/reasoningEffort
+      // into the rerun even though session-revisit only advertises sessionId + cwd.
+      /** @type {DelegationRequest} */
+      const childReq = {
+        prompt: rec.question,
+        expert: childExpert,
+        files: childFiles,
+        cwd: typeof args.cwd === "string" ? args.cwd : undefined,
+      };
+      const tool = rec.tool === "ask-all" ? "ask-all" : "consensus";
+      const { payload, parts } = tool === "ask-all"
+        ? await runAskAll(childReq, childExpert)
+        : await runConsensus(childReq, childExpert);
+      const sid = persistRun(tool, childReq, childExpert, { ...parts, parentId: rec.id });
+      if (sid) payload.sessionId = sid;
+      payload.parentId = rec.id;
+      return jsonResult(payload);
     }
     if (Object.prototype.hasOwnProperty.call(ASK_PROVIDER, name)) {
       const p = registry.get(ASK_PROVIDER[name]);
@@ -362,7 +563,8 @@ function startStdio() {
       bridge: require("../openrouter/index.js"),
     }),
   ];
-  const srv = buildServer({ providers, getConfig, getConfigError });
+  const sessionsDir = require("../../core/paths.js").resolveSessionsDir();
+  const srv = buildServer({ providers, getConfig, getConfigError, sessionsDir });
 
   if (typeof globalThis.fetch !== "function") {
     console.error("deliberation-mcp requires Node 18+ (global fetch unavailable).");

@@ -72,7 +72,7 @@
               "properties": {
                 "model": {
                   "type": "string",
-                  "description": "id of a models record to use as the arbiter (any record, even askAll:false / consensus:false).",
+                  "description": "id of one of THIS config's `models` records to use as the arbiter (a local record id, not an OpenRouter model slug). Any record qualifies, even askAll:false / consensus:false. An id that is not a configured record soft-degrades to \"auto\" at runtime with a warning.",
                   "examples": ["claude-arb"]
                 }
               }
@@ -84,6 +84,30 @@
           "type": "boolean",
           "default": false,
           "description": "Run a blind arbiter pre-vote (the arbiter answers the question cold, before seeing peer opinions) to reduce anchoring. Server/concrete-arbiter mode only; adds one extra arbiter call."
+        }
+      }
+    },
+    "sessions": {
+      "type": "object",
+      "description": "Opt-in per-session persistence (decision records + revisit + audit trail). Default OFF; nothing is written to disk unless persist is true.",
+      "additionalProperties": false,
+      "properties": {
+        "persist": {
+          "type": "boolean",
+          "default": false,
+          "description": "Persist consensus/ask-all runs to <cache>/deliberation/sessions/<id>.json (atomic write, mode 0600). Default OFF."
+        },
+        "maxRecords": {
+          "type": "integer",
+          "anyOf": [{ "const": -1 }, { "minimum": 1 }],
+          "default": 200,
+          "description": "Keep at most this many newest records; older ones are trimmed after each write. Use -1 for unlimited (never trim by count)."
+        },
+        "maxAgeDays": {
+          "type": "integer",
+          "anyOf": [{ "const": -1 }, { "minimum": 1 }],
+          "default": 30,
+          "description": "Delete records older than this many days after each write. Use -1 for unlimited (never delete by age)."
         }
       }
     }

@@ -57,6 +57,21 @@ else
   CFG="$XDG_BASE/deliberation/config.json"
 fi
 
+# --- sessions store dir: env override > canonical XDG cache ---
+# Mirrors core/paths.js resolveSessionsDir / canonicalCacheDir: DELIBERATION_SESSIONS
+# wins; else ${XDG_CACHE_HOME or ~/.cache}/deliberation/sessions. A RELATIVE
+# XDG_CACHE_HOME is ignored (XDG spec) and the default used.
+if [ -n "${DELIBERATION_SESSIONS:-}" ]; then
+  SESSIONS_DIR="$DELIBERATION_SESSIONS"
+else
+  if [ -n "${XDG_CACHE_HOME:-}" ] && [ "${XDG_CACHE_HOME#/}" != "${XDG_CACHE_HOME}" ]; then
+    CACHE_BASE="$XDG_CACHE_HOME"
+  else
+    CACHE_BASE="$HOME/.cache"
+  fi
+  SESSIONS_DIR="$CACHE_BASE/deliberation/sessions"
+fi
+
 # --- seed a default config on first run (never clobber an existing file) ---
 # Codex/Gemini/Grok enabled; OpenRouter disabled with two example model records
 # (also disabled). Edit $CFG to turn OpenRouter / the models on, then re-run setup.
@@ -91,6 +106,11 @@ openrouter_enabled() {
 }
 or_key_env() {
   json_eval 'try{const c=require(process.argv[1]);const p=(c.providers&&c.providers.openrouter)||{};process.stdout.write(p.apiKeyEnv||"OPENROUTER_API_KEY")}catch(e){process.stdout.write("OPENROUTER_API_KEY")}'
+}
+# sessions: "ON|OFF" + max records + max age, rendering -1 as "unlimited". Missing
+# config or block => default OFF / 200 / 30d. Output shape: "<ON|OFF>|<recs>|<age>".
+sessions_summary() {
+  json_eval 'try{const c=require(process.argv[1]);const s=c.sessions||{};const on=s.persist===true?"ON":"OFF";const mr=Number.isInteger(s.maxRecords)?s.maxRecords:200;const md=Number.isInteger(s.maxAgeDays)?s.maxAgeDays:30;const recs=mr===-1?"unlimited":String(mr);const age=md===-1?"unlimited":md+"d";process.stdout.write(on+"|"+recs+"|"+age)}catch(e){process.stdout.write("OFF|200|30d")}'
 }
 
 remove_mcp() {
@@ -140,6 +160,10 @@ echo "Antigravity CLI: $AGY_STATUS"
 echo "Config file:     $CFG"
 [ "$CONFIG_CREATED" = "1" ] && echo "                 (created from default - codex/gemini/grok on, OpenRouter off, 2 example models off)"
 echo "                 Edit it to enable OpenRouter and the example models, then re-run /deliberation:setup."
+SESS="$(sessions_summary)"; SESS_STATE="${SESS%%|*}"; SESS_REST="${SESS#*|}"; SESS_RECS="${SESS_REST%%|*}"; SESS_AGE="${SESS_REST#*|}"
+echo "Sessions:        persistence $SESS_STATE (opt-in; default OFF)"
+[ "$SESS_STATE" = "OFF" ] && echo "                 turn on: set \"sessions\": { \"persist\": true } in $CFG"
+echo "                 store: $SESSIONS_DIR (max records: $SESS_RECS, max age: $SESS_AGE; -1 = unlimited)"
 echo "Rules:           $RULE_COUNT files in ~/.claude/rules/deliberation/"
 echo "Grok auth:       $([ -n "${XAI_API_KEY:-}" ] && echo "XAI_API_KEY set" || echo "XAI_API_KEY not set (calls return missing-auth)")"
 echo "OpenRouter auth: $([ -n "${OPENROUTER_API_KEY:-}" ] && echo set || echo "not set")"

@@ -39,7 +39,15 @@ tools to apply one persona to every delegate):
 - `researcher` - external libraries, APIs, and best practices, with evidence.
 - `debugger` - ranked root-cause hypotheses and the smallest safe fix.
 
-Every tool takes a `prompt`. Give it full context: the goal, the relevant code
+Session tools (only useful when `sessions.persist` is enabled in config; they report
+"persistence disabled" otherwise). When on, `consensus`/`ask-all` return a `sessionId`:
+
+- `session-get { sessionId }` - fetch a recorded run (opinions, verdict, annotations).
+- `session-revisit { sessionId }` - re-run the recorded question with the current
+  providers/config and save a linked child record.
+- `session-annotate { sessionId, note }` - append a note to a run's audit trail.
+
+Every fan-out, single-provider, and expert tool takes a `prompt`. Give it full context: the goal, the relevant code
 or paths, and any prior attempts. The experts do not share your session, so a
 self-contained prompt gets a better answer.
 

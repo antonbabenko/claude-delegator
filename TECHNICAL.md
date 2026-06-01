@@ -16,6 +16,7 @@ and the Gemini recovery paths.
 - [Gemini timeout recovery](#gemini-timeout-recovery)
 - [Grok files and cleanup](#grok-files-and-cleanup)
 - [OpenRouter bridge](#openrouter-bridge)
+- [Session persistence](#session-persistence)
 - [Customizing expert prompts](#customizing-expert-prompts)
 - [Troubleshooting](#troubleshooting)
 - [Known limitations](#known-limitations)
@@ -142,6 +143,7 @@ This is the single source of truth for the bridge environment variables.
 | `XAI_API_BASE` | Grok | `https://api.x.ai/v1` | API endpoint override |
 | `GROK_REASONING_EFFORT` | Grok | `high` | `low`/`medium`/`high`; `none` or `off` omits the field |
 | `GROK_FILE_TTL_SECONDS` | Grok | `604800` (7 days) | Upload lifetime, clamped 1h..30d |
+| `DELIBERATION_SESSIONS` | sessions | `<XDG cache>/deliberation/sessions` | Override the session store directory (see [Session persistence](#session-persistence)) |
 
 Codex has no bridge environment variables: it ships its own native MCP server and
 reads `~/.codex/config.toml` directly. The **model** comes from the `model` key in
@@ -637,6 +639,76 @@ token count. There is no hard spend cap - the warning is informational only.
 | `model-not-allowed` | Requested alias is not in the config, or a raw `model` was passed with `allowRawModel:false`, or no alias/model was given and no `defaultModel` is set |
 | `unknown-thread` | `-reply` called with a threadId that does not exist |
 | `unknown` | Catch-all for unclassified errors |
+
+## Session persistence
+
+An opt-in, single-user local store that records each `/consensus` and `/ask-all`
+run so it can be fetched, re-run, and annotated later. Default OFF - nothing is
+written to disk unless `sessions.persist` is true. Implemented in `core/sessions.js`
+(synchronous, zero-dep); the store directory is resolved by `resolveSessionsDir` in
+`core/paths.js`; config is validated by `resolveSessions` in
+`server/openrouter/config.js`; the MCP wiring lives in `server/mcp/index.js`.
+
+### Configuration
+
+```json
+"sessions": { "persist": false, "maxRecords": 200, "maxAgeDays": 30 }
+```
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `persist` | boolean | `false` | Save each run and return a `sessionId`. Non-boolean degrades to `false` + warning. |
+| `maxRecords` | integer | `200` | Keep at most this many newest records. `-1` = unlimited (never trim by count). `0`/invalid -> default + warning. |
+| `maxAgeDays` | integer | `30` | Delete records older than this. `-1` = unlimited (never delete by age). `0`/invalid -> default + warning. |
+
+Validation soft-degrades: a bad value never rejects the config, it falls back to the
+default and the reason rides the same `consensusWarnings` channel the bridge already
+surfaces.
+
+### Store layout
+
+- One JSON file per session at `<dir>/<id>.json`, where `<dir>` is
+  `DELIBERATION_SESSIONS` if set, else `<XDG cache>/deliberation/sessions` (macOS/Linux
+  `~/.cache/...`; Windows `%LOCALAPPDATA%\...`).
+- Written atomically: the temp file is created with mode `0600` directly (no
+  world-readable window), then renamed into place; a failed rename removes the temp.
+- No global lock - each file is independent. The only read-modify-write is
+  `session-annotate` on one file, documented last-writer-wins (fine for a local
+  single-user stdio server).
+- Retention runs after every write: delete by age, then trim by count (both honoring
+  `-1` = unlimited). Orphaned `<id>.json.tmp.<pid>.<ts>` fragments older than an hour
+  are also reaped.
+
+### Record shape (`schemaVersion: 1`)
+
+```
+{ id, parentId|null, schemaVersion: 1, createdAt: <ISO>,
+  tool: "consensus"|"ask-all", question, expert|null,
+  files: [{ path|dir|file_id|file_url, mode? }]|null,   // attachment REFS, never bodies
+  opinions: [{ provider, model, text }],
+  blindVerdict|null, verdict|null,
+  arbiter: { mode, provider }|null, warnings: [], annotations: [{ note, at }] }
+```
+
+Before writing, `scrubSecrets` redacts common key shapes (OpenAI `sk-`, OpenRouter
+`sk-or-`, xAI `xai-`, GitHub `gh[pousr]_`, AWS `AKIA`, Google `AIza`, and `Bearer`
+tokens) in the question, opinion/verdict text, `warnings`, annotation notes, and the
+file `path`/`dir` strings; each opinion/verdict is capped at ~100 KB. Scrubbing is
+best-effort - user transcript text may still carry secrets in unrecognized shapes.
+
+### Tools
+
+Each takes its own input schema (no `prompt`), and reports
+`"session persistence is disabled (set sessions.persist)"` when off.
+
+| Tool | Input | Effect |
+|------|-------|--------|
+| `session-get` | `{ sessionId }` | Return the record, or a not-found message. Read-only. |
+| `session-revisit` | `{ sessionId, cwd? }` | Re-run the record's original question (and its file refs) with the CURRENT providers/config, write a CHILD record (`parentId` = original id), return the new `sessionId` + result. Re-run, not snapshot-replay. |
+| `session-annotate` | `{ sessionId, note }` | Append `{ note, at }` to the record's audit trail and rewrite the file. |
+
+When `persist` is on, `consensus` and `ask-all` also include a top-level `sessionId`
+in their result.
 
 ## Customizing expert prompts
 

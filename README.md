@@ -260,11 +260,12 @@ truth: changes to `models`, `routing`, or the `providers.openrouter` block hot-r
 without restarting Claude Code. Toggling a built-in provider (codex / gemini / grok)
 still requires `/setup`.
 
-The config has four sections: `providers` (transport / connection per provider),
-`models` (named model records keyed by id), `routing` (fan-out policy), and
+The config has five sections: `providers` (transport / connection per provider),
+`models` (named model records keyed by id), `routing` (fan-out policy),
 `consensus` (`arbiter` = who synthesizes the verdict; optional `blindVote` for a blind
-arbiter pre-vote). The `$schema` key gives editors validation and autocomplete - VS Code
-needs no extension.
+arbiter pre-vote), and `sessions` (opt-in run persistence; default off - see
+[Session persistence](#session-persistence)). The `$schema` key gives editors validation
+and autocomplete - VS Code needs no extension.
 
 Minimal example:
 
@@ -300,7 +301,8 @@ Minimal example:
     }
   },
   "routing": { "maxFanout": 3 },
-  "consensus": { "arbiter": { "model": "claude-arb" }, "blindVote": true }
+  "consensus": { "arbiter": { "model": "claude-arb" }, "blindVote": true },
+  "sessions": { "persist": false, "maxRecords": 200, "maxAgeDays": 30 }
 }
 ```
 
@@ -326,6 +328,38 @@ For the full schema, the `$schema` / VS Code validation story, apiBase override 
 (Ollama, vLLM, LM Studio, HuggingFace), file-attachment caps, session model persistence,
 consensus cost model, and error kinds, see
 [TECHNICAL.md - OpenRouter bridge](TECHNICAL.md#openrouter-bridge).
+
+### Session persistence
+
+Opt-in, **default off**: nothing about your questions or results is written to disk
+unless you turn it on. Enable it with a `sessions` block in the config:
+
+```json
+"sessions": { "persist": true, "maxRecords": 200, "maxAgeDays": 30 }
+```
+
+- `persist` (boolean, default `false`) - when true, each `/consensus` and `/ask-all`
+  run is saved as one JSON file and the tool result includes a `sessionId`. When off,
+  the `session-*` tools report "persistence disabled".
+- `maxRecords` (default `200`) - keep at most this many newest records; older ones are
+  trimmed after each write. Use `-1` for unlimited (never trim by count).
+- `maxAgeDays` (default `30`) - delete records older than this. Use `-1` for unlimited
+  (never delete by age).
+
+Records live at `<XDG cache>/deliberation/sessions/<id>.json` (macOS/Linux:
+`~/.cache/deliberation/sessions`; Windows: `%LOCALAPPDATA%\deliberation\sessions`),
+written atomically with mode `0600`. Override the directory with `DELIBERATION_SESSIONS`.
+API-key shapes are scrubbed and each opinion/verdict is capped (~100 KB) before writing;
+attachment **paths** are stored (scrubbed), never file bodies.
+
+Three MCP tools operate on the store (they appear always but report "disabled" until
+`persist` is on): `session-get` (fetch a record), `session-revisit` (re-run a record's
+original question with the *current* providers/config and save a linked child record),
+and `session-annotate` (append a note to the audit trail). Full details:
+[TECHNICAL.md - Session persistence](TECHNICAL.md#session-persistence).
+
+> Distinct from "session model persistence" above, which is OpenRouter multi-turn
+> (`threadId`) reuse - unrelated to this on-disk store.
 
 For provider defaults, environment variables, and manual MCP setup, see [TECHNICAL.md](TECHNICAL.md#environment-variables).
 

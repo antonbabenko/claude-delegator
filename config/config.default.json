@@ -29,5 +29,6 @@
     }
   },
   "routing": { "maxFanout": 3 },
-  "consensus": { "arbiter": "auto", "blindVote": false }
+  "consensus": { "arbiter": "auto", "blindVote": false },
+  "sessions": { "persist": false, "maxRecords": 200, "maxAgeDays": 30 }
 }

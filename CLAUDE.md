@@ -87,7 +87,7 @@ Retries use multi-turn (`*-reply` with `threadId`) so the expert remembers previ
 | `commands/*.md` | Slash commands | `/setup`, `/uninstall` |
 | `config/providers.json` | Provider metadata | Not used at runtime |
 | `config/config.schema.json` | JSON Schema (in `config/`) | Validates `config.json` in editors (VS Code built-in JSON support, no extension); `.vscode/` wires it for in-repo example configs |
-| `~/.config/deliberation/config.json` | Unified user config | Live SSOT; stat-gated hot-reload. Sections: `providers` (connection), `models` (named records map keyed by id), `routing` (fan-out), `consensus` (`arbiter` + `blindVote`). Carries a `$schema` key for editor validation. Canonical XDG path (Windows: `%APPDATA%\deliberation\config.json`); override with `DELIBERATION_CONFIG` |
+| `~/.config/deliberation/config.json` | Unified user config | Live SSOT; stat-gated hot-reload. Sections: `providers` (connection), `models` (named records map keyed by id), `routing` (fan-out), `consensus` (`arbiter` + `blindVote`), `sessions` (opt-in run persistence: `persist`/`maxRecords`/`maxAgeDays`, default off). Carries a `$schema` key for editor validation. Canonical XDG path (Windows: `%APPDATA%\deliberation\config.json`); override with `DELIBERATION_CONFIG` |
 
 > Expert prompts adapted from [oh-my-opencode](https://github.com/code-yeongyu/oh-my-opencode)
 
@@ -131,6 +131,7 @@ Grok reads attached files via `files[]` and resolves them under `roots[]` (top-l
 3. **Dual mode** - Any expert can advise or implement based on task
 4. **Synthesize, don't passthrough** - Claude interprets expert output, applies judgment
 5. **Proactive triggers** - Claude checks for delegation triggers on every message
+6. **Opt-in session store** - `consensus`/`ask-all` runs persist only when `sessions.persist` is on (default off); per-file JSON at `<XDG cache>/deliberation/sessions/` (override `DELIBERATION_SESSIONS`), secrets scrubbed, retention by count + age (`-1` = unlimited). Tools: `session-get`/`session-revisit`/`session-annotate`. Details in [TECHNICAL.md § Session persistence](TECHNICAL.md#session-persistence).
 
 ## Commit Conventions & Releases
 

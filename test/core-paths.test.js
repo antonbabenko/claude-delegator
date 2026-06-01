@@ -3,7 +3,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 
-const { resolveConfigPath, resolveGrokCachePath } = require("../core/paths.js");
+const { resolveConfigPath, resolveGrokCachePath, resolveSessionsDir } = require("../core/paths.js");
 
 // --- helpers -----------------------------------------------------------------
 //
@@ -17,6 +17,9 @@ function canonicalConfig(/** @type {string} */ home) {
 }
 function canonicalCache(/** @type {string} */ home) {
   return path.join(home, ".cache", "deliberation", "grok-files.json");
+}
+function canonicalSessions(/** @type {string} */ home) {
+  return path.join(home, ".cache", "deliberation", "sessions");
 }
 
 // --- config: env override ----------------------------------------------------
@@ -172,4 +175,54 @@ test("CC7: win32 relative LOCALAPPDATA is ignored -> ~/AppData/Local fallback", 
     platform: "win32",
   });
   assert.equal(got, path.join(home, "AppData", "Local", "deliberation", "grok-files.json"));
+});
+
+// --- sessions dir: env override + canonical default --------------------------
+
+test("CS1: DELIBERATION_SESSIONS wins verbatim", () => {
+  const override = "/somewhere/custom/sessions";
+  const got = resolveSessionsDir({
+    home: HOME,
+    env: { DELIBERATION_SESSIONS: override },
+    platform: "linux",
+  });
+  assert.equal(got, override);
+});
+
+test("CS2: no override -> canonical XDG cache /sessions", () => {
+  const got = resolveSessionsDir({
+    home: HOME,
+    env: {},
+    platform: "linux",
+  });
+  assert.equal(got, canonicalSessions(HOME));
+});
+
+test("CS3: XDG_CACHE_HOME relocates the sessions dir", () => {
+  const xdg = "/xdg/cache";
+  const got = resolveSessionsDir({
+    home: HOME,
+    env: { XDG_CACHE_HOME: xdg },
+    platform: "linux",
+  });
+  assert.equal(got, path.join(xdg, "deliberation", "sessions"));
+});
+
+test("CS4: win32 uses LOCALAPPDATA (Local) for the sessions dir", () => {
+  const localAppData = "C:\\Users\\tester\\AppData\\Local";
+  const got = resolveSessionsDir({
+    home: "C:\\Users\\tester",
+    env: { LOCALAPPDATA: localAppData },
+    platform: "win32",
+  });
+  assert.equal(got, path.join(localAppData, "deliberation", "sessions"));
+});
+
+test("CS5: empty DELIBERATION_SESSIONS falls through to canonical", () => {
+  const got = resolveSessionsDir({
+    home: HOME,
+    env: { DELIBERATION_SESSIONS: "" },
+    platform: "linux",
+  });
+  assert.equal(got, canonicalSessions(HOME));
 });
