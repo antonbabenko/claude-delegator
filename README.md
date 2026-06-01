@@ -134,6 +134,8 @@ Beyond the raw MCP config above, deliberation ships **native plugin artifacts** 
 
 Provider credentials work the same as the standalone server (GPT via the Codex CLI, Gemini via `agy`, `XAI_API_KEY` for Grok, `OPENROUTER_API_KEY` for OpenRouter) - set only the providers you use. The MCP server already injects each expert persona server-side, so these native files add the host's command/steering surface, not duplicated logic.
 
+**Full per-host install guides:** [`public-docs/hosts/`](public-docs/hosts/) - [Cursor](public-docs/hosts/cursor.md), [Codex CLI](public-docs/hosts/codex.md), [Kiro](public-docs/hosts/kiro.md), [OpenCode](public-docs/hosts/opencode.md).
+
 ## Requirements
 
 You need at least one provider:
