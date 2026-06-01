@@ -1,0 +1,298 @@
+"use strict";
+const { test } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+const {
+  writeSession, readSession, listSessions, pruneSessions, annotateSession,
+  scrubSecrets, isSafeId, newSessionId, SCHEMA_VERSION, MAX_TEXT_BYTES,
+} = require("../core/sessions.js");
+
+/** @typedef {import("../core/sessions.js").SessionRecord} SessionRecord */
+
+// Each test gets its own temp sessions dir.
+function tmpDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "delib-sess-"));
+}
+
+/**
+ * Build a minimal valid record. Caller overrides fields as needed.
+ * @param {Partial<SessionRecord>} [over]
+ * @returns {SessionRecord}
+ */
+function rec(over) {
+  /** @type {SessionRecord} */
+  const base = {
+    id: newSessionId(),
+    parentId: null,
+    schemaVersion: SCHEMA_VERSION,
+    createdAt: "2026-06-01T00:00:00.000Z",
+    tool: "consensus",
+    question: "what is 2+2?",
+    expert: null,
+    files: null,
+    opinions: [{ provider: "codex", model: "m", text: "4" }],
+    blindVerdict: null,
+    verdict: "the answer is 4",
+    arbiter: { mode: "server", provider: "grok" },
+    warnings: [],
+    annotations: [],
+  };
+  return { ...base, ...(over || {}) };
+}
+
+// --- round-trip --------------------------------------------------------------
+
+test("S1: write + read round-trip preserves core fields", () => {
+  const dir = tmpDir();
+  const r = rec({});
+  const id = writeSession(r, { dir });
+  assert.equal(id, r.id);
+  const back = readSession(id, { dir });
+  assert.ok(back);
+  if (!back) return;
+  assert.equal(back.id, r.id);
+  assert.equal(back.tool, "consensus");
+  assert.equal(back.question, "what is 2+2?");
+  assert.equal(back.verdict, "the answer is 4");
+  assert.equal(back.opinions[0].text, "4");
+  assert.equal(back.schemaVersion, SCHEMA_VERSION);
+});
+
+// --- atomic write ------------------------------------------------------------
+
+test("S2: atomic write leaves no temp file and a valid JSON dest", () => {
+  const dir = tmpDir();
+  const id = writeSession(rec({}), { dir });
+  const names = fs.readdirSync(dir);
+  assert.deepEqual(names, [`${id}.json`]); // exactly the dest, no .tmp leftover
+  const raw = fs.readFileSync(path.join(dir, `${id}.json`), "utf8");
+  assert.doesNotThrow(() => JSON.parse(raw));
+});
+
+// --- file mode 0600 ----------------------------------------------------------
+
+test("S3: written file is mode 0600", { skip: process.platform === "win32" }, () => {
+  const dir = tmpDir();
+  const id = writeSession(rec({}), { dir });
+  const mode = fs.statSync(path.join(dir, `${id}.json`)).mode & 0o777;
+  assert.equal(mode, 0o600);
+});
+
+// --- unsafe id rejected (no traversal) --------------------------------------
+
+test("S4: writeSession rejects an unsafe id (path traversal)", () => {
+  const dir = tmpDir();
+  assert.throws(() => writeSession(rec({ id: "../evil" }), { dir }), /unsafe session id/);
+  assert.throws(() => writeSession(rec({ id: "a/b" }), { dir }), /unsafe session id/);
+});
+
+test("S5: readSession returns null for an unsafe id", () => {
+  const dir = tmpDir();
+  assert.equal(readSession("../evil", { dir }), null);
+  assert.equal(readSession("a/b", { dir }), null);
+  assert.equal(readSession("a.b", { dir }), null);
+});
+
+test("S6: isSafeId guards the anchored shape", () => {
+  assert.equal(isSafeId("abc-123"), true);
+  assert.equal(isSafeId("../x"), false);
+  assert.equal(isSafeId("a/b"), false);
+  assert.equal(isSafeId("a.b"), false);
+  assert.equal(isSafeId(""), false);
+  assert.equal(isSafeId(42), false);
+});
+
+// --- corrupt JSON -> null ----------------------------------------------------
+
+test("S7: readSession returns null on corrupt JSON (never throws)", () => {
+  const dir = tmpDir();
+  const id = "deadbeef";
+  fs.writeFileSync(path.join(dir, `${id}.json`), "{ this is not json");
+  assert.equal(readSession(id, { dir }), null);
+});
+
+test("S8: readSession returns null for an absent file", () => {
+  const dir = tmpDir();
+  assert.equal(readSession("missing", { dir }), null);
+});
+
+// --- listing newest-first ----------------------------------------------------
+
+test("S9: listSessions returns newest-first by mtime", () => {
+  const dir = tmpDir();
+  const a = writeSession(rec({}), { dir });
+  const b = writeSession(rec({}), { dir });
+  const c = writeSession(rec({}), { dir });
+  // Force distinct, deterministic mtimes: a oldest, c newest.
+  fs.utimesSync(path.join(dir, `${a}.json`), new Date(1000), new Date(1000));
+  fs.utimesSync(path.join(dir, `${b}.json`), new Date(2000), new Date(2000));
+  fs.utimesSync(path.join(dir, `${c}.json`), new Date(3000), new Date(3000));
+  const ids = listSessions({ dir }).map((e) => e.id);
+  assert.deepEqual(ids, [c, b, a]);
+});
+
+test("S10: listSessions on a missing dir yields []", () => {
+  const got = listSessions({ dir: path.join(os.tmpdir(), "delib-does-not-exist-xyz") });
+  assert.deepEqual(got, []);
+});
+
+// --- prune by age + by count -------------------------------------------------
+
+test("S11: pruneSessions deletes records older than maxAgeDays", () => {
+  const dir = tmpDir();
+  const fresh = writeSession(rec({}), { dir });
+  const old = writeSession(rec({}), { dir });
+  // Backdate `old` by ~10 days.
+  const tenDaysAgo = Date.now() - 10 * 24 * 60 * 60 * 1000;
+  fs.utimesSync(path.join(dir, `${old}.json`), new Date(tenDaysAgo), new Date(tenDaysAgo));
+  const { removed } = pruneSessions({ dir, maxAgeDays: 1, maxRecords: 100 });
+  assert.equal(removed, 1);
+  assert.equal(readSession(old, { dir }), null);
+  assert.ok(readSession(fresh, { dir }));
+});
+
+test("S12: pruneSessions trims to the newest maxRecords", () => {
+  const dir = tmpDir();
+  const ids = [];
+  for (let i = 0; i < 5; i++) ids.push(writeSession(rec({}), { dir }));
+  // Distinct ascending, RECENT mtimes (seconds apart) so only the count-trim
+  // applies - not the age cutoff. ids[0] oldest, ids[4] newest.
+  const nowMs = Date.now();
+  for (let i = 0; i < ids.length; i++) {
+    const t = new Date(nowMs - (ids.length - i) * 1000);
+    fs.utimesSync(path.join(dir, `${ids[i]}.json`), t, t);
+  }
+  const { removed } = pruneSessions({ dir, maxRecords: 2, maxAgeDays: 3650 });
+  assert.equal(removed, 3);
+  const remaining = listSessions({ dir }).map((e) => e.id).sort();
+  assert.deepEqual(remaining, [ids[3], ids[4]].sort()); // two newest survive
+});
+
+test("S13: pruneSessions is ENOENT-tolerant (missing dir, repeat prune)", () => {
+  assert.doesNotThrow(() => pruneSessions({ dir: path.join(os.tmpdir(), "delib-none-abc") }));
+  const dir = tmpDir();
+  const old = writeSession(rec({}), { dir });
+  const past = Date.now() - 100 * 24 * 60 * 60 * 1000;
+  fs.utimesSync(path.join(dir, `${old}.json`), new Date(past), new Date(past));
+  assert.doesNotThrow(() => pruneSessions({ dir, maxAgeDays: 1 }));
+  // Second prune over the now-empty dir must not throw either.
+  assert.doesNotThrow(() => pruneSessions({ dir, maxAgeDays: 1 }));
+});
+
+// --- writeSession prunes after each write ------------------------------------
+
+test("S14: writeSession prunes to maxRecords after writing", () => {
+  const dir = tmpDir();
+  for (let i = 0; i < 4; i++) writeSession(rec({}), { dir, maxRecords: 2, maxAgeDays: 3650 });
+  assert.ok(listSessions({ dir }).length <= 2);
+});
+
+// --- annotate ----------------------------------------------------------------
+
+test("S15: annotateSession appends an annotation and persists it", () => {
+  const dir = tmpDir();
+  const id = writeSession(rec({}), { dir });
+  const updated = annotateSession(id, "looks good", { dir, at: "2026-06-02T00:00:00.000Z" });
+  assert.ok(updated);
+  if (!updated) return;
+  assert.equal(updated.annotations && updated.annotations.length, 1);
+  const back = readSession(id, { dir });
+  assert.ok(back);
+  if (!back) return;
+  assert.equal(back.annotations && back.annotations[0].note, "looks good");
+  assert.equal(back.annotations && back.annotations[0].at, "2026-06-02T00:00:00.000Z");
+});
+
+test("S16: annotateSession returns null for an unknown id", () => {
+  const dir = tmpDir();
+  assert.equal(annotateSession("missing", "x", { dir }), null);
+});
+
+// --- scrubSecrets ------------------------------------------------------------
+
+test("S17: scrubSecrets redacts each key pattern", () => {
+  const openai = "sk-" + "a".repeat(24);
+  const openrouter = "sk-or-v1-" + "b".repeat(24);
+  const xai = "xai-" + "c".repeat(24);
+  const google = "AIza" + "D".repeat(35);
+  const bearer = "Bearer tok.en-value_123";
+
+  assert.equal(scrubSecrets(openai).includes(openai), false);
+  assert.ok(scrubSecrets(openai).includes("[REDACTED]"));
+
+  assert.equal(scrubSecrets(openrouter).includes(openrouter), false);
+  assert.ok(scrubSecrets(openrouter).includes("[REDACTED]"));
+
+  assert.equal(scrubSecrets(xai).includes(xai), false);
+  assert.ok(scrubSecrets(xai).includes("[REDACTED]"));
+
+  assert.equal(scrubSecrets(google).includes(google), false);
+  assert.ok(scrubSecrets(google).includes("[REDACTED]"));
+
+  const scrubbedBearer = scrubSecrets(bearer);
+  assert.equal(scrubbedBearer.includes("tok.en-value_123"), false);
+  assert.ok(scrubbedBearer.includes("Bearer [REDACTED]"));
+});
+
+test("S17b: scrubSecrets does NOT corrupt normal words containing key-like substrings", () => {
+  // "risk-analysis" contains "sk-analysis"; word-boundary anchors must spare it.
+  assert.equal(scrubSecrets("risk-analysis and disk-space"), "risk-analysis and disk-space");
+  assert.equal(scrubSecrets("maxai-thing"), "maxai-thing");
+});
+
+test("S17c: a longer-than-39-char Google key is fully redacted (no tail leak)", () => {
+  const longKey = "AIza" + "D".repeat(40); // 44 chars total, > the canonical 39
+  const out = scrubSecrets(`k=${longKey} end`);
+  assert.equal(out.includes(longKey), false); // whole key gone
+  assert.equal(out.includes("DDDD"), false); // no leaked tail run
+  assert.equal(out, "k=[REDACTED] end");
+});
+
+test("S18: secrets are scrubbed on write (question, opinion text, verdict, file refs)", () => {
+  const dir = tmpDir();
+  const secret = "sk-" + "z".repeat(24);
+  const id = writeSession(rec({
+    question: `key is ${secret}`,
+    opinions: [{ provider: "codex", model: "m", text: `leaked ${secret}` }],
+    verdict: `verdict mentions ${secret}`,
+    files: [{ path: `/tmp/${secret}/notes.md` }],
+  }), { dir });
+  const back = readSession(id, { dir });
+  assert.ok(back);
+  if (!back) return;
+  const blob = JSON.stringify(back);
+  assert.equal(blob.includes(secret), false);
+  assert.ok(blob.includes("[REDACTED]"));
+});
+
+// --- 100 KB cap --------------------------------------------------------------
+
+test("S19: opinion + verdict text are capped at ~100 KB on write", () => {
+  const dir = tmpDir();
+  const huge = "x".repeat(MAX_TEXT_BYTES + 5000);
+  const id = writeSession(rec({
+    opinions: [{ provider: "codex", model: "m", text: huge }],
+    verdict: huge,
+  }), { dir });
+  const back = readSession(id, { dir });
+  assert.ok(back);
+  if (!back) return;
+  const optText = back.opinions[0].text || "";
+  assert.ok(Buffer.byteLength(optText, "utf8") < MAX_TEXT_BYTES + 200);
+  assert.ok(optText.includes("[truncated"));
+  assert.ok((back.verdict || "").includes("[truncated"));
+});
+
+// --- file refs not bodies ----------------------------------------------------
+
+test("S20: files persist as path REFS only", () => {
+  const dir = tmpDir();
+  const id = writeSession(rec({ files: [{ path: "./notes.md" }] }), { dir });
+  const back = readSession(id, { dir });
+  assert.ok(back);
+  if (!back) return;
+  assert.deepEqual(back.files, [{ path: "./notes.md" }]);
+});

@@ -14,6 +14,7 @@
  * Exports:
  *   - resolveConfigPath(opts?)    -> DELIBERATION_CONFIG override else canonical config.json
  *   - resolveGrokCachePath(opts?) -> DELIBERATION_CACHE override else canonical grok-files.json
+ *   - resolveSessionsDir(opts?)   -> DELIBERATION_SESSIONS override else canonical sessions/ dir
  *
  * Both accept an optional `{ home, env, platform }` injection so callers (and
  * tests) can point at a temp HOME, a fake env, and a fixed platform without
@@ -151,7 +152,32 @@ function resolveGrokCachePath(opts) {
   return path.join(canonicalCacheDir(home, env, platform), "grok-files.json");
 }
 
+/**
+ * Resolve the absolute path to the sessions DIR the caller should use for the
+ * opt-in per-session store (core/sessions.js).
+ *
+ * Precedence:
+ *   1. DELIBERATION_SESSIONS if non-empty -> return it verbatim.
+ *   2. Else `<canonicalCacheDir>/sessions`.
+ *
+ * Pure path logic - no FS access, no side effects.
+ *
+ * @param {ResolveOptions} [opts]
+ * @returns {string} absolute path to the sessions directory to use
+ */
+function resolveSessionsDir(opts) {
+  const { home, env, platform } = resolveInjection(opts);
+
+  const override = env.DELIBERATION_SESSIONS;
+  if (typeof override === "string" && override.length > 0) {
+    return override;
+  }
+
+  return path.join(canonicalCacheDir(home, env, platform), "sessions");
+}
+
 module.exports = {
   resolveConfigPath,
   resolveGrokCachePath,
+  resolveSessionsDir,
 };

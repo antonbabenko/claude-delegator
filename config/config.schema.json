@@ -86,6 +86,30 @@
           "description": "Run a blind arbiter pre-vote (the arbiter answers the question cold, before seeing peer opinions) to reduce anchoring. Server/concrete-arbiter mode only; adds one extra arbiter call."
         }
       }
+    },
+    "sessions": {
+      "type": "object",
+      "description": "Opt-in per-session persistence (decision records + revisit + audit trail). Default OFF; nothing is written to disk unless persist is true.",
+      "additionalProperties": false,
+      "properties": {
+        "persist": {
+          "type": "boolean",
+          "default": false,
+          "description": "Persist consensus/ask-all runs to <cache>/deliberation/sessions/<id>.json (atomic write, mode 0600). Default OFF."
+        },
+        "maxRecords": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 200,
+          "description": "Keep at most this many newest records; older ones are trimmed after each write."
+        },
+        "maxAgeDays": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 30,
+          "description": "Delete records older than this many days after each write."
+        }
+      }
     }
   },
   "$defs": {

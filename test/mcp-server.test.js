@@ -92,3 +92,112 @@ test("M5: ask-all expands OR per-alias and never dispatches askAll:false (issue 
   assert.deepEqual(provs, ["codex", "openrouter:on"]); // off excluded server-side
   assert.equal(provs.includes("openrouter:off"), false);
 });
+
+// --- session store wiring ----------------------------------------------------
+
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+function tmpSessionsDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "delib-mcp-sess-"));
+}
+function sessionsConfig(persist) {
+  return { providers: {}, openrouter: { maxFanout: 3, models: [] }, sessions: { persist, maxRecords: 200, maxAgeDays: 30 } };
+}
+async function callTool(srv, id, name, args) {
+  const res = await srv.handle({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+  return JSON.parse(res.result.content[0].text);
+}
+
+test("S-MCP1: tools/list includes the session tools with per-tool (no-prompt) schemas", async () => {
+  const srv = buildServer({ providers: [fakeProvider("codex"), fakeProvider("grok")], getConfig: () => config });
+  const res = await srv.handle({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+  const byName = Object.fromEntries(res.result.tools.map((t) => [t.name, t]));
+  for (const n of ["session-get", "session-revisit", "session-annotate"]) {
+    assert.ok(byName[n], `missing tool ${n}`);
+    assert.equal(byName[n].inputSchema.properties.prompt, undefined); // NOT the prompt-required schema
+    assert.ok(byName[n].inputSchema.required.includes("sessionId"));
+  }
+  assert.ok(byName["session-annotate"].inputSchema.required.includes("note"));
+});
+
+test("S-MCP2: consensus with persist on writes a record and returns sessionId", async (t) => {
+  const dir = tmpSessionsDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const srv = buildServer({ providers: [fakeProvider("codex"), fakeProvider("grok")], getConfig: () => sessionsConfig(true), sessionsDir: dir });
+  const payload = await callTool(srv, 2, "consensus", { prompt: "q", expert: "architect" });
+  assert.ok(payload.sessionId, "expected a sessionId");
+  assert.ok(fs.existsSync(path.join(dir, `${payload.sessionId}.json`)));
+});
+
+test("S-MCP3: ask-all with persist on writes a record and returns sessionId", async (t) => {
+  const dir = tmpSessionsDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const srv = buildServer({ providers: [fakeProvider("codex"), fakeProvider("grok")], getConfig: () => sessionsConfig(true), sessionsDir: dir });
+  const payload = await callTool(srv, 3, "ask-all", { prompt: "q" });
+  assert.ok(payload.sessionId);
+  assert.ok(fs.existsSync(path.join(dir, `${payload.sessionId}.json`)));
+});
+
+test("S-MCP4: persist off writes nothing and returns no sessionId", async (t) => {
+  const dir = tmpSessionsDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const srv = buildServer({ providers: [fakeProvider("codex"), fakeProvider("grok")], getConfig: () => sessionsConfig(false), sessionsDir: dir });
+  const payload = await callTool(srv, 4, "consensus", { prompt: "q" });
+  assert.equal(payload.sessionId, undefined);
+  assert.deepEqual(fs.readdirSync(dir), []);
+});
+
+test("S-MCP5: session-get round-trips a persisted record", async (t) => {
+  const dir = tmpSessionsDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const srv = buildServer({ providers: [fakeProvider("codex"), fakeProvider("grok")], getConfig: () => sessionsConfig(true), sessionsDir: dir });
+  const made = await callTool(srv, 5, "consensus", { prompt: "the question", expert: "architect" });
+  const got = await callTool(srv, 6, "session-get", { sessionId: made.sessionId });
+  assert.equal(got.session.id, made.sessionId);
+  assert.equal(got.session.question, "the question");
+  assert.equal(got.session.tool, "consensus");
+});
+
+test("S-MCP6: session-revisit writes a CHILD record linked by parentId", async (t) => {
+  const dir = tmpSessionsDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const srv = buildServer({ providers: [fakeProvider("codex"), fakeProvider("grok")], getConfig: () => sessionsConfig(true), sessionsDir: dir });
+  const parent = await callTool(srv, 7, "consensus", { prompt: "original q" });
+  const child = await callTool(srv, 8, "session-revisit", { sessionId: parent.sessionId });
+  assert.equal(child.parentId, parent.sessionId);
+  assert.ok(child.sessionId);
+  assert.notEqual(child.sessionId, parent.sessionId);
+  const childRec = await callTool(srv, 9, "session-get", { sessionId: child.sessionId });
+  assert.equal(childRec.session.parentId, parent.sessionId);
+  assert.equal(childRec.session.question, "original q"); // re-ran the original question
+});
+
+test("S-MCP7: session-annotate appends to the audit trail", async (t) => {
+  const dir = tmpSessionsDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const srv = buildServer({ providers: [fakeProvider("codex"), fakeProvider("grok")], getConfig: () => sessionsConfig(true), sessionsDir: dir });
+  const made = await callTool(srv, 10, "consensus", { prompt: "q" });
+  const ann = await callTool(srv, 11, "session-annotate", { sessionId: made.sessionId, note: "reviewed" });
+  assert.equal(ann.session.annotations.length, 1);
+  assert.equal(ann.session.annotations[0].note, "reviewed");
+});
+
+test("S-MCP8: session tools report disabled when persist is off", async (t) => {
+  const dir = tmpSessionsDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const srv = buildServer({ providers: [fakeProvider("codex"), fakeProvider("grok")], getConfig: () => sessionsConfig(false), sessionsDir: dir });
+  for (const [id, name] of [[12, "session-get"], [13, "session-revisit"], [14, "session-annotate"]]) {
+    const payload = await callTool(srv, id, name, { sessionId: "whatever", note: "x" });
+    assert.match(payload.error, /persistence is disabled/);
+  }
+});
+
+test("S-MCP9: session-get on an unknown id returns a not-found message", async (t) => {
+  const dir = tmpSessionsDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const srv = buildServer({ providers: [fakeProvider("codex"), fakeProvider("grok")], getConfig: () => sessionsConfig(true), sessionsDir: dir });
+  const payload = await callTool(srv, 15, "session-get", { sessionId: "nope" });
+  assert.match(payload.error, /session not found/);
+});
