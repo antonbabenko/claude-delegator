@@ -99,15 +99,15 @@
         },
         "maxRecords": {
           "type": "integer",
-          "minimum": 1,
+          "anyOf": [{ "const": -1 }, { "minimum": 1 }],
           "default": 200,
-          "description": "Keep at most this many newest records; older ones are trimmed after each write."
+          "description": "Keep at most this many newest records; older ones are trimmed after each write. Use -1 for unlimited (never trim by count)."
         },
         "maxAgeDays": {
           "type": "integer",
-          "minimum": 1,
+          "anyOf": [{ "const": -1 }, { "minimum": 1 }],
           "default": 30,
-          "description": "Delete records older than this many days after each write."
+          "description": "Delete records older than this many days after each write. Use -1 for unlimited (never delete by age)."
         }
       }
     }

@@ -131,13 +131,15 @@ function resolveSessions(raw) {
     if (typeof raw.persist === "boolean") out.persist = raw.persist;
     else warnings.push(`sessions.persist must be a boolean (got ${JSON.stringify(raw.persist)}); using false`);
   }
+  // -1 means UNLIMITED (keep forever / no count cap); otherwise a positive integer.
+  // 0 and other values are invalid -> default + warning.
   if (raw.maxRecords !== undefined) {
-    if (Number.isInteger(raw.maxRecords) && raw.maxRecords > 0) out.maxRecords = raw.maxRecords;
-    else warnings.push(`sessions.maxRecords must be a positive integer (got ${JSON.stringify(raw.maxRecords)}); using ${DEFAULT_SESSIONS_MAX_RECORDS}`);
+    if (Number.isInteger(raw.maxRecords) && (raw.maxRecords === -1 || raw.maxRecords > 0)) out.maxRecords = raw.maxRecords;
+    else warnings.push(`sessions.maxRecords must be -1 (unlimited) or a positive integer (got ${JSON.stringify(raw.maxRecords)}); using ${DEFAULT_SESSIONS_MAX_RECORDS}`);
   }
   if (raw.maxAgeDays !== undefined) {
-    if (Number.isInteger(raw.maxAgeDays) && raw.maxAgeDays > 0) out.maxAgeDays = raw.maxAgeDays;
-    else warnings.push(`sessions.maxAgeDays must be a positive integer (got ${JSON.stringify(raw.maxAgeDays)}); using ${DEFAULT_SESSIONS_MAX_AGE_DAYS}`);
+    if (Number.isInteger(raw.maxAgeDays) && (raw.maxAgeDays === -1 || raw.maxAgeDays > 0)) out.maxAgeDays = raw.maxAgeDays;
+    else warnings.push(`sessions.maxAgeDays must be -1 (unlimited) or a positive integer (got ${JSON.stringify(raw.maxAgeDays)}); using ${DEFAULT_SESSIONS_MAX_AGE_DAYS}`);
   }
   return { sessions: out, warnings };
 }

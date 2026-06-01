@@ -306,14 +306,18 @@ function removeFile(file) {
 /**
  * Delete records older than maxAgeDays, then trim to the newest maxRecords.
  * Called after each write. Best-effort + ENOENT-tolerant.
+ *
+ * `-1` means UNLIMITED for either limit (skip that retention rule): maxAgeDays:-1
+ * never deletes by age, maxRecords:-1 never trims by count. Any other non-positive
+ * or non-integer value falls back to the default.
  * @param {{dir:string, maxRecords?:number, maxAgeDays?:number}} opts
  * @returns {{removed:number}}
  */
 function pruneSessions(opts) {
   const mr = opts.maxRecords;
   const md = opts.maxAgeDays;
-  const maxRecords = typeof mr === "number" && Number.isInteger(mr) && mr > 0 ? mr : DEFAULT_MAX_RECORDS;
-  const maxAgeDays = typeof md === "number" && Number.isInteger(md) && md > 0 ? md : DEFAULT_MAX_AGE_DAYS;
+  const maxRecords = typeof mr === "number" && Number.isInteger(mr) && (mr === -1 || mr > 0) ? mr : DEFAULT_MAX_RECORDS;
+  const maxAgeDays = typeof md === "number" && Number.isInteger(md) && (md === -1 || md > 0) ? md : DEFAULT_MAX_AGE_DAYS;
   // Sweep orphaned temp files first. A crash between writeFileSync(tmp) and the
   // rename leaves a `<id>.json.tmp.<pid>.<ts>` that listSessions ignores (non-.json),
   // so nothing else would ever reap it. Only sweep ones older than an hour to avoid
@@ -330,19 +334,21 @@ function pruneSessions(opts) {
   } catch { /* missing dir: nothing to sweep */ }
 
   const entries = listSessions({ dir: opts.dir });
-  const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+  // maxAgeDays === -1 -> unlimited age: never delete by age (cutoff stays null).
+  const cutoff = maxAgeDays === -1 ? null : Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
   let removed = 0;
   /** @type {SessionListEntry[]} */
   const survivors = [];
   for (const e of entries) {
-    if (e.mtimeMs < cutoff) {
+    if (cutoff !== null && e.mtimeMs < cutoff) {
       if (removeFile(e.file)) removed++;
     } else {
       survivors.push(e);
     }
   }
-  // survivors stays newest-first; trim the tail beyond maxRecords.
-  if (survivors.length > maxRecords) {
+  // survivors stays newest-first; trim the tail beyond maxRecords. maxRecords === -1
+  // -> unlimited count: never trim.
+  if (maxRecords !== -1 && survivors.length > maxRecords) {
     for (const e of survivors.slice(maxRecords)) {
       if (removeFile(e.file)) removed++;
     }

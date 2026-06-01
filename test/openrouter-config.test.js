@@ -472,8 +472,23 @@ test("SESS4: invalid maxRecords/maxAgeDays degrade to defaults + warnings", () =
   const { sessions, warnings } = resolveSessions({ persist: true, maxRecords: 0, maxAgeDays: -3 });
   assert.equal(sessions.maxRecords, 200);
   assert.equal(sessions.maxAgeDays, 30);
-  assert.ok(warnings.some((w) => /maxRecords must be a positive integer/.test(w)));
-  assert.ok(warnings.some((w) => /maxAgeDays must be a positive integer/.test(w)));
+  assert.ok(warnings.some((w) => /maxRecords must be -1 \(unlimited\) or a positive integer/.test(w)));
+  assert.ok(warnings.some((w) => /maxAgeDays must be -1 \(unlimited\) or a positive integer/.test(w)));
+});
+
+test("SESS4b: maxRecords/maxAgeDays accept -1 (unlimited) with no warning", () => {
+  const { sessions, warnings } = resolveSessions({ persist: true, maxRecords: -1, maxAgeDays: -1 });
+  assert.equal(sessions.maxRecords, -1);
+  assert.equal(sessions.maxAgeDays, -1);
+  assert.equal(warnings.length, 0);
+});
+
+test("SESS4c: -2 and other negatives still degrade to defaults + warnings", () => {
+  const { sessions, warnings } = resolveSessions({ maxRecords: -2, maxAgeDays: -5 });
+  assert.equal(sessions.maxRecords, 200);
+  assert.equal(sessions.maxAgeDays, 30);
+  assert.ok(warnings.some((w) => /maxRecords must be -1/.test(w)));
+  assert.ok(warnings.some((w) => /maxAgeDays must be -1/.test(w)));
 });
 
 test("SESS5: a non-object sessions block degrades to default OFF + warning", () => {

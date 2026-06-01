@@ -171,6 +171,25 @@ test("S12: pruneSessions trims to the newest maxRecords", () => {
   assert.deepEqual(remaining, [ids[3], ids[4]].sort()); // two newest survive
 });
 
+test("S12b: pruneSessions maxRecords:-1 keeps every record (unlimited count)", () => {
+  const dir = tmpDir();
+  const ids = [];
+  for (let i = 0; i < 5; i++) ids.push(writeSession(rec({}), { dir, maxRecords: -1, maxAgeDays: 3650 }));
+  const { removed } = pruneSessions({ dir, maxRecords: -1, maxAgeDays: 3650 });
+  assert.equal(removed, 0);
+  assert.equal(listSessions({ dir }).length, 5);
+});
+
+test("S12c: pruneSessions maxAgeDays:-1 keeps a very old record (unlimited age)", () => {
+  const dir = tmpDir();
+  const old = writeSession(rec({}), { dir, maxRecords: -1, maxAgeDays: -1 });
+  const ancient = Date.now() - 1000 * 24 * 60 * 60 * 1000; // ~1000 days
+  fs.utimesSync(path.join(dir, `${old}.json`), new Date(ancient), new Date(ancient));
+  const { removed } = pruneSessions({ dir, maxRecords: -1, maxAgeDays: -1 });
+  assert.equal(removed, 0);
+  assert.ok(readSession(old, { dir }));
+});
+
 test("S13: pruneSessions is ENOENT-tolerant (missing dir, repeat prune)", () => {
   assert.doesNotThrow(() => pruneSessions({ dir: path.join(os.tmpdir(), "delib-none-abc") }));
   const dir = tmpDir();
