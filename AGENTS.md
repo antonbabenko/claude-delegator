@@ -21,16 +21,15 @@ Fan-out and single-provider:
 
 - `ask-all` - send one question to GPT, Gemini, Grok, and configured OpenRouter
   models in parallel, get every answer back independently (no cross-talk).
-- `consensus` - fan out, then run one arbiter pass that cross-reviews the
-  independent answers and returns a single synthesized verdict. An optional
-  server-side blind pre-vote (`consensus.blindVote` in config) returns a
-  `blindVerdict` alongside the `verdict`.
-- `consensus-auto` - run the FULL multi-round convergence loop server-side with a
-  provider arbiter (blind pass + peer fan-out -> adjudicate -> revise, up to
-  `consensus.maxRounds`, default 5) and get the converged verdict in one call. Use
-  this when you want the whole loop without driving it step by step. Set a concrete
-  `consensus.arbiter` (a provider or `openrouter:<alias>`); `host` mode is for the
-  client-driven path below.
+- `consensus` - run the FULL multi-round convergence loop server-side with a provider
+  arbiter (blind pass + peer fan-out -> adjudicate -> revise) and get the converged
+  verdict in one call. Depth is `consensus.maxRounds` (config, default 5); pass
+  `maxRounds` to override. Pass `synthesizeAlways:true` for a SINGLE arbiter synthesis
+  pass instead of the loop (best for open questions): it returns a free-text `synthesis`
+  (the enum `verdict` and `converged`/`confidence` are null, `rounds` is 1). Set a concrete
+  `consensus.arbiter` (a provider or `openrouter:<alias>`) for the server-side pass; in
+  `host` mode the tool returns the opinions for YOU to synthesize. An optional blind
+  pre-vote (`consensus.blindVote`) is available on the synthesize path.
 - `consensus-step` - drive the loop yourself as the arbiter, one action per call:
   `init` (returns a `sessionId` + blind prompt) -> `record_blind` (your pre-commit
   verdict) -> `dispatch_peers` (the server fans out to the panel) ->
@@ -52,12 +51,12 @@ tools to apply one persona to every delegate):
 - `debugger` - ranked root-cause hypotheses and the smallest safe fix.
 
 Session tools (only useful when `sessions.persist` is enabled in config; they report
-"persistence disabled" otherwise). When on, `consensus`/`ask-all`/`consensus-auto` return a `sessionId`:
+"persistence disabled" otherwise). When on, `consensus`/`ask-all` return a `sessionId`:
 
 - `session-get { sessionId }` - fetch a recorded run (opinions, verdict, annotations).
 - `session-revisit { sessionId }` - re-run the recorded question with the current
-  providers/config and save a linked child record. A `consensus-auto` record re-runs the
-  full loop, not a one-shot pass.
+  providers/config and save a linked child record. A `consensus` record replays its
+  mode (the loop, or a synthesize pass).
 - `session-annotate { sessionId, note }` - append a note to a run's audit trail.
 
 Every fan-out, single-provider, and expert tool takes a `prompt`. Give it full context: the goal, the relevant code

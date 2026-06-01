@@ -379,16 +379,16 @@ test("S20b: non-path file refs (dir/file_id/file_url/mode) survive a round-trip"
   assert.deepEqual(back.files, files); // preserved so session-revisit keeps context
 });
 
-// --- v2 record: consensus-auto fields (verdict / criticalIssues / loop summary) ---
+// --- consensus-loop record fields (verdict / criticalIssues / loop summary) ---
 
-test("S21: the writer's SCHEMA_VERSION is 2 (consensus-auto round summary support)", () => {
-  assert.equal(SCHEMA_VERSION, 2);
+test("S21: the writer's SCHEMA_VERSION is 1 (single stamp, no dual-version support)", () => {
+  assert.equal(SCHEMA_VERSION, 1);
 });
 
-test("S22: a consensus-auto opinion persists its verdict + criticalIssues losslessly", () => {
+test("S22: a consensus opinion persists its verdict + criticalIssues losslessly", () => {
   const dir = tmpDir();
   const id = writeSession(rec({
-    tool: "consensus-auto",
+    tool: "consensus",
     opinions: [{
       provider: "codex",
       verdict: "REQUEST_CHANGES",
@@ -398,7 +398,7 @@ test("S22: a consensus-auto opinion persists its verdict + criticalIssues lossle
   const back = readSession(id, { dir });
   assert.ok(back);
   if (!back) return;
-  assert.equal(back.tool, "consensus-auto");
+  assert.equal(back.tool, "consensus");
   assert.equal(back.opinions[0].provider, "codex");
   assert.equal(back.opinions[0].verdict, "REQUEST_CHANGES");
   assert.deepEqual(back.opinions[0].criticalIssues, [{ category: "security", description: "missing auth check" }]);
@@ -409,7 +409,7 @@ test("S22b: a critical-issue description is secret-scrubbed + capped on write", 
   const secret = "sk-" + "q".repeat(30);
   const huge = "y".repeat(MAX_TEXT_BYTES + 4000);
   const id = writeSession(rec({
-    tool: "consensus-auto",
+    tool: "consensus",
     opinions: [{ provider: "grok", verdict: "REJECT", criticalIssues: [
       { category: "ops", description: `leaked ${secret}` },
       { category: "correctness", description: huge },
@@ -428,7 +428,7 @@ test("S22c: a non-enum verdict is coerced to null on write (writer is the trust 
   const dir = tmpDir();
   const secret = "sk-" + "v".repeat(30);
   const id = writeSession(rec({
-    tool: "consensus-auto",
+    tool: "consensus",
     // A hand-built record that ignores parseReview's enum contract: the writer
     // must NOT persist arbitrary free text (incl. a secret) in the verdict field.
     opinions: [{ provider: "codex", verdict: /** @type {any} */ (`bogus ${secret}`) }],
@@ -451,10 +451,10 @@ test("S22d: question is capped at ~100 KB on write", () => {
   assert.ok(back.question.includes("[truncated"));
 });
 
-test("S23: converged / confidence / rounds round-trip on a consensus-auto record", () => {
+test("S23: converged / confidence / rounds round-trip on a consensus record", () => {
   const dir = tmpDir();
   const id = writeSession(rec({
-    tool: "consensus-auto",
+    tool: "consensus",
     converged: true,
     confidence: "high",
     rounds: 3,

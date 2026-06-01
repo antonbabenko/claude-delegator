@@ -21,12 +21,14 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 
 /**
- * Current on-disk record shape version.
- * v2: consensus-auto records carry per-opinion verdict/criticalIssues + a loop
- * summary (converged/confidence/rounds). v1 records remain readable (all v2
- * additions are optional); readers do not branch on the version today.
+ * Current on-disk record shape version. A single stamp written on every record;
+ * nothing reads or branches on it today (it is a cheap migration signal for the
+ * future). Pre-1.0 with no users, so there is only ONE shape - no compatibility
+ * path. Loop runs (the `consensus` tool) carry extra optional fields
+ * (per-opinion verdict/criticalIssues, synthesis, converged/confidence/rounds)
+ * that one-shot/ask-all runs simply omit.
  */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 1;
 /** Anchored id guard: rejects `../`, dots, slashes - no path traversal. */
 const ID_RE = /^[A-Za-z0-9-]+$/;
 /** Exact shape of a write temp file (`<id>.json.tmp.<pid>.<ms>`) - reaped if orphaned. */
@@ -48,8 +50,8 @@ const DEFAULT_MAX_AGE_DAYS = 30;
  * @property {string} provider
  * @property {string} [model]
  * @property {string} [text]
- * @property {(("APPROVE"|"REQUEST_CHANGES"|"REJECT")|null)} [verdict]  consensus-auto review verdict
- * @property {SessionCriticalIssue[]} [criticalIssues]  consensus-auto tagged issues
+ * @property {(("APPROVE"|"REQUEST_CHANGES"|"REJECT")|null)} [verdict]  consensus loop review verdict
+ * @property {SessionCriticalIssue[]} [criticalIssues]  consensus loop tagged issues
  */
 
 /**
@@ -82,19 +84,21 @@ const DEFAULT_MAX_AGE_DAYS = 30;
  * @property {(string|null)} parentId
  * @property {number} schemaVersion
  * @property {string} createdAt  ISO timestamp
- * @property {("consensus"|"ask-all"|"consensus-auto")} tool
+ * @property {("consensus"|"ask-all")} tool
  * @property {string} question
  * @property {(string|null)} [expert]
  * @property {(SessionFileRef[]|null)} [files]
  * @property {SessionOpinion[]} opinions
  * @property {(string|null)} [blindVerdict]
- * @property {(string|null)} [verdict]
+ * @property {(string|null)} [verdict]  loop verdict enum (APPROVE|REQUEST_CHANGES|REJECT); null in synthesize mode
+ * @property {(string|null)} [synthesis]  free-text arbiter synthesis (synthesizeAlways runs); null in loop mode
+ * @property {boolean} [synthesizeAlways]  the run was a one-pass synthesis, not the convergence loop
  * @property {(SessionArbiter|null)} [arbiter]
  * @property {string[]} [warnings]
  * @property {SessionAnnotation[]} [annotations]
- * @property {boolean} [converged]  consensus-auto: did the loop converge
- * @property {string} [confidence]  consensus-auto: final confidence (none|low|medium|high)
- * @property {number} [rounds]  consensus-auto: number of rounds the loop ran
+ * @property {boolean} [converged]  consensus loop: did the loop converge
+ * @property {string} [confidence]  consensus loop: final confidence (none|low|medium|high)
+ * @property {number} [rounds]  consensus loop: number of rounds the loop ran
  */
 
 /**
@@ -206,6 +210,7 @@ function sanitizeRecord(record) {
     });
   }
   if (record.verdict != null) out.verdict = capText(scrubSecrets(String(record.verdict)));
+  if (record.synthesis != null) out.synthesis = capText(scrubSecrets(String(record.synthesis)));
   if (record.blindVerdict != null) out.blindVerdict = capText(scrubSecrets(String(record.blindVerdict)));
   if (Array.isArray(record.files)) {
     out.files = record.files.map((f) => {

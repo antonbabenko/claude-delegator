@@ -520,7 +520,7 @@ validation in `server/openrouter/config.js`.
 ### consensus.maxRounds
 
 `consensus.maxRounds` is an optional positive integer (default `5`) that caps the
-server-side convergence loop used by the `consensus-auto` and `consensus-step` tools.
+server-side convergence loop used by the `consensus` and `consensus-step` tools (a per-call `maxRounds` overrides it).
 The loop ends `unresolved` once it hits the cap without converging.
 
 - **Range.** `1`..`50`. A value above `50` is clamped to `50` with a warning; a
@@ -705,24 +705,26 @@ surfaces.
   `-1` = unlimited). Orphaned `<id>.json.tmp.<pid>.<ts>` fragments older than an hour
   are also reaped.
 
-### Record shape (`schemaVersion: 2`)
+### Record shape (`schemaVersion: 1`)
 
 ```
-{ id, parentId|null, schemaVersion: 2, createdAt: <ISO>,
-  tool: "consensus"|"ask-all"|"consensus-auto", question, expert|null,
+{ id, parentId|null, schemaVersion: 1, createdAt: <ISO>,
+  tool: "consensus"|"ask-all", question, expert|null,
   files: [{ path|dir|file_id|file_url, mode? }]|null,   // attachment REFS, never bodies
   opinions: [{ provider, model, text,
-               verdict?, criticalIssues? }],            // verdict/criticalIssues on consensus-auto opinions
-  blindVerdict|null, verdict|null,
+               verdict?, criticalIssues? }],            // verdict/criticalIssues on consensus LOOP opinions
+  blindVerdict|null, verdict|null,                      // verdict = loop enum (null in synthesize mode)
+  synthesis?|null, synthesizeAlways?,                   // synthesis = free-text (synthesize runs)
   arbiter: { mode, provider }|null, warnings: [], annotations: [{ note, at }],
-  converged?, confidence?, rounds? }                    // consensus-auto loop summary
+  converged?, confidence?, rounds? }                    // consensus LOOP summary
 ```
 
-v2 is additive: v1 records (no `verdict`/`criticalIssues`/loop-summary fields) still read
-back fine - `readSession` returns the object as-is and callers treat the v2 fields as
-optional. The `verdict`/`criticalIssues` and `converged`/`confidence`/`rounds` fields are
-populated only for `consensus-auto` runs (the multi-round loop); one-shot `consensus` and
-`ask-all` records omit them.
+A single stamp - no dual-version support (pre-1.0, no users). `readSession` returns the
+object as-is and nothing branches on `schemaVersion`. The loop fields
+(`verdict`/`criticalIssues`/`converged`/`confidence`/`rounds`) are populated only for a
+`consensus` LOOP run; a `synthesizeAlways` run carries `synthesis` instead; `ask-all` omits
+all of them. (`tool` is `"consensus"` for both consensus modes; `synthesizeAlways` records
+the mode so `session-revisit` replays it.)
 
 Before writing, `scrubSecrets` redacts common key shapes (OpenAI `sk-`, OpenRouter
 `sk-or-`, xAI `xai-`, GitHub `gh[pousr]_`, AWS `AKIA`, Google `AIza`, and `Bearer`
@@ -740,11 +742,11 @@ Each takes its own input schema (no `prompt`), and reports
 | Tool | Input | Effect |
 |------|-------|--------|
 | `session-get` | `{ sessionId }` | Return the record, or a not-found message. Read-only. |
-| `session-revisit` | `{ sessionId, cwd? }` | Re-run the record's original question (and its file refs) with the CURRENT providers/config, write a CHILD record (`parentId` = original id), return the new `sessionId` + result. Re-run, not snapshot-replay. A `consensus-auto` record re-runs the full multi-round LOOP, not a one-shot pass. |
+| `session-revisit` | `{ sessionId, cwd? }` | Re-run the record's original question (and its file refs) with the CURRENT providers/config, write a CHILD record (`parentId` = original id), return the new `sessionId` + result. Re-run, not snapshot-replay. A `consensus` record replays its mode - the full multi-round LOOP, or the single synthesis pass. (Records written before the tool merge are unsupported - pre-1.0, no users.) |
 | `session-annotate` | `{ sessionId, note }` | Append `{ note, at }` to the record's audit trail and rewrite the file. |
 
-When `persist` is on, `consensus`, `ask-all`, and `consensus-auto` also include a top-level
-`sessionId` in their result.
+When `persist` is on, `consensus` and `ask-all` also include a top-level `sessionId` in
+their result.
 
 ## Customizing expert prompts
 

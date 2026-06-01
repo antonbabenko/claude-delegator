@@ -153,3 +153,16 @@ test("CS9: config consensus.maxRounds caps the step loop -> unresolved (engine o
   assert.ok(typeof rev2.finalReport === "string" && rev2.finalReport.includes("v3"));
   assert.equal(rev2.confidence, "none");
 });
+
+test("CS10: HOST is the arbiter - a host REQUEST_CHANGES blocks convergence even when every peer APPROVES", async () => {
+  // Regression for the consensus tool merge: consensus-step stays host-arbitrated.
+  // Peers all APPROVE, but the host's adjudication verdict gates the round.
+  const srv = buildServer({ providers: [approve("codex"), approve("grok")], getConfig: () => config });
+  const sid = (await step(srv, { action: "init", prompt: "ship it" }, 50)).sessionId;
+  await step(srv, { action: "record_blind", sessionId: sid, blindVerdict: "looks risky" }, 51);
+  const dp = await step(srv, { action: "dispatch_peers", sessionId: sid }, 52);
+  assert.ok(dp.opinions.every((o) => o.verdict === "APPROVE")); // peers approve
+  const adj = await step(srv, { action: "submit_adjudication", sessionId: sid, verdict: "REQUEST_CHANGES", decisions: [] }, 53);
+  assert.equal(adj.converged, undefined); // not converged - the host vote, not the peers, decides
+  assert.equal(adj.status, "await_revision");
+});
