@@ -254,7 +254,11 @@ function submitRevision(state, revisedPlan, diffSummary) {
   };
   const history = [...state.history, record];
   if (state.round >= state.maxRounds) {
-    return { ...state, history, status: "unresolved" };
+    // Cap reached: end unresolved. Still apply revisedPlan as currentPlan so the
+    // final report shows the host's LAST revision (authored in response to this
+    // round's dissent), not the stale plan that was reviewed. The reviewed plan is
+    // preserved in the just-pushed history record.
+    return { ...state, history, currentPlan: revisedPlan, status: "unresolved" };
   }
   return {
     ...state,

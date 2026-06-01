@@ -1,13 +1,24 @@
 ---
 name: consensus
-description: Arbiter-mediated consensus - GPT + Gemini + Grok (plus any configured OpenRouter delegates) review while Claude commits a blind verdict, adjudicates, and synthesizes. Converges only with cross-model agreement. Max 5 rounds.
-allowed-tools: mcp__deliberation__consensus, Read, Bash
+description: Arbiter-mediated consensus - GPT + Gemini + Grok (plus any configured OpenRouter delegates) review while Claude commits a blind verdict, adjudicates, and synthesizes. Converges only with cross-model agreement. Driven by the consensus-step engine.
+allowed-tools: mcp__deliberation__consensus-step
 timeout: 900000
 ---
 
-# Consensus (arbiter-mediated GPT + Gemini + Grok + OpenRouter + Claude convergence loop)
+# Consensus (arbiter-mediated convergence loop, driven by the core engine)
 
-Iterate up to 5 rounds. Each round refines the plan based on GPT + Gemini + Grok feedback. This is **arbiter-mediated consensus, not pure democracy**: the external models vote independently, but Claude (the orchestrator) authors the review prompt, adjudicates which critical issues are real, and rewrites the plan between rounds. To keep that power accountable, Claude commits a **blind verdict** before reading the reviewers (Round loop below), cannot reach consensus on its own vote alone (Convergence check below), and must show a reason for every dismissed issue. Stop when the convergence rule is met or when 5 rounds are exhausted.
+This command is a THIN DRIVER over the `mcp__deliberation__consensus-step` tool. The
+multi-round loop - round counting, the convergence rule, the max-rounds cap, and the
+round history - lives in the core state machine (`core/consensus-loop.js`), NOT in this
+prompt. The command's job is the three things only the host (Claude) can do as the
+arbiter: commit a **blind verdict** before seeing the panel, **adjudicate** which
+critical issues are real (with a reason for every dismissal), and **author the revised
+plan** between rounds.
+
+This is **arbiter-mediated consensus, not pure democracy**: the external models vote
+independently (the server fans out to them in `dispatch_peers`), but Claude commits its
+blind verdict first, cannot converge on its own vote alone (the engine requires a
+responding peer to APPROVE), and must show a reason for every dismissed issue.
 
 ## Input
 
@@ -18,7 +29,7 @@ Plan, design, spec, or proposal to refine: $ARGUMENTS
 - Refining a plan before execution
 - Stress-testing a design decision
 - Reaching consensus on a tradeoff
-- Any case where you want signed-off agreement, not just two parallel opinions
+- Any case where you want signed-off agreement, not just parallel opinions
 
 ## When NOT to use
 
@@ -26,384 +37,237 @@ Plan, design, spec, or proposal to refine: $ARGUMENTS
 - You only want parallel one-shot opinions without the convergence loop (use `/ask-all`)
 - Time-sensitive work - this loop can take several minutes
 
+## How the engine maps to this command
+
+`consensus-step` is one action per call; it holds the `LoopState` server-side by
+`sessionId` (ephemeral - lost on server restart / TTL). The status it returns tells you
+the next action:
+
+| Action | You supply | Engine returns | Next |
+|--------|-----------|----------------|------|
+| `init` | `prompt` (the plan), `expert`, `cwd` | `sessionId`, `status: await_blind`, `round`, `blindPrompt` | write blind, `record_blind` |
+| `record_blind` | `sessionId`, `blindVerdict` (your verdict text) | `status: await_peers` | `dispatch_peers` |
+| `dispatch_peers` | `sessionId` | `status: await_adjudication`, `opinions[]` (per-voice `{source, isError, verdict, criticalIssues}`) | adjudicate, `submit_adjudication` |
+| `submit_adjudication` | `sessionId`, `verdict`, `decisions[]` | `converged: true` + `finalReport` + `confidence`, OR `status: await_revision` | done, OR revise |
+| `submit_revision` | `sessionId`, `revisedPlan`, `diffSummary` | `status: await_blind` (next round), OR `status: unresolved` + `finalReport` (hit the cap) | next round, OR done |
+
+The engine injects the expert persona server-side from the `expert` key (no prompt-file
+read needed), authors the per-round blind/peer prompts, parses each reviewer's verdict +
+categorized critical issues, counts rounds, enforces the configurable max-rounds cap
+(`consensus.maxRounds`, default 5), evaluates convergence, and computes the confidence
+label. Do NOT re-implement any of that here.
+
 ## Workflow
 
 ### Setup (run once)
 
-1. Identify expert. Default is **Plan Reviewer**. Override only if `$ARGUMENTS` clearly maps to another role:
-   - Architecture / design tradeoffs → Architect
-   - Security / threat modeling → Security Analyst
-   - Code review of a concrete diff → Code Reviewer
-2. Read expert prompt ONCE via this resolution sequence:
-   1. Glob `~/.claude/plugins/cache/*/deliberation/*/prompts/[expert].md`. Pick the match with the highest semver version segment (the segment immediately after `deliberation/`, parsed as semver - not lexical string compare).
-   2. If no match, look up the inlined fallback under the heading `## Inlined fallback - [Expert]` in this command file (see end of this file).
-   3. If neither found, abort with: `Error: deliberation plugin cache missing for expert "[Expert]". Run /plugin install deliberation or /reload-plugins.`
+1. **Identify the expert key.** Default `plan-reviewer`. Override only if `$ARGUMENTS`
+   clearly maps to another role:
+   - Architecture / design tradeoffs -> `architect`
+   - Security / threat modeling -> `security-analyst`
+   - Code review of a concrete diff -> `code-reviewer`
 
-   Reuse the loaded contents across all rounds (pass it as `developerInstructions` to the consensus tool).
-3. **Set cwd**: use `process.cwd()` as the MCP `cwd` for every call; the server resolves each provider's working directory from it.
-4. Initialize state:
-   - `plan` = original `$ARGUMENTS`
-   - `round` = 0
-   - `history` = empty list of `{round, plan_diff_summary, claude_blind_verdict, gpt_verdict, gemini_verdict, grok_verdict, claude_decision, dismissals, cat_hits, parse_fallbacks, stage_2_status, stage_2_results, stage_2_shuffle}`
-     - `stage_2_status` is one of `fired` | `skip_no_div` | `skip_s1_quorum` | `skip_sandbox` | `err_quorum`.
-     - `stage_2_results` is `{matrix: {<reviewer-model-id>: {<answer-model-id>: {vote, category|null, reason}}}, accepted_nv_count, raw_nv_count}` when `stage_2_status == fired`; otherwise the reason string.
-     - `stage_2_shuffle` is `{<reviewer-model-id>: {A: <answer-model-id>, B?: <answer-model-id>}}` (operator-visible debug mapping; absent when Stage 2 did not fire).
-5. Print:
+   Pass this key verbatim as `expert`; the server injects the matching persona for the
+   PEER dispatch. There is no prompt-file Glob and no inlined fallback - the running MCP
+   server is the single source of truth for persona text. An unknown key does NOT error:
+   the server silently runs WITHOUT a persona (generic review), so use a key from the list
+   above. Also adopt the chosen expert's lens yourself when writing your blind verdict and
+   adjudicating (the engine's host prompts are generic; you supply the expert framing).
+2. **Set cwd**: use `process.cwd()` as the MCP `cwd` on `init` AND on `dispatch_peers`
+   (that is where peers actually run; the server reads `cwd` from the `dispatch_peers`
+   call, not from `init`). The other actions do not need it.
+3. Print:
    ```
-   /consensus: starting consensus loop (max 5 rounds, expert=[Expert])
+   /consensus: starting consensus loop (engine-driven, expert=[expert])
    ```
 
-6. **Load the expert prompt + status-block sources.** Run the expert-prompt `Glob` (step 2) and the round-1 status-block sources - `Read` `~/.codex/config.toml`, `Read` `~/.gemini/settings.json`, `Bash` `echo "$GROK_DEFAULT_MODEL" "$GROK_REASONING_EFFORT"` - to build the round-1 status block. Voting-panel selection (which built-ins are enabled, which OpenRouter aliases vote) is resolved server-side by `mcp__deliberation__consensus` on each round's call: the server applies `providers.*.enabled` and per-alias `consensus` eligibility from the live, hot-reloaded `config.json` itself. The command does not read `config.json` or list aliases, and never names an alias.
-   - The server returns the voting panel implicitly as the `opinions` array of each consensus call: one entry per dispatched voice, where `provider` is `codex`, `gemini`, `grok`, or `openrouter:<alias>`. The status block (step 4 of the round loop) is built from that array.
-   - The consensus panel is intentionally NOT bounded by a fanout cap. If the returned `opinions` array has > 3 voices, PRINT before continuing:
-     `Warning: N voting models x up to 5 rounds = significant token cost AND a stricter convergence bar (every responding voice must APPROVE).`
+### Init
 
-### Round loop (rounds 1..5)
+Call `consensus-step` with `action: "init"`:
+```
+mcp__deliberation__consensus-step({ action: "init", prompt: "$ARGUMENTS", expert: "[expert]", cwd: "[cwd]" })
+```
+It returns `sessionId`, `status: "await_blind"`, `round: 1`, and `blindPrompt`. Carry the
+`sessionId` through every later call. If it returns an `error` (e.g. `session-expired` on
+a later call), report it and stop - the in-memory state was lost; re-run from `init`.
 
-For each round R:
+### Round loop (driven by the returned status)
 
-1. **Print round header** before anything else this round:
+Repeat the following until a call returns `converged: true` or `status: "unresolved"`.
+The engine owns the round number and the cap; read `round` from each response - never
+assume a fixed count. **If any call returns an `error`** (e.g. `session-expired`,
+`unexpected-action-for-status`, or a no-reason dismissal), report it and stop - the
+in-memory `LoopState` for that `sessionId` may be gone, so recover by re-running from
+`init`.
+
+1. **Print the round header** using the returned `round`:
    ```
-   --- Round R/5 ---
+   --- Round R ---
    ```
 
-2. **Build identical review prompt** (7-section format per `~/.claude/rules/deliberation/delegation-format.md`). Include:
-   - **CURRENT PLAN** (full text of the latest revision)
-   - **ROUND METADATA**: round R of 5; if R > 1, attach the previous round's deltas (what was changed and why)
-   - **Round metadata is BOUNDED**: include the last 2 rounds verbatim; for any rounds older than that, include only a one-line summary of each (verdict + applied-change phrase). This prevents prompt-length growth across 5 rounds.
-   - **TASK**: review the plan for completeness, correctness, hidden assumptions, missing edge cases, and blockers
-   - **REVIEW MODE**: include the line `Review mode: strict` so the Plan Reviewer applies full four-criteria rigor. Consensus is a rigorous convergence loop, not a quick blocker check.
-   - **ISSUE CATEGORY TAXONOMY** (closed set, every critical issue picks exactly one):
-     - `security`    - auth, secrets, injection, data exposure, privilege boundary
-     - `correctness` - wrong behaviour, broken invariant, missing case, race condition
-     - `scope`       - undefined boundary, missing acceptance criteria, deliverable unclear
-     - `ambiguity`   - reference too vague to act on, contradictory steps, missing context
-     - `performance` - latency, throughput, resource use, scaling limit
-     - `ops`         - rollback, observability, deploy, migration, on-call surface
-   - **OUTPUT FORMAT** (strict, so parsing is deterministic):
-     ```
-     **Verdict**: APPROVE | REQUEST CHANGES | REJECT
-     **Critical issues** (must-fix; empty list = none):
-       - `[category]` issue description
-       - ...
-     **Recommendations** (nice-to-have; empty list = none): [bullets]
-     **One-line bottom line**: [single sentence]
-     ```
-     `[category]` MUST be exactly one of: `security`, `correctness`, `scope`, `ambiguity`, `performance`, `ops`. Reviewers that emit a critical issue without a category tag get that issue parsed as `ambiguity` by default, and the fallback is recorded in a NEW per-round field `history[R].parse_fallbacks` (an array of `{source, issue_excerpt, reason: "reviewer omitted category tag"}`). Do NOT write parse fallbacks into `history[R].dismissals`; that field is reserved for adjudicated dismiss/defer decisions and feeds the "Dismissed / deferred issues" section of the final report. Parse fallbacks surface separately as a one-line footnote under the Round history table.
-
-3. **Claude's BLIND verdict - EMIT BEFORE DISPATCHING**: in a message of its OWN, BEFORE the message that calls any MCP tool, Claude writes its own verdict in the strict OUTPUT FORMAT above using ONLY the review prompt from step 2 (it has not seen any reviewer output yet), and stores it verbatim in `history[R].claude_blind_verdict`. Print:
+2. **Commit the blind verdict BEFORE revealing the panel.** In a message of its OWN,
+   BEFORE the message that calls `record_blind`, Claude writes its own verdict from the
+   returned `blindPrompt` only (it has not seen any reviewer output). Use the strict
+   shape so it is comparable to the panel:
+   ```
+   **Verdict**: APPROVE | REQUEST CHANGES | REJECT
+   **Critical issues** (must-fix; empty = none):
+     - `[category]` issue
+   **One-line bottom line**: [single sentence]
+   ```
+   `[category]` is one of: `security`, `correctness`, `scope`, `ambiguity`,
+   `performance`, `ops`. Print:
    ```
    Claude blind (R{R}): APPROVE | REQUEST CHANGES | REJECT (N critical)
    ```
-   This is the orchestrator's PEER vote. Emitting it in an earlier message than the dispatch makes the pre-commitment visible in the transcript. Claude must NOT edit the blind verdict after seeing reviewers; it appears verbatim in the final report. (Claude's *adjudication* in step 7 is a separate, arbiter-role decision, recorded distinctly.)
+   Emitting it in an earlier message than `record_blind` makes the pre-commitment visible
+   in the transcript. Do NOT edit it after seeing the panel; it appears verbatim in the
+   final report.
 
-4. **Dispatch the round** - in the NEXT message, make ONE call to `mcp__deliberation__consensus` with the round-R prompt. The server selects the voting panel (enabled built-ins + eligible OpenRouter aliases) and fans out to all of them in parallel on fresh advisory threads. On **round 1 only**, print the delegate status block first (see "Report as you go" for the format), built from the returned `opinions` array, so the panel's models are visible; the panel is stable across rounds, so later rounds reuse the per-round status line only:
+3. **Record it** - in the NEXT message:
    ```
-   mcp__deliberation__consensus({
-     prompt: "[identical 7-section prompt for round R]",
-     expert: "[chosen expert]",
-     cwd: "[cwd]"
+   mcp__deliberation__consensus-step({ action: "record_blind", sessionId: "[sid]", blindVerdict: "[your full blind verdict text]" })
+   ```
+
+4. **Dispatch the panel** (pass `cwd` here - this is where the peers run):
+   ```
+   mcp__deliberation__consensus-step({ action: "dispatch_peers", sessionId: "[sid]", cwd: "[cwd]" })
+   ```
+   The server selects the voting panel (enabled built-ins + eligible OpenRouter delegates,
+   from the live hot-reloaded config) and fans out in parallel, then parses each reply.
+   It returns `opinions[]`: one `{ source, isError, errorKind?, verdict, criticalIssues }`
+   per voice. `source` is `codex`, `gemini`, `grok`, or `openrouter:<alias>`.
+   - On **round 1 only**, print the panel block (one line per voice from `opinions[]`):
+     ```
+     Consensus panel (round 1, typical 30-60s/round):
+       - codex                          (built-in)
+       - gemini                         (built-in)
+       - grok                           (built-in)
+       - openrouter:<alias>             (delegate)
+     ```
+     If `opinions[]` has > 3 voices, also print:
+     `Warning: N voting voices x up to maxRounds rounds = significant token cost AND a stricter convergence bar (every responding voice must APPROVE).`
+   - Print a status line per voice (`isError: true` -> ERRORED, excluded from the bar):
+     ```
+     codex (R{R}): APPROVE
+     gemini (R{R}): REQUEST CHANGES (3 critical)
+     grok (R{R}): ERRORED (missing-auth)
+     ```
+
+   **Repo-wide context (file-blind voices):** Grok and OpenRouter delegates see only what
+   the plan text names - they do not walk the filesystem. For a plan that asks reviewers
+   to verify against the repo (cross-file invariants, "audit this codebase",
+   architectural claims), embed the orientation context in the INITIAL plan text (the
+   `init` `prompt`): name 2-6 high-signal files (project `CLAUDE.md` / `AGENTS.md`,
+   entrypoints, the modules the plan touches) and summarize their load-bearing parts, so
+   the comparison is fair. Refresh it in a `submit_revision` `revisedPlan` only if the
+   plan's touch-set changes. Purely conceptual loops need no such context.
+
+5. **Adjudicate (the arbiter role).** Build the issue pool from every RESPONDING voice's
+   `criticalIssues` PLUS any critical issue from your own blind verdict. For EACH issue
+   record a decision WITH a one-line reason:
+   - `accept` - real problem; it will be fixed in the revision.
+   - `dismiss` - false positive or already handled; reason REQUIRED (this includes walking
+     back one of your OWN blind issues - that is a dismiss and needs a reason too).
+   - `defer` - real but out of scope for now; reason REQUIRED.
+
+   **No silent dismissal**: the engine THROWS if any `dismiss`/`defer` decision lacks a
+   `reason`, surfacing as a structured error - so always include one.
+   **Repeated-issue default**: if two or more sources raise substantially the same issue,
+   `accept` it unless you have a concrete factual reason to dismiss ("out of scope" alone
+   is not enough).
+
+   Your adjudicated `verdict` is `APPROVE` only if zero accepted critical issues remain.
+   Submit it:
+   ```
+   mcp__deliberation__consensus-step({
+     action: "submit_adjudication",
+     sessionId: "[sid]",
+     verdict: "APPROVE" | "REQUEST_CHANGES" | "REJECT",
+     decisions: [ { source, category, description, action: "accept"|"dismiss"|"defer", reason } ]
    })
    ```
+   - If the response has `converged: true`, the loop is done - go to Final output (use the
+     returned `finalReport` + `confidence`). The engine converges only when at least one
+     responding peer APPROVED, none REJECTED, zero accepted critical issues remain, and
+     your adjudicated verdict is APPROVE - so your APPROVE alone never converges.
+   - Otherwise `status` is `await_revision` - continue.
 
-   The tool returns `{ opinions: DelegationResult[], blindVerdict: DelegationResult | null, verdict: DelegationResult | null, arbiter, warnings, error? }`.
-   - `opinions` is the cross-review panel: one `{ provider, model, text?, isError, errorKind?, ms }` per dispatched voice, where `provider` is `codex`, `gemini`, `grok`, or `openrouter:<alias>`. These are the independent external votes for this round.
-   - **Claude Code runs with `consensus.arbiter: "host"`** (host = Claude is the arbiter). In host mode the server does NOT run a server-side arbiter pass: `verdict` is always `null` and `arbiter` is `{ mode: "host" }`. Claude is the real arbiter in this command - it reads the `opinions` array, runs its own blind verdict and adjudication (steps 3 and 7 below), and authors the converged plan. Do not expect or surface a server `verdict` in host mode.
-   - **`blindVerdict` is always `null` in host mode.** The server runs no blind pass here, so the server-side `consensus.blindVote` option only yields a `blindVerdict` for non-host (concrete-arbiter) hosts. It is distinct from Claude's OWN blind verdict (step 3 below), which is command-driven and always applies.
-   - If `error` is `"all-providers-failed"`, every voice errored this round: no responding external, so the round CANNOT converge (see step 8). Handle it with the all-unavailable path described in the Stability rules.
-
-   **Repo-wide context (file-blind voices):** the server fans out to advisory voices,
-   some of which (notably Grok and OpenRouter aliases) see ONLY what the `prompt` names -
-   they do not walk the filesystem. For any plan that asks reviewers to verify against the
-   repo (cross-file invariants, "audit this codebase", architectural claims), embed the
-   orientation context directly in the round-R `prompt` so the comparison stays fair:
-   name 2-6 high-signal files (project `CLAUDE.md` / `AGENTS.md` if present, top-level
-   entrypoints, the modules the plan touches) and paste or summarize their load-bearing
-   parts. Fallback when `CLAUDE.md`/`AGENTS.md` is absent: substitute `README.md`, then
-   the top-level entrypoint inferred from project type. Keep this context stable
-   round-over-round, but refresh it when iterative refinement changes which modules the
-   plan touches (record the change in `history[R].dismissals` with reason
-   `"context updated: plan touch-set changed"`). For purely conceptual consensus loops (no
-   repo files relevant to the plan), no orientation context is needed.
-
-5. **Stream short status as each return arrives**. Do not wait until all are back to print anything. Mark a provider that returned an MCP error or `result.isError` as ERRORED. Examples:
+6. **Revise the plan.** Address every `accept`-ed issue; be explicit about what changed
+   and what you deliberately did not change. Submit:
    ```
-   GPT (R{R}): APPROVE
-   Gemini (R{R}): REQUEST CHANGES (3 critical)
-   Grok (R{R}): ERRORED (provider error: missing-auth)
+   mcp__deliberation__consensus-step({ action: "submit_revision", sessionId: "[sid]", revisedPlan: "[full revised plan]", diffSummary: "[one line of what changed]" })
    ```
-
-6. **Stage 2 (blind cross-review, conditional)** - inserted between Stage 1 returns and arbiter adjudication. Stage 2 is **decision input only**: Stage 2 errors or skips never block convergence (the convergence rule in step 8 is unchanged).
-
-   **6a. Trigger check (deterministic).** Stage 2 fires iff EITHER:
-   - This is Round 1 (R == 1), OR
-   - Any responding external in the current round's Stage 1 returned non-APPR (REQUEST CHANGES or REJECT), OR
-   - The most recent prior Stage 2 that **fired with quorum AND completed arbiter adjudication** had >=1 ACCEPTED not-viable issue (lookback condition).
-
-   `SKIPPED` and `ERRORED` Stage 2 rounds do NOT reset the lookback. Only quorum-successful Stage 2 rounds with completed adjudication count as the lookback anchor (prevents partial-round reads).
-
-   If `/consensus` was invoked with `sandbox: workspace-write`, set `history[R].stage_2_status = "skip_sandbox"` and SKIP the rest of step 6 (Stage 2 is incompatible with the implementation path - anonymization leaks through patch style).
-
-   If the trigger condition is not met, set `history[R].stage_2_status = "skip_no_div"` and SKIP the rest of step 6.
-
-   **6b. Quorum check.** Stage 2 requires Stage 1 to have at least 2 responding externals. Count the externals whose Stage 1 verdict in step 5 was NOT `ERRORED`:
-   - If count < 2: set `history[R].stage_2_status = "skip_s1_quorum"` and SKIP the rest of step 6.
-   - If count == 2: 2-reviewer panel; both must respond in step 6d to count as quorum.
-   - If count == 3: 3-reviewer panel; quorum requires >=2 reviewers to respond in step 6d.
-
-   **6c. Anonymize and build the fan-out bundle.** For each Stage 1 responding external (the answer pool):
-   - Strip identity tells (best-effort): remove leading "As <Provider>, ..." preambles, normalize trailing whitespace, drop self-reference phrases. Do NOT touch the body content beyond preamble normalization.
-   - Each reviewer in the panel sees the OTHER (N-1) answers, with positions independently randomized per reviewer (so the same underlying answer may be `Response A` to one reviewer and `Response B` to another in the 3-reviewer case).
-   - Build and record `history[R].stage_2_shuffle` = `{<reviewer-model-id>: {A: <answer-model-id>, B?: <answer-model-id>}}`. This is operator-visible debug observability; reviewers do NOT receive this mapping.
-   - Reviewers receive only the original `$ARGUMENTS` (the user's request), the current plan revision (with a 1-line indicator: "Plan is round R revision"), and the anonymized peer answers. NO Stage 1 verdict metadata, NO full round history, NO dismissals from prior rounds.
-
-   **6d. Parallel dispatch to the panel.** One MCP call per reviewer, all dispatched in a single message with N parallel tool blocks. Reuse the existing expert `developer-instructions` (the same one Stage 1 used this round; do NOT swap experts). Each reviewer call uses a tighter 5-section Stage 2 prompt body:
-
-   ```
-   TASK: Score the anonymized peer answers below as viable or not-viable on substance, relative to the user's original request. Do NOT review your own answer (it is excluded).
-
-   INPUT:
-   - ORIGINAL USER REQUEST: [verbatim $ARGUMENTS to /consensus]
-   - Current plan (round R revision): [full current plan text]
-   - Anonymized peer answers:
-     Response A:
-     [anonymized answer body]
-     [Response B:
-     [anonymized answer body]]
-   - Scoring guidance: when judging viability, use the same closed taxonomy `/consensus` uses for issue categories: security | correctness | scope | ambiguity | performance | ops. For not-viable votes, select exactly one category.
-
-   OUTPUT FORMAT (strict):
-   Response A: viable - [one-line reason]            (if viable)
-   Response A: not-viable - [category] - [one-line reason]   (if not-viable)
-   [Response B: viable - [one-line reason]           (if viable)
-    Response B: not-viable - [category] - [one-line reason]  (if not-viable)]
-   Bottom line: [single sentence]
-
-   CONSTRAINTS:
-   - Score substance, ignore style. Anonymization is best-effort; do not try to deanonymize.
-   - Category is REQUIRED for not-viable; OMITTED for viable.
-   - `[category]` MUST be exactly one of: security, correctness, scope, ambiguity, performance, ops.
-   ```
-
-   Print a status line as each reviewer returns:
-   ```
-   Stage 2 [Provider] (R{R}): 0 NV | 1 NV | 2 NV | ERRORED
-   ```
-   where the NV count is the number of not-viable votes that reviewer cast.
-
-   **6e. Reviewer quorum re-check.** Count Stage 2 reviewers that returned without error:
-   - 3-reviewer panel: <2 responding -> set `history[R].stage_2_status = "err_quorum"`; no Stage 2 issues added this round.
-   - 2-reviewer panel: <2 responding (i.e., either errored) -> set `history[R].stage_2_status = "err_quorum"`; no Stage 2 issues added this round.
-   - If >=2 reviewers errored in this round, wait 1-2s before the next round dispatch (multi-error backoff; mirrors step 9's existing rule for Stage 1).
-
-   If quorum passes, set `history[R].stage_2_status = "fired"`.
-
-   **6f. Parse each reviewer's output, case-insensitive and bracket-tolerant.** For each response line:
-   - Accept both `[security]` and `security` for the category. Lowercase normalize before matching against the 6-cat enum.
-   - If the category is omitted on a not-viable vote OR not in the 6-cat enum, fall back to `ambiguity` and append `{source: "Stage 2: <reviewer-model-id> on <answer-position>", issue_excerpt: <one-line reason>, reason: "Stage 2: omitted/invalid category"}` to `history[R].parse_fallbacks` (same array Stage 1 already uses).
-
-   **6g. Build candidate critical issues from not-viable votes.** For each `Response X: not-viable - [category] - [reason]` from a reviewer:
-   - Resolve the answer-model-id via `history[R].stage_2_shuffle[<reviewer-model-id>][X]`.
-   - Construct candidate issue: `[Stage 2: <reviewer-model-id> on <answer-model-id>] [category] [one-line reason]`.
-   - Compute the weight tag: in the 3-reviewer panel, each answer is seen by exactly 2 reviewers, so weight is `(N of 2)` where N is the count of those 2 reviewers that marked the answer not-viable. In the 2-reviewer panel, each answer is seen by 1 reviewer; weight is `(1 of 1)` or `(0 of 1)`.
-   - Append every constructed candidate issue to `history[R].stage_2_results.matrix` AND to the pool of issues passed to step 7 (Adjudicate) below. The category goes through cat_hits the same way Stage 1 categories do.
-
-   Store the final structure: `history[R].stage_2_results = {matrix, accepted_nv_count: <to_be_filled_in_step_7>, raw_nv_count: <count_of_all_not_viable_votes_this_round>}`.
-
-7. **Adjudicate (arbiter role) - reconcile issues against the blind verdict**:
-   - From each RESPONDING Stage 1 reviewer, extract `Verdict`, `Critical issues`, `Recommendations`. An ERRORED provider is excluded (see Convergence check); it contributes no verdict and no Stage 1 issues.
-   - In ADDITION to Stage 1 issues, include any Stage 2 candidate issues from step 6g (when Stage 2 fired with quorum). Each Stage 2 candidate issue is a normal `{source, category, description}` entry where `source` is the string `"Stage 2: <reviewer-model-id> on <answer-model-id>"` and includes its weight tag `(N of M reviewers WHO SAW THIS ANSWER marked it not-viable)` appended to the description. Stage 2 issues participate in dismiss/accept/defer the same way Stage 1 issues do.
-   - For each critical issue - whether raised by a reviewer OR by Claude's own blind verdict - record a decision WITH a one-line reason: `accept` (real problem, fix), `dismiss` (false positive - reason REQUIRED), or `defer` (out of scope - reason REQUIRED). Append every `dismiss`/`defer` to `history[R].dismissals`. **This includes Claude walking back one of its own blind critical issues** - that is a `dismiss` and needs a recorded reason too.
-   - **Repeated-issue default**: if two or more sources (reviewers, or a reviewer plus Claude's blind verdict) raise substantially the same critical issue, `accept` it by default; only `dismiss` with a concrete factual reason ("out of scope" alone is not enough).
-   - **Category overlap signal**: after extracting categories from every responding Stage 1 reviewer, every Stage 2 candidate issue (when Stage 2 fired), plus Claude's blind verdict, build a `{category: source_count}` map counting how many DISTINCT sources raised at least one critical issue in each category. Store as `history[R].cat_hits`. Any category with `source_count >= 2` is a cross-source category hit and surfaces in the Round history table's `Cat hits` column. Cell format: comma-separated `category x<source_count>` entries, ordered by source_count descending then category name ascending; render `-` if no category reached the 2+ threshold. Example cell: `security x4, ops x2`. This is a reporting-only signal; it does not change the convergence rule.
-   - Claude's adjudicated verdict is APPROVE if and only if zero accepted critical issues remain anywhere (reviewers or Claude's blind verdict).
-   - After dismiss/accept/defer is complete: count how many Stage 2-source candidate issues were `accept`-ed this round and write the count back to `history[R].stage_2_results.accepted_nv_count`. The lookback condition in step 6a's trigger uses this count, NOT the raw not-viable vote count.
-
-8. **Convergence check** - the loop CONVERGES only when ALL of these hold:
-   - At least one external reviewer RESPONDED this round (not all errored), AND
-   - Every RESPONDING external returned APPROVE (ERRORED providers are excluded from the bar - not counted as APPROVE or as REQUEST CHANGES), AND
-   - No responding reviewer returned REJECT, AND
-   - Zero accepted critical issues remain (from any reviewer or from Claude's blind verdict), AND
-   - Claude's adjudicated verdict == APPROVE.
-   A round in which ALL externals errored has no responding external and therefore CANNOT converge. If any responding reviewer returned REJECT, the result may NOT be labelled "consensus" even at round 5.
-   "Externals" here means every responding enabled built-in (GPT/Gemini/Grok) AND every
-   responding OpenRouter voting-panel delegate. Each is one voice; ERRORED voices are
-   excluded from the bar.
-
-9. **If not converged**:
-   - Compile the union of `accept`-ed critical issues from all responding reviewers plus any Claude found.
-   - Revise the plan to address them. Be explicit about what changed and what was deliberately not changed.
-   - Record this round in `history` with: Claude blind verdict, GPT/Gemini/Grok and each OpenRouter delegate verdict (or ERRORED), Claude's per-issue decisions + reasons, the diff summary applied to the plan.
-   - Print the revised plan ONLY if it has changed materially (don't spam on small wording tweaks).
-   - Continue to round R+1.
-   - **Backoff after multi error**: if MORE THAN ONE provider errored in round R, wait 1-2 seconds before dispatching round R+1 to let transient API hiccups clear.
-
-10. **If round R == 5 and still not converged**:
-   - Emit the final state with residual disagreements clearly labeled. Do not pretend convergence.
-   - Note which side (Claude blind, GPT, Gemini, or Grok) holds out on which issues.
-
-### Convergence confidence label
-
-Derive a one-word confidence label from the number of rounds the loop took to converge. The label appears in the Final output's outcome line. A plan that converges in round 1 is a stronger signal than a plan that needed every round to settle.
-
-- `high`   - converged in round 1
-- `medium` - converged in round 2 or 3
-- `low`    - converged in round 4 or 5
-- `none`   - UNRESOLVED after 5 rounds (no convergence to grade)
-
-This is a copy-only signal: it is computed at the end from `round`, does not affect the convergence rule itself, and never inflates an UNRESOLVED outcome into a converged one.
+   - If the response has `status: "unresolved"`, the engine hit the max-rounds cap - the
+     loop is done (UNRESOLVED). Go to Final output with the returned `finalReport`.
+   - Otherwise `status` is `await_blind` for the next round - loop back to step 1 with the
+     new `round`. Print revised plans only when they change materially.
 
 ### Final output
+
+Synthesize from the engine's terminal response (`finalReport`, `confidence`, the round
+count) plus the adjudication decisions you recorded across the loop. Never paste raw
+reviewer text.
 
 ```
 ## /consensus result
 
-**Mode**: arbiter-mediated consensus (external models vote; Claude adjudicates + synthesizes)
-**Outcome**: CONVERGED in N rounds (confidence: high|medium|low) | UNRESOLVED after 5 rounds (confidence: none)
+**Mode**: arbiter-mediated consensus (external voices vote; Claude adjudicates + synthesizes; engine-driven loop)
+**Outcome**: CONVERGED in N rounds (confidence: high|medium|low) | UNRESOLVED after N rounds (confidence: none)
 **Final plan**:
-[full converged plan, or last revision]
+[the engine's finalReport plan, or last revision]
 
-**Round history** (CB = Claude blind verdict; reviewer cols use APPR/RC/REJ or ERR; Adj = Claude adjudicated; S2 = Stage 2 status; Cat hits = categories raised by 2+ sources this round):
-| Round | CB   | GPT  | Gemini | Grok | Adj  | S2                | Cat hits                | Changes applied |
-| 1     | RC   | RC   | RC     | RC   | RC   | fired (2 NV)      | security x4, ops x2     | added rollback step, clarified ownership |
-| 2     | RC   | RC   | APPR   | ERR  | RC   | fired (1 NV)      | correctness x2          | tightened error handling on step 3 |
-| 3     | APPR | APPR | APPR   | ERR  | APPR | skip (no div)     | -                       | - (Grok unconfigured; converged on responding externals) |
-
-S2 column cell values:
-- `fired (N NV)` - Stage 2 ran with quorum, surfaced N not-viable votes (raw count across all reviewers).
-- `skip (no div)` - Stage 2 skipped because Stage 1 had no non-APPR verdicts AND the lookback condition was false.
-- `skip (S1 quorum)` - Stage 2 skipped because fewer than 2 Stage 1 externals responded.
-- `skip (sandbox)` - Stage 2 skipped because /consensus was invoked with `sandbox: workspace-write`.
-- `ERR (quorum)` - Stage 2 reviewers below quorum (<2 responses).
-
-**Stage 2 shuffle mapping** (operator debug - per round, per reviewer; shows which `Response A`/`Response B` corresponded to which model in Stage 2):
-- [R{n}] {reviewer-model-id}: A = {answer-model-id}, B = {answer-model-id}
-- [R{n}] {reviewer-model-id}: A = {answer-model-id}     <- 2-responder panel
-- ...
-
-If Stage 2 did not fire in any round, render `**Stage 2 shuffle mapping**: none.`
-
-**Parse fallbacks** (reviewers that omitted a category tag; auto-parsed as `ambiguity`):
-- [R{n}] {source}: "{issue excerpt}" - reason: reviewer omitted category tag
-
-If there were zero fallbacks across the whole loop, render `**Parse fallbacks**: none.`
+**Round history** (CB = Claude blind; voice cols use APPR/RC/REJ or ERR; Adj = Claude adjudicated):
+| Round | CB   | codex | gemini | grok | <delegates> | Adj  | Changes applied |
+| 1     | RC   | RC    | RC     | RC   | RC          | RC   | added rollback step, clarified ownership |
+| 2     | APPR | APPR  | APPR   | ERR  | APPR        | APPR | - (converged on responding voices) |
 
 **Dismissed / deferred issues** (every dismiss/defer, with reason - no silent dismissal; includes Claude walking back its own blind issues):
 - [R{n}] {source} raised "{issue}" -> dismissed: {one-line reason}
 - [R{n}] {source} raised "{issue}" -> deferred (out of scope): {one-line reason}
 
-**Residual disagreements** (if any):
-- GPT (held out on R5): [issue + reason Claude dismissed it]
+**Residual disagreements** (if any, on an UNRESOLVED outcome):
+- {source} (held out on the final round): {issue + why it stayed open}
 ```
 
 ## Stability rules
 
-- **One call per round, server fans out** - a single `mcp__deliberation__consensus` call per round replaces N parallel provider calls. The server dispatches the panel concurrently, so the host harness cannot stagger them.
-- **Selection is server-side** - the server picks the voting panel (enabled built-ins + eligible OpenRouter aliases) from the live `config.json` on each call. The command never reads `config.json`, never lists aliases, and never names an alias. A model's `consensus` flag hot-reloads, so each round reflects the current config.
-- **Single-shot per round** - one tool call per round; the server starts a fresh advisory thread per voice. Cross-round state lives in the prompt body, not in provider memory. Avoids contamination if one voice went off track.
-- **`cwd`** - use `process.cwd()` (Setup step 3); the server resolves each provider's working directory from it.
-- **Provider failure does not kill the loop** - the server isolates failures: a voice that errors comes back in `opinions` with `isError: true` (mark it ERRORED), and is EXCLUDED from the convergence bar for that round (neither APPROVE nor REQUEST CHANGES). The loop still converges when every responding external and Claude APPROVE and at least one external responded. If `error: "all-providers-failed"`, no external responded, so that round cannot converge.
-- **Claude cannot self-approve into consensus** - convergence requires every responding external to APPROVE and at least one external to respond; Claude's APPROVE alone never converges. Claude's blind verdict is a peer vote; its adjudication is a separate, accountable role. In host mode the server returns no `verdict` (it is `null`), so Claude's adjudication over the `opinions` array is always the binding result.
-- **No silent dismissal** - every `dismiss`/`defer` of a critical issue (from a reviewer OR from Claude's own blind verdict) carries a one-line reason that appears in the final report. Repeated cross-source issues are accepted by default.
-- **Hard cap at 5 rounds** - even if one reviewer is being stubborn, terminate. Diverging too many rounds usually means the plan has an unresolved ambiguity, not that the reviewer is wrong.
-- **Report as you go** - after the round-1 `mcp__deliberation__consensus` call returns, print a per-delegate status block (one line per voting member: provider, model, reasoning effort), then print a status line for each round. Long silences look like a hang. Source every line from the returned `opinions` array: the `provider` label and its `model`. Reasoning effort is not carried in the result, so print `n/a` in that column. Print `unknown` for any field missing from a result; never invent a value. The panel is stable across rounds, so print the full block once (round 1) and a short per-round status line thereafter. Example:
-  ```
-  Consensus panel (round 1, typical 30-60s/round):
-    - Codex (GPT)                   gpt-5.5                       reasoning: n/a
-    - Gemini                        auto-gemini-3                 reasoning: n/a
-    - Grok (xAI)                    grok-4.3                      reasoning: n/a
-    - OpenRouter / kimi-k2-thinking moonshotai/kimi-k2-thinking   reasoning: n/a
-  ```
-- **Synthesize, never paste raw** - reviewers' raw output never appears verbatim in the final report.
-- **Stage 2 is decision input only** - Stage 2 fires conditionally (step 6); its candidate issues feed step 7's existing adjudication. Stage 2 status (`fired`/`skipped`/`errored`) does NOT participate in the convergence rule. The convergence rule in step 8 reads only Stage 1 verdicts + Claude's adjudication + accepted critical issues (from any source, Stage 1 or Stage 2 alike).
-- **Stage 2 anonymization is best-effort** - identity stripping removes preambles and self-references but model house styles may still leak. Reviewers are explicitly instructed to score substance and ignore style. The operator-visible shuffle mapping in the final report records ground truth for post-hoc audit.
-- **Stage 2 skips on workspace-write sandbox** - when `/consensus` is invoked with `sandbox: workspace-write` (Claude making code changes via consensus), step 6 sets `stage_2_status = "skip_sandbox"` and skips the entire Stage 2 sub-loop. Anonymization leaks too much on patches. Plan reviews that merely CONTAIN embedded diff text as prose still run Stage 2.
-- **Stage 2 cross-review covers the built-in externals only (v1)** - OpenRouter voting delegates count as voices in Stage 1 verdicts and in the convergence bar, but they do NOT enter the Stage 2 anonymization pool and are not dispatched as Stage 2 reviewers. When Stage 2 step 6b counts "Stage 1 responding externals" for quorum, count only the built-ins (GPT/Gemini/Grok). This is intentional for v1.
+- **The engine owns the loop** - round counting, the convergence rule, the max-rounds cap
+  (`consensus.maxRounds`, default 5, configurable), the bounded round history, and the
+  confidence label all live in `core/consensus-loop.js`. This command never re-implements
+  them; it reads `round`/`status`/`converged`/`finalReport` from each response.
+- **One action per call, state by `sessionId`** - carry the `sessionId` from `init`
+  through every later call. The store is in-memory and ephemeral: a `session-expired`
+  error means restart from `init`.
+- **Blind pre-commitment is visible** - emit the blind verdict in a message BEFORE the
+  `record_blind` call. The engine gates the panel reveal on `record_blind`, so peers
+  cannot be dispatched until the blind verdict is in.
+- **Claude cannot self-approve into consensus** - the engine requires a responding peer to
+  APPROVE (and none to REJECT, and zero accepted critical issues) on top of your APPROVE.
+- **No silent dismissal** - every `dismiss`/`defer` decision carries a `reason` or the
+  engine rejects the adjudication. Repeated cross-source issues are accepted by default.
+- **Persona is server-side** - pass the `expert` KEY; the server injects the persona.
+  There is no prompt-file Glob and no inlined fallback in this command.
+- **`cwd`** - pass `process.cwd()` on `init` AND on `dispatch_peers`; the server reads it
+  from the `dispatch_peers` call (where the peers run) to resolve each provider's working
+  directory. init's `cwd` is not carried forward to the fan-out.
+- **Synthesize, never paste raw** - reviewer output never appears verbatim in the report.
+- **Report as you go** - print the round header, the blind line, the panel block (round 1),
+  and a per-voice status line each round. Long silences look like a hang.
 
 ## Heuristics for Claude's per-issue decisions
 
-- **accept**: reviewer found a real gap or risk that the plan does not cover. Update the plan.
-- **dismiss**: a source (reviewer or Claude's own blind verdict) flagged something that the plan already addresses, or that is genuinely out of scope, or that is theoretical (e.g., "what if the disk fails mid-write" on a non-critical caching plan). Record the dismissal reason in `history` AND surface it in the final report's "Dismissed / deferred issues" section - never dismiss silently.
-- **defer**: reviewer is right but the issue is for a future phase. Add to plan's `Out of scope` section explicitly so the next round doesn't re-flag it.
+- **accept**: a real gap or risk the plan does not cover. Fix it in the revision.
+- **dismiss**: already addressed, genuinely out of scope, or theoretical (e.g. "what if
+  the disk fails mid-write" on a non-critical caching plan). Reason REQUIRED; it appears
+  in the final report.
+- **defer**: right, but for a future phase. Put it in the revised plan's `Out of scope`
+  section so the next round does not re-flag it.
 
-When Claude dismisses or defers an issue, the next round's prompt should include:
-```
-PREVIOUSLY DISMISSED (do not re-raise unless you have new information):
-- [issue]: [reason for dismissal]
-```
+## Note: Stage 2 blind cross-review
 
-This prevents oscillation between rounds.
-
-<!-- DO NOT DELETE: required fallback if plugin cache missing. See C1 in implementation plan. -->
-
-## Inlined fallback - Plan Reviewer
-
-> Adapted from [oh-my-opencode](https://github.com/code-yeongyu/oh-my-opencode) by [@code-yeongyu](https://github.com/code-yeongyu)
-
-You are a work plan reviewer. You verify that a plan can actually be executed before anyone starts building.
-
-## Context
-
-You review a plan passed inline in the request. You are an advisory reviewer: you cannot open the files the plan references, so judge whether references are named precisely enough to be found (exact path, function, doc section), not whether they exist on disk. Each review is standalone. You have only the context supplied.
-
-## Modes
-
-**Default - Blocker-only (approval bias):** You answer ONE question: "Can a capable developer execute this plan without getting stuck?" Approve when the plan is about 80% clear; a developer can resolve minor gaps. When in doubt, APPROVE.
-
-**Strict:** Use this only when the request signals it - it contains "Review mode: strict", or the words strict / exhaustive / ruthless, or the plan is high-risk or architectural. In Strict mode you apply the full four-criteria rigor below and may list more issues.
-
-## Default mode
-
-**Non-goals (do NOT check):** whether the approach is optimal, whether there is a better way, every edge case, code style, performance, or security unless plainly broken. You are a blocker-finder, not a perfectionist.
-
-**You DO check:**
-- References are named precisely enough to act on.
-- Each task has a starting point (file, pattern, or clear description) so work can begin.
-- No contradictions that make the plan impossible to follow.
-- Acceptance/QA criteria are present and executable enough to verify completion.
-
-**Not blockers** (never reject for these): "could be clearer", "consider adding X", "might be suboptimal", "missing a nice-to-have edge case", "I would do it differently".
-
-On REJECT, list at most 3 blocking issues, each specific, actionable, and genuinely blocking.
-
-## Strict mode
-
-Apply four criteria:
-
-1. **Clarity of Work Content**: does each task say WHERE to find implementation details? Can a developer reach 90%+ confidence from the referenced source?
-2. **Verification and Acceptance Criteria**: is there a concrete, measurable way to verify completion?
-3. **Context Completeness**: what missing information would cause 10%+ uncertainty? Are implicit assumptions stated?
-4. **Big Picture and Workflow**: clear purpose, current-state background, task dependencies, and a definition of done.
-
-In Strict mode, list the top 3-5 improvements on REJECT.
-
-## Response Format
-
-**[APPROVE / REJECT]**
-
-**Justification**: concise explanation of the verdict.
-
-**Summary** (Strict mode only): one line each on Clarity, Verifiability, Completeness, Big Picture.
-
-**Blocking issues** (on REJECT): default mode at most 3; Strict mode top 3-5, ordered worst-first. Each: specific location + what needs to change.
-
-`<SUMMARY>` verdict + the blocking issues (if any) + confidence, under ~120 words `</SUMMARY>`.
-
-## Modes of Operation
-
-**Advisory Mode** (default): Review and return the verdict above.
-
-**Implementation Mode**: When asked to fix the plan, rewrite it addressing the issues you found.
-
-## When to Invoke Plan Reviewer
-
-- Before starting significant implementation work
-- After creating a work plan
-- When a plan needs validation for completeness
-- Before delegating work to other agents
-
-## When NOT to Invoke Plan Reviewer
-
-- Simple, single-task requests
-- When the user explicitly wants to skip review
-- For trivial plans that do not need formal review
+Earlier revisions of this command ran a "Stage 2" anonymized peer cross-review as a
+host-side step. It is intentionally NOT part of this engine-driven driver: the core loop
+(`consensus-step`) has no Stage 2 model, and keeping it here would re-introduce the prose
+reimplementation this rewrite removes. If anonymized cross-review proves valuable, it
+should return as an engine feature (a `consensus-step` action), not as command prose.
