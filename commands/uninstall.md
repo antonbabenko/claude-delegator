@@ -24,6 +24,10 @@ If cancelled, stop here.
 
 > Run the block below as ONE Bash call. Do NOT split it, and do NOT batch it with any other tool
 > call. Every removal is tolerant of absence (no error if already gone).
+>
+> **Run it with the Bash sandbox DISABLED.** It writes `~/.claude.json` (MCP removal) and deletes
+> under `~/.claude/`; a sandbox blocks those and the servers stay registered. The block verifies
+> the removal at the end and prints a `CRITICAL` line if any `deliberation*` entry survives.
 
 It removes the namespaced `deliberation-*` servers, the unified `deliberation` server, the rules
 dir, the Grok cache dir, and only the aliases that are byte-identical to the bundled commands (a
@@ -88,6 +92,14 @@ echo "Aliases removed:${removed:- none}"
 [ -n "$kept" ] && echo "Aliases left untouched (differ from bundled / user-authored):$kept"
 
 echo
+# --- verify the removals landed (catches silent sandbox write failures on ~/.claude.json) ---
+LEFT="$(node -e 'const fs=require("fs"),h=require("os").homedir();try{const j=JSON.parse(fs.readFileSync(h+"/.claude.json","utf8"));const m=j.mcpServers||{};process.stdout.write(Object.keys(m).filter(k=>k==="deliberation"||k.indexOf("deliberation-")===0).join(" "))}catch(e){process.stdout.write("")}')"
+if [ -n "$LEFT" ]; then
+  echo "CRITICAL: these MCP entries still remain: $LEFT"
+  echo "A Bash sandbox likely blocked the write to ~/.claude.json. Re-run /deliberation:uninstall"
+  echo "with the sandbox DISABLED (see /sandbox)."
+  echo
+fi
 echo "Uninstall complete. Restart Claude Code so the removed MCP servers drop from the session."
 echo "To reinstall: /deliberation:setup"
 ```
