@@ -58,19 +58,21 @@ The multi-round convergence loop lives in `core/consensus-loop.js` as a pure sta
 (`init -> await_blind -> await_peers -> await_adjudication -> converged|await_revision -> ...`),
 shared by two drivers so there is ONE rules layer, not a Claude copy and a non-Claude copy:
 
-- **`consensus-auto`** (MCP tool) - runs the whole loop server-side in one call with a CONCRETE
-  provider arbiter (`core/orchestrate.js runToConvergence`). For non-Claude hosts that want the loop
-  without driving it.
+- **`consensus`** (MCP tool) - runs the whole loop server-side in one call with a CONCRETE
+  provider arbiter (`core/orchestrate.js runToConvergence`). `maxRounds` overrides the config cap;
+  `synthesizeAlways:true` runs a SINGLE arbiter synthesis pass instead of the loop (free-text
+  `synthesis`, for open questions) - one unified tool, one return envelope (split `verdict`/`synthesis`,
+  loop-only fields nullable). For non-Claude hosts that want the loop without driving it.
 - **`consensus-step`** (MCP tool) - the host model (Claude) is the arbiter and drives ONE action per
   call (`init / record_blind / dispatch_peers / submit_adjudication / submit_revision`); `LoopState`
   is held server-side in the ephemeral `loop-store` by `sessionId`. The live `/consensus` slash command
   (`commands/consensus.md`) is a THIN DRIVER over this tool - the loop mechanics are in the engine, not
-  the prose.
+  the prose. This is the transcript-visible host-arbiter path; the `consensus` tool is the
+  provider-arbiter path.
 
-The cap is `consensus.maxRounds` (config, default 5, clamped to 50). The one-shot `consensus` tool
-(single arbiter pass) is unchanged and independent of the loop. `consensus-auto` runs persist as a
-schema-v2 session record (when `sessions.persist` is on); `session-revisit` re-runs the LOOP for such
-a record, not a one-shot pass.
+The cap is `consensus.maxRounds` (config, default 5, clamped to 50; a per-call `maxRounds` overrides it).
+`consensus` runs persist a session record (when `sessions.persist` is on, with the mode flag);
+`session-revisit` replays the recorded mode (loop or synthesize), not a one-shot pass.
 
 ### Orchestration Flow
 
@@ -116,7 +118,7 @@ Retries use multi-turn (`*-reply` with `threadId`) so the expert remembers previ
 | `commands/*.md` | Slash commands | `/setup`, `/uninstall` |
 | `config/providers.json` | Provider metadata | Not used at runtime |
 | `config/config.schema.json` | JSON Schema (in `config/`) | Validates `config.json` in editors (VS Code built-in JSON support, no extension); `.vscode/` wires it for in-repo example configs |
-| `~/.config/deliberation/config.json` | Unified user config | Live SSOT; stat-gated hot-reload. Sections: `providers` (connection), `models` (named records map keyed by id), `routing` (fan-out), `consensus` (`arbiter` + `blindVote` + `maxRounds`: the loop cap, default 5, clamped to 50), `sessions` (opt-in run persistence: `persist`/`maxRecords`/`maxAgeDays`, default off; consensus-auto records are schema v2). Carries a `$schema` key for editor validation. Canonical XDG path (Windows: `%APPDATA%\deliberation\config.json`); override with `DELIBERATION_CONFIG` |
+| `~/.config/deliberation/config.json` | Unified user config | Live SSOT; stat-gated hot-reload. Sections: `providers` (connection), `models` (named records map keyed by id), `routing` (fan-out), `consensus` (`arbiter` + `blindVote` + `maxRounds`: the loop cap, default 5, clamped to 50), `sessions` (opt-in run persistence: `persist`/`maxRecords`/`maxAgeDays`, default off; single `schemaVersion:1` stamp). Carries a `$schema` key for editor validation. Canonical XDG path (Windows: `%APPDATA%\deliberation\config.json`); override with `DELIBERATION_CONFIG` |
 
 > Expert prompts adapted from [oh-my-opencode](https://github.com/code-yeongyu/oh-my-opencode)
 
@@ -160,8 +162,8 @@ Grok reads attached files via `files[]` and resolves them under `roots[]` (top-l
 3. **Dual mode** - Any expert can advise or implement based on task
 4. **Synthesize, don't passthrough** - Claude interprets expert output, applies judgment
 5. **Proactive triggers** - Claude checks for delegation triggers on every message
-6. **Opt-in session store** - `consensus`/`ask-all`/`consensus-auto` runs persist only when `sessions.persist` is on (default off); per-file JSON at `<XDG cache>/deliberation/sessions/` (override `DELIBERATION_SESSIONS`), secrets scrubbed, retention by count + age (`-1` = unlimited). Record schema v2 (consensus-auto carries per-opinion verdict/criticalIssues + converged/confidence/rounds). Tools: `session-get`/`session-revisit`/`session-annotate`. Details in [TECHNICAL.md § Session persistence](TECHNICAL.md#session-persistence).
-7. **Consensus engine SSOT** - one pure state machine (`core/consensus-loop.js`) behind two drivers (`consensus-auto` server-side, `consensus-step` host-driven); the live `/consensus` is a thin driver over `consensus-step`. See [Consensus engine](#consensus-engine-single-source-of-truth).
+6. **Opt-in session store** - `consensus`/`ask-all` runs persist only when `sessions.persist` is on (default off); per-file JSON at `<XDG cache>/deliberation/sessions/` (override `DELIBERATION_SESSIONS`), secrets scrubbed, retention by count + age (`-1` = unlimited). Single `schemaVersion:1` (no dual-version support; loop runs carry per-opinion verdict/criticalIssues + converged/confidence/rounds, synthesize runs carry `synthesis`). Tools: `session-get`/`session-revisit`/`session-annotate`. Details in [TECHNICAL.md § Session persistence](TECHNICAL.md#session-persistence).
+7. **Consensus engine SSOT** - one pure state machine (`core/consensus-loop.js`) behind two drivers (`consensus` server-side, `consensus-step` host-driven); the live `/consensus` is a thin driver over `consensus-step`. See [Consensus engine](#consensus-engine-single-source-of-truth).
 
 ## Commit Conventions & Releases
 

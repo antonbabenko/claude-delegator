@@ -41,13 +41,15 @@ test("M3: ask-gpt routes to codex only", async () => {
   assert.equal(payload.result.provider, "codex");
 });
 
-test("M4: consensus runs fan-out + one arbiter pass and returns opinions + verdict", async () => {
+test("M4: consensus synthesizeAlways runs fan-out + one arbiter pass and returns opinions + synthesis", async () => {
   const srv = buildServer({ providers: [fakeProvider("codex"), fakeProvider("grok")], getConfig: () => config });
   const res = await srv.handle({ jsonrpc: "2.0", id: 4, method: "tools/call",
-    params: { name: "consensus", arguments: { prompt: "x", expert: "architect" } } });
+    params: { name: "consensus", arguments: { prompt: "x", expert: "architect", synthesizeAlways: true } } });
   const payload = JSON.parse(res.result.content[0].text);
   assert.equal(payload.opinions.length, 2);
-  assert.ok(payload.verdict); // arbiter (first provider) produced a verdict
+  assert.equal(payload.synthesizeAlways, true);
+  assert.ok(payload.synthesis); // arbiter produced a free-text synthesis
+  assert.equal(payload.verdict, null); // enum verdict is null in synthesize mode
 });
 
 // arbiterDefaulted=true simulates a user who did NOT set consensus.arbiter, so the
@@ -60,7 +62,7 @@ async function consensusArbiterMode(clientName, claudecode) {
   try {
     const srv = buildServer({ providers: [fakeProvider("codex"), fakeProvider("grok")], getConfig: () => defaultedConfig });
     if (clientName) await srv.handle({ jsonrpc: "2.0", id: 1, method: "initialize", params: { clientInfo: { name: clientName } } });
-    const res = await srv.handle({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "consensus", arguments: { prompt: "x", expert: "architect" } } });
+    const res = await srv.handle({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "consensus", arguments: { prompt: "x", expert: "architect", synthesizeAlways: true } } });
     return JSON.parse(res.result.content[0].text);
   } finally {
     if (prev === undefined) delete process.env.CLAUDECODE; else process.env.CLAUDECODE = prev;
@@ -73,10 +75,10 @@ test("M6: arbiterDefaulted + a Claude clientInfo.name defaults the arbiter to ho
   assert.equal(payload.verdict, null);
 });
 
-test("M7: arbiterDefaulted + a non-Claude client defaults the arbiter to auto (server verdict)", async () => {
+test("M7: arbiterDefaulted + a non-Claude client defaults the arbiter to auto (server synthesis)", async () => {
   const payload = await consensusArbiterMode("cursor", false);
   assert.equal(payload.arbiter.mode, "server");
-  assert.ok(payload.verdict);
+  assert.ok(payload.synthesis);
 });
 
 test("M8: CLAUDECODE=1 forces host default even when the client name is non-Claude", async () => {
@@ -126,7 +128,7 @@ test("S-MCP2: consensus with persist on writes a record and returns sessionId", 
   const dir = tmpSessionsDir();
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const srv = buildServer({ providers: [fakeProvider("codex"), fakeProvider("grok")], getConfig: () => sessionsConfig(true), sessionsDir: dir });
-  const payload = await callTool(srv, 2, "consensus", { prompt: "q", expert: "architect" });
+  const payload = await callTool(srv, 2, "consensus", { synthesizeAlways: true, prompt: "q", expert: "architect" });
   assert.ok(payload.sessionId, "expected a sessionId");
   assert.ok(fs.existsSync(path.join(dir, `${payload.sessionId}.json`)));
 });
@@ -144,7 +146,7 @@ test("S-MCP4: persist off writes nothing and returns no sessionId", async (t) =>
   const dir = tmpSessionsDir();
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const srv = buildServer({ providers: [fakeProvider("codex"), fakeProvider("grok")], getConfig: () => sessionsConfig(false), sessionsDir: dir });
-  const payload = await callTool(srv, 4, "consensus", { prompt: "q" });
+  const payload = await callTool(srv, 4, "consensus", { synthesizeAlways: true, prompt: "q" });
   assert.equal(payload.sessionId, undefined);
   assert.deepEqual(fs.readdirSync(dir), []);
 });
@@ -153,7 +155,7 @@ test("S-MCP5: session-get round-trips a persisted record", async (t) => {
   const dir = tmpSessionsDir();
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const srv = buildServer({ providers: [fakeProvider("codex"), fakeProvider("grok")], getConfig: () => sessionsConfig(true), sessionsDir: dir });
-  const made = await callTool(srv, 5, "consensus", { prompt: "the question", expert: "architect" });
+  const made = await callTool(srv, 5, "consensus", { synthesizeAlways: true, prompt: "the question", expert: "architect" });
   const got = await callTool(srv, 6, "session-get", { sessionId: made.sessionId });
   assert.equal(got.session.id, made.sessionId);
   assert.equal(got.session.question, "the question");
@@ -164,7 +166,7 @@ test("S-MCP6: session-revisit writes a CHILD record linked by parentId", async (
   const dir = tmpSessionsDir();
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const srv = buildServer({ providers: [fakeProvider("codex"), fakeProvider("grok")], getConfig: () => sessionsConfig(true), sessionsDir: dir });
-  const parent = await callTool(srv, 7, "consensus", { prompt: "original q" });
+  const parent = await callTool(srv, 7, "consensus", { synthesizeAlways: true, prompt: "original q" });
   const child = await callTool(srv, 8, "session-revisit", { sessionId: parent.sessionId });
   assert.equal(child.parentId, parent.sessionId);
   assert.ok(child.sessionId);
@@ -178,7 +180,7 @@ test("S-MCP7: session-annotate appends to the audit trail", async (t) => {
   const dir = tmpSessionsDir();
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const srv = buildServer({ providers: [fakeProvider("codex"), fakeProvider("grok")], getConfig: () => sessionsConfig(true), sessionsDir: dir });
-  const made = await callTool(srv, 10, "consensus", { prompt: "q" });
+  const made = await callTool(srv, 10, "consensus", { synthesizeAlways: true, prompt: "q" });
   const ann = await callTool(srv, 11, "session-annotate", { sessionId: made.sessionId, note: "reviewed" });
   assert.equal(ann.session.annotations.length, 1);
   assert.equal(ann.session.annotations[0].note, "reviewed");

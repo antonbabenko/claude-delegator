@@ -42,7 +42,8 @@
   },
   "consensus": {
     "arbiter": "auto",
-    "blindVote": false
+    "blindVote": false,
+    "maxRounds": 5
   },
   "sessions": {
     "persist": false,

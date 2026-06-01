@@ -55,6 +55,37 @@ function inputSchema() {
   };
 }
 
+// The unified consensus tool: the fan-out fields plus the loop knobs. maxRounds
+// overrides the config default; synthesizeAlways switches to a single synthesis pass.
+function consensusInputSchema() {
+  return {
+    type: "object",
+    required: ["prompt"],
+    properties: {
+      prompt: { type: "string" },
+      expert: { type: "string" },
+      developerInstructions: { type: "string" },
+      reasoningEffort: { type: "string", enum: ["low", "medium", "high", "none"] },
+      maxRounds: { type: "integer", minimum: 1, maximum: 50, description: "Override consensus.maxRounds for this call (loop mode only; ignored when synthesizeAlways is true). Clamped to 50." },
+      synthesizeAlways: { type: "boolean", description: "Run ONE arbiter synthesis pass instead of the convergence loop. Returns a free-text `synthesis` (verdict/converged/confidence are null, rounds is 1). Best for open questions." },
+      cwd: { type: "string" },
+      files: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            dir: { type: "string" },
+            file_id: { type: "string" },
+            file_url: { type: "string" },
+            mode: { type: "string", enum: ["auto", "inline", "upload"] },
+          },
+        },
+      },
+    },
+  };
+}
+
 // Session tools take a sessionId (+ note for annotate), NOT a prompt - so they
 // need their OWN input schemas rather than the prompt-required inputSchema().
 function sessionGetInputSchema() {
@@ -91,8 +122,7 @@ function toolList() {
   /** @type {any[]} */
   const tools = [
     { name: "ask-all", description: "Fan out one question to GPT, Gemini, Grok, and any configured OpenRouter models in parallel for independent second opinions, then return all results (advisory, no cross-contamination). Pass `expert` to apply a persona to every delegate.", inputSchema: inputSchema(), annotations: ADVISORY },
-    { name: "consensus", description: "Fan out one question to all enabled providers, then run a single arbiter pass that cross-reviews the independent opinions and returns one synthesized verdict (advisory). Pass `expert` to apply a persona to the fan-out and arbiter.", inputSchema: inputSchema(), annotations: ADVISORY },
-    { name: "consensus-auto", description: "Run the FULL multi-round consensus convergence loop server-side with a provider arbiter (blind pass + peer fan-out -> adjudicate -> revise, up to consensus.maxRounds rounds; default 5) and return the converged verdict. For non-Claude hosts that want the loop in one call. Advisory; pass `expert` to apply a persona. Configure the arbiter via consensus.arbiter.", inputSchema: inputSchema(), annotations: ADVISORY },
+    { name: "consensus", description: "Run the FULL multi-round consensus convergence loop server-side with a provider arbiter (blind pass + peer fan-out -> adjudicate -> revise) and return the converged verdict. Default depth is `consensus.maxRounds` (config, default 5); pass `maxRounds` to override. Pass `synthesizeAlways:true` for a SINGLE arbiter synthesis pass instead of the loop (best for open questions, not plan convergence): it returns a free-text `synthesis` and `maxRounds` is ignored. Configure the arbiter via `consensus.arbiter` - a concrete provider/openrouter alias runs server-side; `host` mode returns the opinions for YOU to synthesize. Advisory; pass `expert` to apply a persona. NOTE (Claude Code): use the `/consensus` slash command for the transcript-visible host-arbiter loop (it drives `consensus-step`); this tool is the provider-arbiter path for any host.", inputSchema: consensusInputSchema(), annotations: ADVISORY },
     { name: "consensus-step", description: "Client-driven consensus loop where YOU (the host model) are the arbiter, one step per call: action=init (start, returns sessionId + blind prompt) -> record_blind (your pre-commit verdict) -> dispatch_peers (server fans out to the providers) -> submit_adjudication (your verdict + per-issue accept/dismiss/defer) -> submit_revision (your revised plan), looping until converged or consensus.maxRounds rounds (default 5). State is held server-side by sessionId. Advisory.", inputSchema: consensusStepInputSchema(), annotations: ADVISORY },
   ];
   for (const t of Object.keys(ASK_PROVIDER)) {
@@ -347,10 +377,10 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
   /**
    * Persist a completed run when persistence is on. Best-effort: a write failure
    * never fails the tool call. Returns the new sessionId, or null when off.
-   * @param {("consensus"|"ask-all"|"consensus-auto")} tool
+   * @param {("consensus"|"ask-all")} tool
    * @param {DelegationRequest} req
    * @param {string|undefined} expert
-   * @param {any} parts  // { opinions, blindVerdict?, verdict?, arbiter?, warnings?, parentId?, converged?, confidence?, rounds? }
+   * @param {any} parts  // { opinions, blindVerdict?, verdict?, synthesis?, synthesizeAlways?, arbiter?, warnings?, parentId?, converged?, confidence?, rounds? }
    * @returns {(string|null)}
    */
   function persistRun(tool, req, expert, parts) {
@@ -374,10 +404,13 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
       warnings: Array.isArray(parts.warnings) ? parts.warnings : [],
       annotations: [],
     };
-    // consensus-auto loop summary (omitted for one-shot tools; JSON drops undefined).
+    // consensus loop summary (omitted for ask-all / synthesize runs; JSON drops undefined).
     if (typeof parts.converged === "boolean") record.converged = parts.converged;
     if (typeof parts.confidence === "string") record.confidence = parts.confidence;
     if (typeof parts.rounds === "number") record.rounds = parts.rounds;
+    // synthesize-mode fields: free-text synthesis + the mode flag (so revisit replays the mode).
+    if (typeof parts.synthesis === "string") record.synthesis = parts.synthesis;
+    if (typeof parts.synthesizeAlways === "boolean") record.synthesizeAlways = parts.synthesizeAlways;
     try {
       sessions.writeSession(record, { dir: sessionsDir, maxRecords: cfg.maxRecords, maxAgeDays: cfg.maxAgeDays });
       return id;
@@ -461,9 +494,10 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
    * this one). Shares runConsensus's panel selection + floor-of-2 exclusion.
    * @param {DelegationRequest} req
    * @param {string|undefined} expert
+   * @param {number} [maxRoundsOverride]  per-call cap; falls back to consensus.maxRounds, then the engine default
    * @returns {Promise<{payload:any, parts:(any|null)}>}  payload is the tool result; parts is non-null only on a real run (drives persistence); never throws
    */
-  async function runConsensusAuto(req, expert) {
+  async function runConsensusAuto(req, expert, maxRoundsOverride) {
     try {
       const cfg = getConfig() || {};
       const { providers: selected } = registry.selectForConsensus({ config: cfg, expert: expert || "" });
@@ -482,7 +516,7 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
         // host mode is the client-driven /consensus path; do NOT silently pick a peer.
         const host = resolved.mode === "host";
         warnings.push(host
-          ? "consensus-auto runs the loop server-side and needs a concrete arbiter; set consensus.arbiter to a provider or openrouter:<alias> (host mode drives the client-side /consensus instead)"
+          ? "consensus runs the loop server-side and needs a concrete arbiter; set consensus.arbiter to a provider or openrouter:<alias> (host mode drives the client-side /consensus instead)"
           : "no usable arbiter provider available");
         return { payload: { converged: false, verdict: null, confidence: "none", rounds: 0, opinions: [], arbiter: { mode: resolved.mode, provider: null }, warnings, error: host ? "arbiter-is-host" : "no-arbiter" }, parts: null };
       }
@@ -491,10 +525,13 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
       // A single distinct peer is a valid minimal panel (peer != arbiter).
       const peers = selected.filter((p) => p.name !== arbiterP.name);
       if (peers.length < 1) {
-        return { payload: { converged: false, verdict: null, confidence: "none", rounds: 0, opinions: [], arbiter: { mode: "server", provider: arbiterP.name }, warnings: warnings.concat(["consensus-auto needs at least one peer distinct from the arbiter"]), error: "insufficient-peers" }, parts: null };
+        return { payload: { converged: false, verdict: null, confidence: "none", rounds: 0, opinions: [], arbiter: { mode: "server", provider: arbiterP.name }, warnings: warnings.concat(["consensus needs at least one peer distinct from the arbiter"]), error: "insufficient-peers" }, parts: null };
       }
 
-      const maxRounds = Number.isInteger(cc.maxRounds) && cc.maxRounds > 0 ? cc.maxRounds : undefined;
+      // Per-call maxRounds wins; else the config default; else the engine default.
+      const maxRounds = Number.isInteger(maxRoundsOverride) && /** @type {number} */ (maxRoundsOverride) > 0
+        ? maxRoundsOverride
+        : (Number.isInteger(cc.maxRounds) && cc.maxRounds > 0 ? cc.maxRounds : undefined);
       const out = await runToConvergence(peers, withPersona(req, expert), { arbiter: arbiterP, maxRounds });
       const allWarnings = out.error ? warnings.concat([`loop: ${out.error}`]) : warnings;
       const rounds = Array.isArray(out.rounds) ? out.rounds.length : 0;
@@ -526,6 +563,70 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
     } catch (e) {
       // Never reject the tool call - degrade to a structured error.
       return { payload: { converged: false, verdict: null, confidence: "none", rounds: 0, opinions: [], arbiter: null, warnings: [], error: `internal: ${String((e && /** @type {any} */ (e).message) || e)}` }, parts: null };
+    }
+  }
+
+  /**
+   * The unified `consensus` tool: ONE shape for both modes, shared by the tool
+   * dispatch and session-revisit (so the engine stays the single source of truth).
+   * - default (loop): runs the full convergence loop via runConsensusAuto.
+   * - synthesizeAlways: ONE arbiter synthesis pass via runConsensus; the one-shot's
+   *   free-text verdict becomes `synthesis` and the enum `verdict` is null.
+   * Return envelope keys are identical across modes; the inapplicable fields are
+   * null (explicit, caller-selected - not hidden polymorphism). `parts` is null on
+   * a loop error path (no persistence); synthesize runs always persist.
+   * @param {DelegationRequest} req
+   * @param {string|undefined} expert
+   * @param {{synthesizeAlways?:boolean, maxRounds?:number}} [opts]
+   * @returns {Promise<{payload:any, parts:(any|null)}>}
+   */
+  async function runConsensusTool(req, expert, opts = {}) {
+    try {
+      if (opts.synthesizeAlways === true) {
+        const { payload: p } = await runConsensus(req, expert);
+        // One-shot `verdict` is the arbiter's result OBJECT (free-text synthesis), or
+        // null in host mode where the host synthesizes. Extract its text into
+        // `synthesis`; the enum `verdict` field stays null in synthesize mode.
+        const synthesis = textOf(p.verdict);
+        const blindVerdict = textOf(p.blindVerdict); // carries the optional blindVote pre-vote
+        const warnings = Array.isArray(p.warnings) ? p.warnings.slice() : [];
+        // A failed arbiter result (isError, not a throw) yields synthesis:null with no
+        // top-level error - surface it as a warning so it does not read as empty success.
+        if (synthesis == null && p.verdict && p.verdict.isError) {
+          warnings.push(`arbiter synthesis failed${p.verdict.errorKind ? `: ${p.verdict.errorKind}` : ""}`);
+        }
+        const envelope = {
+          opinions: p.opinions, verdict: null, synthesis, blindVerdict,
+          arbiter: p.arbiter, warnings,
+          converged: null, confidence: null, rounds: 1,
+          synthesizeAlways: true, error: p.error == null ? null : p.error,
+        };
+        const parts = {
+          opinions: p.opinions, verdict: null, synthesis, blindVerdict,
+          arbiter: p.arbiter, warnings, synthesizeAlways: true,
+        };
+        return { payload: envelope, parts };
+      }
+      const { payload: p, parts } = await runConsensusAuto(req, expert, opts.maxRounds);
+      const envelope = {
+        opinions: p.opinions, verdict: p.verdict, synthesis: null, blindVerdict: null,
+        arbiter: p.arbiter, warnings: p.warnings,
+        converged: p.converged, confidence: p.confidence, rounds: p.rounds,
+        synthesizeAlways: false, error: p.error == null ? null : p.error,
+      };
+      if (!parts) return { payload: envelope, parts: null }; // error path - do not persist
+      return { payload: envelope, parts: { ...parts, synthesis: null, synthesizeAlways: false } };
+    } catch (e) {
+      // Never reject the tool call - degrade to a structured error (matches runConsensusAuto).
+      const synth = opts.synthesizeAlways === true;
+      return {
+        payload: {
+          opinions: [], verdict: null, synthesis: null, blindVerdict: null, arbiter: null, warnings: [],
+          converged: null, confidence: null, rounds: synth ? 1 : 0, synthesizeAlways: synth,
+          error: `internal: ${String((e && /** @type {any} */ (e).message) || e)}`,
+        },
+        parts: null,
+      };
     }
   }
 
@@ -673,23 +774,19 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
       return jsonResult(payload);
     }
     if (name === "consensus") {
-      // selectForConsensus returns a FLAT, uncapped voting panel. The arbiter is
-      // resolved from config (host/auto/builtin/openrouter:<alias>) instead of the
-      // implicit providers[0], so any host can synthesize a real verdict. The whole
-      // pass lives in runConsensus so session-revisit can re-run it identically.
-      const { payload, parts } = await runConsensus(req, expert);
-      const sid = persistRun("consensus", req, expert, parts);
-      if (sid) payload.sessionId = sid;
-      return jsonResult(payload);
-    }
-    if (name === "consensus-auto") {
-      // Server-internal full convergence loop (provider arbiter). Persisted as a v2
-      // record (tool:"consensus-auto" + converged/confidence/rounds + per-opinion
-      // verdict/criticalIssues) so session-revisit re-runs the LOOP, not a one-shot.
-      // parts is null on an error path (no-arbiter/insufficient-peers) - skip the write.
-      const { payload, parts } = await runConsensusAuto(req, expert);
+      // The unified consensus tool: the full convergence loop (provider arbiter) by
+      // default, or a single arbiter synthesis pass with synthesizeAlways:true. One
+      // engine, one return shape (split verdict/synthesis). Persisted as tool:"consensus"
+      // with the mode flag so session-revisit replays the same mode. parts is null on a
+      // loop error path (no-arbiter/insufficient-peers) - skip the write.
+      const { payload, parts } = await runConsensusTool(req, expert, {
+        synthesizeAlways: args.synthesizeAlways === true,
+        // Clamp the per-call override to the same hard cap the config path uses (50),
+        // so a caller cannot drive an unbounded paid loop.
+        maxRounds: Number.isInteger(args.maxRounds) && args.maxRounds > 0 ? Math.min(args.maxRounds, 50) : undefined,
+      });
       if (parts) {
-        const sid = persistRun("consensus-auto", req, expert, parts);
+        const sid = persistRun("consensus", req, expert, parts);
         if (sid) payload.sessionId = sid;
       }
       return jsonResult(payload);
@@ -737,15 +834,15 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
         files: childFiles,
         cwd: typeof args.cwd === "string" ? args.cwd : undefined,
       };
-      // Route by the ORIGINAL tool so a consensus-auto record re-runs the full loop
-      // (not a one-shot consensus). consensus-auto can return parts:null on an error
-      // path; the others always carry parts.
-      const tool = rec.tool === "ask-all" ? "ask-all" : rec.tool === "consensus-auto" ? "consensus-auto" : "consensus";
+      // Route by the ORIGINAL tool. A "consensus" record re-runs the consensus tool,
+      // REPLAYING its mode (the loop, or a synthesize pass) from the stored flag - a
+      // missing flag means loop. The consensus path can return parts:null on a loop
+      // error; ask-all always carries parts. (Records written before this PR are
+      // unsupported - pre-1.0, no users; wipe the local session store if any exist.)
+      const tool = rec.tool === "ask-all" ? "ask-all" : "consensus";
       const { payload, parts } = tool === "ask-all"
         ? await runAskAll(childReq, childExpert)
-        : tool === "consensus-auto"
-          ? await runConsensusAuto(childReq, childExpert)
-          : await runConsensus(childReq, childExpert);
+        : await runConsensusTool(childReq, childExpert, { synthesizeAlways: rec.synthesizeAlways === true });
       if (parts) {
         const sid = persistRun(tool, childReq, childExpert, { ...parts, parentId: rec.id });
         if (sid) payload.sessionId = sid;

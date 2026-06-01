@@ -50,7 +50,7 @@ test("PJ3: consensus with expert injects the expert persona on PEERS and the arb
   const sink = { di: /** @type {(string|undefined)[]} */ ([]) };
   const srv = buildServer({ providers: [capturingProvider("codex", sink), capturingProvider("grok", sink)], getConfig: () => config });
   await srv.handle({ jsonrpc: "2.0", id: 3, method: "tools/call",
-    params: { name: "consensus", arguments: { prompt: "x", expert: "debugger" } } });
+    params: { name: "consensus", arguments: { prompt: "x", expert: "debugger", synthesizeAlways: true } } });
   // 2 peer opinions carry the debugger persona; the trailing arbiter pass carries the arbiter persona.
   assert.equal(sink.di.length, 3);
   assert.equal(sink.di[0], PROMPTS["debugger"]);
@@ -171,7 +171,10 @@ function cfg(arbiter, models = []) {
 
 /** @param {any} srv @param {any} args */
 async function callConsensus(srv, args) {
-  const res = await srv.handle({ jsonrpc: "2.0", id: 99, method: "tools/call", params: { name: "consensus", arguments: { prompt: "Q", ...args } } });
+  // These exercise the shared arbiter-resolution + one-pass synthesis path, which
+  // post-merge lives behind synthesizeAlways:true on the unified `consensus` tool.
+  // (The convergence-loop path is covered in mcp-consensus.test.js.)
+  const res = await srv.handle({ jsonrpc: "2.0", id: 99, method: "tools/call", params: { name: "consensus", arguments: { prompt: "Q", synthesizeAlways: true, ...args } } });
   return JSON.parse(res.result.content[0].text);
 }
 
@@ -196,7 +199,7 @@ test("AR2: arbiter 'auto' picks the first healthy provider and surfaces an auto-
   const out = await callConsensus(srv, { expert: "architect" });
   assert.equal(out.arbiter.mode, "server");
   assert.equal(out.arbiter.provider, "codex"); // first healthy
-  assert.ok(out.verdict);
+  assert.ok(out.synthesis);
   assert.ok(out.warnings.some((/** @type {string} */ w) => /auto-selected/i.test(w)));
 });
 
@@ -272,7 +275,7 @@ test("AR8: floor-of-2 - with only 2 providers the arbiter stays in peers (panel 
   // peers would be [grok] (1) -> floor keeps codex in -> 2 opinions
   assert.equal(out.opinions.length, 2);
   assert.ok(out.warnings.some((/** @type {string} */ w) => /floor|kept|panel/i.test(w)));
-  assert.ok(out.verdict);
+  assert.ok(out.synthesis);
 });
 
 test("AR9: consensusWarnings from config are surfaced in the consensus response", async () => {
@@ -331,7 +334,7 @@ test("AR11: arbiter set to a DISABLED built-in degrades to auto + warning (no ha
   assert.equal(out.arbiter.mode, "server");
   assert.notEqual(out.arbiter.provider, "grok", "disabled arbiter must not be selected");
   assert.ok(out.warnings.length >= 1);
-  assert.ok(out.verdict, "degraded arbiter still produces a verdict");
+  assert.ok(out.synthesis, "degraded arbiter still produces a synthesis");
   // grok (disabled) is never asked as the arbiter
   assert.equal(sink.calls.some((cl) => cl.provider === "grok"), false);
 });

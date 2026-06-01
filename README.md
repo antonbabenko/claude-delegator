@@ -1,6 +1,6 @@
 # Deliberation
 
-Get a second opinion in Claude Code from GPT, Gemini, and Grok - plus 300+ more models through OpenRouter, including Qwen, Kimi, and DeepSeek. Seven domain experts (Architect, Code Reviewer, Security Analyst, and four more) review your plans, find bugs, and debate edge cases until they agree.
+Get a second opinion in Claude Code from GPT, Gemini, and Grok - plus 400+ more models through OpenRouter, including Qwen, Kimi, and DeepSeek. Seven domain experts (Architect, Code Reviewer, Security Analyst, and four more) review your plans, find bugs, and debate edge cases until they agree.
 
 [![Four chairs at the table: Claude, GPT, Gemini, Grok - one verdict you can ship](assets/agents.png)<br>One model is a guess. Three that agree is a plan. → read the blog post](https://builder.aws.com/content/3DtBiR4ua0qy7ybZMPzPmQ2SDMj/one-model-is-a-guess-three-that-agree-is-a-plan)
 
@@ -115,7 +115,7 @@ Per-host config location and the key it expects:
 
 Provider prerequisites are the same as the plugin (see [Requirements](#requirements)): the Codex CLI for GPT, `agy` for Gemini, `XAI_API_KEY` for Grok, and `OPENROUTER_API_KEY` plus `~/.config/deliberation/config.json` for OpenRouter (Windows: `%APPDATA%\deliberation\config.json`; override the config path with `DELIBERATION_CONFIG`).
 
-Tools exposed: `ask-all`, `consensus`, `consensus-auto` (full convergence loop server-side), `consensus-step` (drive the loop yourself, one action per call), `ask-gpt` / `ask-gemini` / `ask-grok` / `ask-openrouter`, the seven experts (`architect`, `plan-reviewer`, `scope-analyst`, `code-reviewer`, `security-analyst`, `researcher`, `debugger`), and the session tools (`session-get` / `session-revisit` / `session-annotate`).
+Tools exposed: `ask-all`, `consensus` (the full convergence loop in one call, or a single synthesis pass with `synthesizeAlways:true`), `consensus-step` (drive the loop yourself, one action per call), `ask-gpt` / `ask-gemini` / `ask-grok` / `ask-openrouter`, the seven experts (`architect`, `plan-reviewer`, `scope-analyst`, `code-reviewer`, `security-analyst`, `researcher`, `debugger`), and the session tools (`session-get` / `session-revisit` / `session-annotate`).
 
 The package also ships a `deliberation-setup` bin. Run it once with `npx -y --package @antonbabenko/deliberation-mcp deliberation-setup` to write a starter `~/.config/deliberation/config.json` (it never overwrites an existing one). The plain `npx -y @antonbabenko/deliberation-mcp` form runs the default bin (the server), which is what your MCP host launches. For host rule wiring, see [`AGENTS.md`](AGENTS.md) and the per-host snippets in [`examples/`](examples/).
 
@@ -232,7 +232,7 @@ The `/ask-*` commands carry a lighter version of the same rule. The external mod
 
 The loop converges when at least one responding external approves, none reject, zero critical issues remain accepted, and Claude adjudicates APPROVE - so Claude cannot self-approve. It otherwise stops at `consensus.maxRounds` (default 5, configurable) as `unresolved`. The confidence label reflects how fast it settled (round 1 = high, 2-3 = medium, 4-5 = low).
 
-The same engine backs two non-interactive entry points for other hosts: `consensus-auto` (runs the whole loop server-side in one call with a provider arbiter) and `consensus-step` (drive it yourself, one action per call). See [TECHNICAL.md](TECHNICAL.md#consensus-flow-details) for the taxonomy and the engine contract.
+The same engine backs the entry points other hosts use: the `consensus` tool (runs the whole loop server-side in one call with a provider arbiter, or a single synthesis pass with `synthesizeAlways:true`) and `consensus-step` (drive it yourself, one action per call). See [TECHNICAL.md](TECHNICAL.md#consensus-flow-details) for the taxonomy and the engine contract.
 
 > An earlier revision ran an extra "Stage 2" anonymized peer cross-review (each model scoring the others' answers blind, adapted from [karpathy/llm-council](https://github.com/karpathy/llm-council)). The engine-driven rewrite removed it to keep one source of truth; it may return as an engine feature.
 
@@ -318,8 +318,8 @@ a shorthand string (`"auto"` / `"host"` / `"codex"` / `"gemini"` / `"grok"`) or
 `{ "model": "<id>" }` naming a record (even an out-of-panel one). `consensus.blindVote`
 (boolean, default `false`) runs the arbiter cold in parallel with the panel to reduce
 anchoring - concrete-arbiter / non-host mode only. `consensus.maxRounds` (integer, default
-`5`, clamped to `50`) caps the multi-round convergence loop used by the `consensus-auto` /
-`consensus-step` tools. Implementation tasks always route to Codex or Gemini - never OpenRouter.
+`5`, clamped to `50`) caps the multi-round convergence loop used by the `consensus` /
+`consensus-step` tools (a per-call `maxRounds` overrides it). Implementation tasks always route to Codex or Gemini - never OpenRouter.
 
 For the full schema, the `$schema` / VS Code validation story, apiBase override matrix
 (Ollama, vLLM, LM Studio, HuggingFace), file-attachment caps, session model persistence,
