@@ -379,6 +379,94 @@ test("S20b: non-path file refs (dir/file_id/file_url/mode) survive a round-trip"
   assert.deepEqual(back.files, files); // preserved so session-revisit keeps context
 });
 
+// --- v2 record: consensus-auto fields (verdict / criticalIssues / loop summary) ---
+
+test("S21: the writer's SCHEMA_VERSION is 2 (consensus-auto round summary support)", () => {
+  assert.equal(SCHEMA_VERSION, 2);
+});
+
+test("S22: a consensus-auto opinion persists its verdict + criticalIssues losslessly", () => {
+  const dir = tmpDir();
+  const id = writeSession(rec({
+    tool: "consensus-auto",
+    opinions: [{
+      provider: "codex",
+      verdict: "REQUEST_CHANGES",
+      criticalIssues: [{ category: "security", description: "missing auth check" }],
+    }],
+  }), { dir });
+  const back = readSession(id, { dir });
+  assert.ok(back);
+  if (!back) return;
+  assert.equal(back.tool, "consensus-auto");
+  assert.equal(back.opinions[0].provider, "codex");
+  assert.equal(back.opinions[0].verdict, "REQUEST_CHANGES");
+  assert.deepEqual(back.opinions[0].criticalIssues, [{ category: "security", description: "missing auth check" }]);
+});
+
+test("S22b: a critical-issue description is secret-scrubbed + capped on write", () => {
+  const dir = tmpDir();
+  const secret = "sk-" + "q".repeat(30);
+  const huge = "y".repeat(MAX_TEXT_BYTES + 4000);
+  const id = writeSession(rec({
+    tool: "consensus-auto",
+    opinions: [{ provider: "grok", verdict: "REJECT", criticalIssues: [
+      { category: "ops", description: `leaked ${secret}` },
+      { category: "correctness", description: huge },
+    ] }],
+  }), { dir });
+  const back = readSession(id, { dir });
+  assert.ok(back);
+  if (!back) return;
+  const ci = back.opinions[0].criticalIssues || [];
+  assert.equal(JSON.stringify(ci).includes(secret), false);
+  assert.ok(ci[0].description.includes("[REDACTED]"));
+  assert.ok(ci[1].description.includes("[truncated"));
+});
+
+test("S22c: a non-enum verdict is coerced to null on write (writer is the trust boundary)", () => {
+  const dir = tmpDir();
+  const secret = "sk-" + "v".repeat(30);
+  const id = writeSession(rec({
+    tool: "consensus-auto",
+    // A hand-built record that ignores parseReview's enum contract: the writer
+    // must NOT persist arbitrary free text (incl. a secret) in the verdict field.
+    opinions: [{ provider: "codex", verdict: /** @type {any} */ (`bogus ${secret}`) }],
+  }), { dir });
+  const back = readSession(id, { dir });
+  assert.ok(back);
+  if (!back) return;
+  assert.equal(back.opinions[0].verdict, null);
+  assert.equal(JSON.stringify(back).includes(secret), false);
+});
+
+test("S22d: question is capped at ~100 KB on write", () => {
+  const dir = tmpDir();
+  const huge = "q".repeat(MAX_TEXT_BYTES + 5000);
+  const id = writeSession(rec({ question: huge }), { dir });
+  const back = readSession(id, { dir });
+  assert.ok(back);
+  if (!back) return;
+  assert.ok(Buffer.byteLength(back.question, "utf8") < MAX_TEXT_BYTES + 200);
+  assert.ok(back.question.includes("[truncated"));
+});
+
+test("S23: converged / confidence / rounds round-trip on a consensus-auto record", () => {
+  const dir = tmpDir();
+  const id = writeSession(rec({
+    tool: "consensus-auto",
+    converged: true,
+    confidence: "high",
+    rounds: 3,
+  }), { dir });
+  const back = readSession(id, { dir });
+  assert.ok(back);
+  if (!back) return;
+  assert.equal(back.converged, true);
+  assert.equal(back.confidence, "high");
+  assert.equal(back.rounds, 3);
+});
+
 test("S18e: tmp reap only matches the writer's exact temp shape", () => {
   const dir = tmpDir();
   writeSession(rec({}), { dir });
