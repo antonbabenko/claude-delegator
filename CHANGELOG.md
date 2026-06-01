@@ -1,3 +1,10 @@
+## [2.15.0](https://github.com/antonbabenko/deliberation/compare/v2.14.0...v2.15.0) (2026-06-01)
+
+
+### Features
+
+* consensus-step MCP tool - client-driven host-arbitrated loop (PR2b-3c) ([#102](https://github.com/antonbabenko/deliberation/issues/102)) ([af1c119](https://github.com/antonbabenko/deliberation/commit/af1c119301457acbe8108b8093356235c5fe7a0b))
+
 ## [2.14.0](https://github.com/antonbabenko/deliberation/compare/v2.13.0...v2.14.0) (2026-06-01)
 
 
@@ -25,11 +32,4 @@
 ### Features
 
 * parseReview - verdict + categorized issues parser (PR2b-1) ([#94](https://github.com/antonbabenko/deliberation/issues/94)) ([dd8bb95](https://github.com/antonbabenko/deliberation/commit/dd8bb95e97b6f6ebb4119793ad6946f4135b7f15))
-
-## [2.10.0](https://github.com/antonbabenko/deliberation/compare/v2.9.0...v2.10.0) (2026-06-01)
-
-
-### Features
-
-* consensus-loop core state machine (PR2a, SSOT) ([#92](https://github.com/antonbabenko/deliberation/issues/92)) ([33460da](https://github.com/antonbabenko/deliberation/commit/33460dadc5cc4c14e357dfdefa17d763fc6cd357))
 
