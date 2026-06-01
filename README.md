@@ -262,8 +262,9 @@ still requires `/setup`.
 
 The config has four sections: `providers` (transport / connection per provider),
 `models` (named model records keyed by id), `routing` (fan-out policy), and
-`consensus.arbiter` (who synthesizes the verdict). The `$schema` key gives editors
-validation and autocomplete - VS Code needs no extension.
+`consensus` (`arbiter` = who synthesizes the verdict; optional `blindVote` for a blind
+arbiter pre-vote). The `$schema` key gives editors validation and autocomplete - VS Code
+needs no extension.
 
 Minimal example:
 
@@ -299,7 +300,7 @@ Minimal example:
     }
   },
   "routing": { "maxFanout": 3 },
-  "consensus": { "arbiter": { "model": "claude-arb" } }
+  "consensus": { "arbiter": { "model": "claude-arb" }, "blindVote": true }
 }
 ```
 
@@ -316,8 +317,10 @@ per-record override over `defaults`.
 `/consensus` includes records where `consensus === true`, with no fanout cap (a warning
 is emitted when more than 3 models participate). `consensus.arbiter` picks who synthesizes:
 a shorthand string (`"auto"` / `"host"` / `"codex"` / `"gemini"` / `"grok"`) or
-`{ "model": "<id>" }` naming a record (even an out-of-panel one). Implementation tasks
-always route to Codex or Gemini - never OpenRouter.
+`{ "model": "<id>" }` naming a record (even an out-of-panel one). `consensus.blindVote`
+(boolean, default `false`) runs the arbiter cold in parallel with the panel to reduce
+anchoring - concrete-arbiter / non-host mode only. Implementation tasks always route to
+Codex or Gemini - never OpenRouter.
 
 For the full schema, the `$schema` / VS Code validation story, apiBase override matrix
 (Ollama, vLLM, LM Studio, HuggingFace), file-attachment caps, session model persistence,

@@ -106,9 +106,10 @@ For each round R:
    })
    ```
 
-   The tool returns `{ opinions: DelegationResult[], verdict: DelegationResult | null, arbiter, warnings, error? }`.
+   The tool returns `{ opinions: DelegationResult[], blindVerdict: DelegationResult | null, verdict: DelegationResult | null, arbiter, warnings, error? }`.
    - `opinions` is the cross-review panel: one `{ provider, model, text?, isError, errorKind?, ms }` per dispatched voice, where `provider` is `codex`, `gemini`, `grok`, or `openrouter:<alias>`. These are the independent external votes for this round.
    - **Claude Code runs with `consensus.arbiter: "host"`** (host = Claude is the arbiter). In host mode the server does NOT run a server-side arbiter pass: `verdict` is always `null` and `arbiter` is `{ mode: "host" }`. Claude is the real arbiter in this command - it reads the `opinions` array, runs its own blind verdict and adjudication (steps 3 and 7 below), and authors the converged plan. Do not expect or surface a server `verdict` in host mode.
+   - **`blindVerdict` is always `null` in host mode.** The server runs no blind pass here, so the server-side `consensus.blindVote` option only yields a `blindVerdict` for non-host (concrete-arbiter) hosts. It is distinct from Claude's OWN blind verdict (step 3 below), which is command-driven and always applies.
    - If `error` is `"all-providers-failed"`, every voice errored this round: no responding external, so the round CANNOT converge (see step 8). Handle it with the all-unavailable path described in the Stability rules.
 
    **Repo-wide context (file-blind voices):** the server fans out to advisory voices,

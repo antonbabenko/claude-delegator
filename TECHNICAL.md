@@ -388,7 +388,8 @@ The config has four top-level sections, each with one job:
 - **`models`** - named model records, keyed by id. Each record names its `provider` and
   `model` slug and sets routing flags. This is where you declare the models the panel uses.
 - **`routing`** - global fan-out policy (`maxFanout`).
-- **`consensus.arbiter`** - who synthesizes the consensus verdict.
+- **`consensus`** - `arbiter` (who synthesizes the consensus verdict) and `blindVote`
+  (optional blind arbiter pre-vote; boolean, default `false`).
 
 Config file schema (strict JSON, `version` must be `1`):
 
@@ -422,7 +423,7 @@ Config file schema (strict JSON, `version` must be `1`):
     }
   },
   "routing": { "maxFanout": 3 },
-  "consensus": { "arbiter": { "model": "claude-arb" } }
+  "consensus": { "arbiter": { "model": "claude-arb" }, "blindVote": true }
 }
 ```
 
@@ -479,6 +480,28 @@ A cross-host recommendation: a dedicated Claude record used only as the arbiter
 one of the voting providers. An unusable arbiter (unknown shorthand, a `{ model }` id that
 is not configured, or a disabled provider) soft-degrades to `"auto"` with a warning - it
 never hard-fails the config.
+
+### consensus.blindVote
+
+`consensus.blindVote` is an optional boolean (default `false`). When `true`, the arbiter
+ALSO answers the original question cold - with no peer opinions - to produce a
+`blindVerdict`, fired in parallel with the peer fan-out (no extra round). The blind pass
+reduces the arbiter anchoring on the peers' framing.
+
+Constraints and behavior:
+
+- **Concrete / server-arbiter mode only.** It runs only when a real arbiter pass runs
+  (`"auto"`, a built-in, or a `{ model }` record). In `"host"` mode the server runs no
+  arbiter pass, so there is no blind pass either - `blindVerdict` is `null`.
+- **Cost.** It adds one extra arbiter call (parallel, no extra round), which is why it is
+  off by default.
+- **Failure-isolated.** A thrown blind pass yields `blindVerdict: null` and never fails the
+  run. `blindVerdict` is also `null` when `blindVote` is off or no arbiter exists.
+- **Validation.** A non-boolean value soft-degrades to `false` with a warning - it never
+  hard-fails the config.
+
+Behavior source of truth: `consensus()` in `core/orchestrate.js` and the `blindVote`
+validation in `server/openrouter/config.js`.
 
 ### camelCase config keys, wire mapping
 
