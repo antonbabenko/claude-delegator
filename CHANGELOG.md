@@ -1,3 +1,10 @@
+## [2.18.0](https://github.com/antonbabenko/deliberation/compare/v2.17.0...v2.18.0) (2026-06-01)
+
+
+### Features
+
+* rewrite /consensus as a thin driver over consensus-step ([#108](https://github.com/antonbabenko/deliberation/issues/108)) ([243d093](https://github.com/antonbabenko/deliberation/commit/243d09334735288b62389429e7efd64efbb8713d))
+
 ## [2.17.0](https://github.com/antonbabenko/deliberation/compare/v2.16.0...v2.17.0) (2026-06-01)
 
 
@@ -25,11 +32,4 @@
 ### Features
 
 * consensus-auto MCP tool - server-side convergence loop (PR2b-3b) ([#100](https://github.com/antonbabenko/deliberation/issues/100)) ([2d7b63d](https://github.com/antonbabenko/deliberation/commit/2d7b63d3240f96f593a37b9caca93239cc9a33fa))
-
-## [2.13.0](https://github.com/antonbabenko/deliberation/compare/v2.12.0...v2.13.0) (2026-06-01)
-
-
-### Features
-
-* in-memory loop store for consensus-step (PR2b-3a) ([#98](https://github.com/antonbabenko/deliberation/issues/98)) ([1263476](https://github.com/antonbabenko/deliberation/commit/12634761c34addaa127a2426a47f0d941e19e0b2))
 
