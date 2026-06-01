@@ -1,3 +1,17 @@
+## [3.0.0](https://github.com/antonbabenko/deliberation/compare/v2.18.0...v3.0.0) (2026-06-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* the `consensus-auto` MCP tool is removed (folded into `consensus`, which
+now runs the loop by default); the one-shot `consensus` behavior moves behind
+`synthesizeAlways:true`. Session `schemaVersion` is 1 (no v2 reader); records written
+before this change are not supported by session-revisit.
+
+### Features
+
+* unify consensus tools into one + drop schema versioning ([#111](https://github.com/antonbabenko/deliberation/issues/111)) ([6974bb9](https://github.com/antonbabenko/deliberation/commit/6974bb908e9a07dfbe0ac36703161b70b24461fc))
+
 ## [2.18.0](https://github.com/antonbabenko/deliberation/compare/v2.17.0...v2.18.0) (2026-06-01)
 
 
@@ -25,11 +39,4 @@
 ### Features
 
 * consensus-step MCP tool - client-driven host-arbitrated loop (PR2b-3c) ([#102](https://github.com/antonbabenko/deliberation/issues/102)) ([af1c119](https://github.com/antonbabenko/deliberation/commit/af1c119301457acbe8108b8093356235c5fe7a0b))
-
-## [2.14.0](https://github.com/antonbabenko/deliberation/compare/v2.13.0...v2.14.0) (2026-06-01)
-
-
-### Features
-
-* consensus-auto MCP tool - server-side convergence loop (PR2b-3b) ([#100](https://github.com/antonbabenko/deliberation/issues/100)) ([2d7b63d](https://github.com/antonbabenko/deliberation/commit/2d7b63d3240f96f593a37b9caca93239cc9a33fa))
 
