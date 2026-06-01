@@ -1,3 +1,10 @@
+## [3.1.1](https://github.com/antonbabenko/deliberation/compare/v3.1.0...v3.1.1) (2026-06-01)
+
+
+### Bug Fixes
+
+* pin mcp-publisher asset name in the registry publish step ([#115](https://github.com/antonbabenko/deliberation/issues/115)) ([78e5d05](https://github.com/antonbabenko/deliberation/commit/78e5d05412d61f15e0b8c7a160923368384c017c))
+
 ## [3.1.0](https://github.com/antonbabenko/deliberation/compare/v3.0.0...v3.1.0) (2026-06-01)
 
 
@@ -32,11 +39,4 @@ before this change are not supported by session-revisit.
 ### Features
 
 * persist consensus-auto runs + route session-revisit (PR2b-4b) ([#106](https://github.com/antonbabenko/deliberation/issues/106)) ([8d6d3d5](https://github.com/antonbabenko/deliberation/commit/8d6d3d52fd64dccca5c2000988b8568c8c4f50c4))
-
-## [2.16.0](https://github.com/antonbabenko/deliberation/compare/v2.15.0...v2.16.0) (2026-06-01)
-
-
-### Features
-
-* surface consensus.maxRounds in config (PR2b-4a) ([#104](https://github.com/antonbabenko/deliberation/issues/104)) ([95779e8](https://github.com/antonbabenko/deliberation/commit/95779e88e1f29698b6dd7c911521c1f703b08c7e))
 
