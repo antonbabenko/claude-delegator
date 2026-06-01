@@ -313,14 +313,28 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
     }
     return refs.length ? refs : null;
   }
-  /** @param {any} results @returns {{provider:string, model:string, text:(string|undefined)}[]} */
+  /**
+   * Map raw run results to the persisted opinion shape. Handles both kinds:
+   * fan-out provider results ({provider, model, text}) and consensus-auto review
+   * results ({source, verdict, criticalIssues}). `source` falls back to provider
+   * so a loop opinion keeps its identity; verdict/criticalIssues ride along when
+   * present (sanitizeRecord scrubs the issue descriptions on write).
+   * @param {any} results
+   * @returns {any[]}
+   */
   function opinionsFrom(results) {
     if (!Array.isArray(results)) return [];
-    return results.map((r) => ({
-      provider: r && r.provider,
-      model: r && r.model,
-      text: r && r.isError === false && typeof r.text === "string" ? r.text : undefined,
-    }));
+    return results.map((r) => {
+      /** @type {any} */
+      const o = {
+        provider: r && (r.provider || r.source),
+        model: r && r.model,
+        text: r && r.isError === false && typeof r.text === "string" ? r.text : undefined,
+      };
+      if (r && r.verdict !== undefined) o.verdict = r.verdict;
+      if (r && Array.isArray(r.criticalIssues)) o.criticalIssues = r.criticalIssues;
+      return o;
+    });
   }
   /** @param {any} result @returns {(string|null)} the verdict text, or null */
   function textOf(result) {
@@ -333,16 +347,17 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
   /**
    * Persist a completed run when persistence is on. Best-effort: a write failure
    * never fails the tool call. Returns the new sessionId, or null when off.
-   * @param {("consensus"|"ask-all")} tool
+   * @param {("consensus"|"ask-all"|"consensus-auto")} tool
    * @param {DelegationRequest} req
    * @param {string|undefined} expert
-   * @param {any} parts  // { opinions, blindVerdict?, verdict?, arbiter?, warnings?, parentId? }
+   * @param {any} parts  // { opinions, blindVerdict?, verdict?, arbiter?, warnings?, parentId?, converged?, confidence?, rounds? }
    * @returns {(string|null)}
    */
   function persistRun(tool, req, expert, parts) {
     if (!persistEnabled()) return null;
     const cfg = sessionsCfg();
     const id = sessions.newSessionId();
+    /** @type {any} */
     const record = {
       id,
       parentId: parts.parentId == null ? null : parts.parentId,
@@ -359,6 +374,10 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
       warnings: Array.isArray(parts.warnings) ? parts.warnings : [],
       annotations: [],
     };
+    // consensus-auto loop summary (omitted for one-shot tools; JSON drops undefined).
+    if (typeof parts.converged === "boolean") record.converged = parts.converged;
+    if (typeof parts.confidence === "string") record.confidence = parts.confidence;
+    if (typeof parts.rounds === "number") record.rounds = parts.rounds;
     try {
       sessions.writeSession(record, { dir: sessionsDir, maxRecords: cfg.maxRecords, maxAgeDays: cfg.maxAgeDays });
       return id;
@@ -442,7 +461,7 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
    * this one). Shares runConsensus's panel selection + floor-of-2 exclusion.
    * @param {DelegationRequest} req
    * @param {string|undefined} expert
-   * @returns {Promise<any>}  the tool payload (converged/verdict/opinions/...); never throws
+   * @returns {Promise<{payload:any, parts:(any|null)}>}  payload is the tool result; parts is non-null only on a real run (drives persistence); never throws
    */
   async function runConsensusAuto(req, expert) {
     try {
@@ -465,32 +484,48 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
         warnings.push(host
           ? "consensus-auto runs the loop server-side and needs a concrete arbiter; set consensus.arbiter to a provider or openrouter:<alias> (host mode drives the client-side /consensus instead)"
           : "no usable arbiter provider available");
-        return { converged: false, verdict: null, confidence: "none", rounds: 0, opinions: [], arbiter: { mode: resolved.mode, provider: null }, warnings, error: host ? "arbiter-is-host" : "no-arbiter" };
+        return { payload: { converged: false, verdict: null, confidence: "none", rounds: 0, opinions: [], arbiter: { mode: resolved.mode, provider: null }, warnings, error: host ? "arbiter-is-host" : "no-arbiter" }, parts: null };
       }
 
       // Exclude the arbiter from the peer panel - never let it review its own output.
       // A single distinct peer is a valid minimal panel (peer != arbiter).
       const peers = selected.filter((p) => p.name !== arbiterP.name);
       if (peers.length < 1) {
-        return { converged: false, verdict: null, confidence: "none", rounds: 0, opinions: [], arbiter: { mode: "server", provider: arbiterP.name }, warnings: warnings.concat(["consensus-auto needs at least one peer distinct from the arbiter"]), error: "insufficient-peers" };
+        return { payload: { converged: false, verdict: null, confidence: "none", rounds: 0, opinions: [], arbiter: { mode: "server", provider: arbiterP.name }, warnings: warnings.concat(["consensus-auto needs at least one peer distinct from the arbiter"]), error: "insufficient-peers" }, parts: null };
       }
 
       const maxRounds = Number.isInteger(cc.maxRounds) && cc.maxRounds > 0 ? cc.maxRounds : undefined;
       const out = await runToConvergence(peers, withPersona(req, expert), { arbiter: arbiterP, maxRounds });
       const allWarnings = out.error ? warnings.concat([`loop: ${out.error}`]) : warnings;
-      return {
+      const rounds = Array.isArray(out.rounds) ? out.rounds.length : 0;
+      const arbiter = { mode: "server", provider: arbiterP.name };
+      const payload = {
         converged: out.converged,
         verdict: out.verdict,
         confidence: out.confidence,
-        rounds: Array.isArray(out.rounds) ? out.rounds.length : 0,
+        rounds,
         opinions: out.opinions,
-        arbiter: { mode: "server", provider: arbiterP.name },
+        arbiter,
         warnings: allWarnings,
         error: out.error,
       };
+      // parts drives persistence (only on a real run). blindVerdict is per-round in
+      // the loop, so the final record stores null (the verdict + opinions are the
+      // durable summary; full round history is intentionally not persisted yet).
+      const parts = {
+        opinions: out.opinions,
+        blindVerdict: null,
+        verdict: out.verdict,
+        arbiter,
+        warnings: allWarnings,
+        converged: out.converged,
+        confidence: out.confidence,
+        rounds,
+      };
+      return { payload, parts };
     } catch (e) {
       // Never reject the tool call - degrade to a structured error.
-      return { converged: false, verdict: null, confidence: "none", rounds: 0, opinions: [], arbiter: null, warnings: [], error: `internal: ${String((e && /** @type {any} */ (e).message) || e)}` };
+      return { payload: { converged: false, verdict: null, confidence: "none", rounds: 0, opinions: [], arbiter: null, warnings: [], error: `internal: ${String((e && /** @type {any} */ (e).message) || e)}` }, parts: null };
     }
   }
 
@@ -648,11 +683,16 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
       return jsonResult(payload);
     }
     if (name === "consensus-auto") {
-      // Server-internal full convergence loop (provider arbiter). Persistence +
-      // session-revisit routing for the multi-round record land with PR2b-4 (v2
-      // record with round history); not persisted here to avoid a lossy v1 record
-      // that would silently downgrade to a one-shot rerun on revisit.
-      return jsonResult(await runConsensusAuto(req, expert));
+      // Server-internal full convergence loop (provider arbiter). Persisted as a v2
+      // record (tool:"consensus-auto" + converged/confidence/rounds + per-opinion
+      // verdict/criticalIssues) so session-revisit re-runs the LOOP, not a one-shot.
+      // parts is null on an error path (no-arbiter/insufficient-peers) - skip the write.
+      const { payload, parts } = await runConsensusAuto(req, expert);
+      if (parts) {
+        const sid = persistRun("consensus-auto", req, expert, parts);
+        if (sid) payload.sessionId = sid;
+      }
+      return jsonResult(payload);
     }
     if (name === "consensus-step") {
       // Client-driven, host-arbitrated loop. State lives in the ephemeral loop
@@ -697,12 +737,19 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
         files: childFiles,
         cwd: typeof args.cwd === "string" ? args.cwd : undefined,
       };
-      const tool = rec.tool === "ask-all" ? "ask-all" : "consensus";
+      // Route by the ORIGINAL tool so a consensus-auto record re-runs the full loop
+      // (not a one-shot consensus). consensus-auto can return parts:null on an error
+      // path; the others always carry parts.
+      const tool = rec.tool === "ask-all" ? "ask-all" : rec.tool === "consensus-auto" ? "consensus-auto" : "consensus";
       const { payload, parts } = tool === "ask-all"
         ? await runAskAll(childReq, childExpert)
-        : await runConsensus(childReq, childExpert);
-      const sid = persistRun(tool, childReq, childExpert, { ...parts, parentId: rec.id });
-      if (sid) payload.sessionId = sid;
+        : tool === "consensus-auto"
+          ? await runConsensusAuto(childReq, childExpert)
+          : await runConsensus(childReq, childExpert);
+      if (parts) {
+        const sid = persistRun(tool, childReq, childExpert, { ...parts, parentId: rec.id });
+        if (sid) payload.sessionId = sid;
+      }
       payload.parentId = rec.id;
       return jsonResult(payload);
     }

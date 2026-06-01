@@ -20,8 +20,13 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-/** Current on-disk record shape version. 1a enrichment will bump this. */
-const SCHEMA_VERSION = 1;
+/**
+ * Current on-disk record shape version.
+ * v2: consensus-auto records carry per-opinion verdict/criticalIssues + a loop
+ * summary (converged/confidence/rounds). v1 records remain readable (all v2
+ * additions are optional); readers do not branch on the version today.
+ */
+const SCHEMA_VERSION = 2;
 /** Anchored id guard: rejects `../`, dots, slashes - no path traversal. */
 const ID_RE = /^[A-Za-z0-9-]+$/;
 /** Exact shape of a write temp file (`<id>.json.tmp.<pid>.<ms>`) - reaped if orphaned. */
@@ -33,10 +38,18 @@ const DEFAULT_MAX_RECORDS = 200;
 const DEFAULT_MAX_AGE_DAYS = 30;
 
 /**
+ * @typedef {Object} SessionCriticalIssue
+ * @property {string} category
+ * @property {string} description
+ */
+
+/**
  * @typedef {Object} SessionOpinion
  * @property {string} provider
  * @property {string} [model]
  * @property {string} [text]
+ * @property {(("APPROVE"|"REQUEST_CHANGES"|"REJECT")|null)} [verdict]  consensus-auto review verdict
+ * @property {SessionCriticalIssue[]} [criticalIssues]  consensus-auto tagged issues
  */
 
 /**
@@ -69,7 +82,7 @@ const DEFAULT_MAX_AGE_DAYS = 30;
  * @property {(string|null)} parentId
  * @property {number} schemaVersion
  * @property {string} createdAt  ISO timestamp
- * @property {("consensus"|"ask-all")} tool
+ * @property {("consensus"|"ask-all"|"consensus-auto")} tool
  * @property {string} question
  * @property {(string|null)} [expert]
  * @property {(SessionFileRef[]|null)} [files]
@@ -79,6 +92,9 @@ const DEFAULT_MAX_AGE_DAYS = 30;
  * @property {(SessionArbiter|null)} [arbiter]
  * @property {string[]} [warnings]
  * @property {SessionAnnotation[]} [annotations]
+ * @property {boolean} [converged]  consensus-auto: did the loop converge
+ * @property {string} [confidence]  consensus-auto: final confidence (none|low|medium|high)
+ * @property {number} [rounds]  consensus-auto: number of rounds the loop ran
  */
 
 /**
@@ -139,6 +155,16 @@ function isSafeId(id) {
   return typeof id === "string" && ID_RE.test(id);
 }
 
+/** The closed consensus verdict set. The writer coerces anything else to null. */
+const VERDICTS = ["APPROVE", "REQUEST_CHANGES", "REJECT"];
+/**
+ * @param {unknown} v
+ * @returns {v is ("APPROVE"|"REQUEST_CHANGES"|"REJECT")}
+ */
+function isVerdict(v) {
+  return typeof v === "string" && VERDICTS.indexOf(v) !== -1;
+}
+
 /** @returns {string} a fresh session id ([0-9a-f-], matches the safe-id guard). */
 function newSessionId() {
   return crypto.randomUUID();
@@ -154,13 +180,30 @@ function newSessionId() {
 function sanitizeRecord(record) {
   /** @type {SessionRecord} */
   const out = { ...record };
-  out.question = scrubSecrets(String(record.question == null ? "" : record.question));
+  out.question = capText(scrubSecrets(String(record.question == null ? "" : record.question)));
   if (Array.isArray(record.opinions)) {
-    out.opinions = record.opinions.map((o) => ({
-      provider: o.provider,
-      model: o.model,
-      text: typeof o.text === "string" ? capText(scrubSecrets(o.text)) : undefined,
-    }));
+    out.opinions = record.opinions.map((o) => {
+      /** @type {SessionOpinion} */
+      const so = {
+        provider: o.provider,
+        model: o.model,
+        text: typeof o.text === "string" ? capText(scrubSecrets(o.text)) : undefined,
+      };
+      // consensus-auto opinions carry a structured verdict + tagged issues.
+      // The writer is the trust boundary: do NOT assume the caller honored
+      // parseReview's enum contract. Whitelist the verdict to the closed set
+      // (anything else -> null) so no free-text can ride the unscrubbed verdict
+      // field. Issue descriptions are free provider text -> scrub + cap; the
+      // category tag is bounded but capped defensively against a bloated value.
+      if (o.verdict !== undefined) so.verdict = isVerdict(o.verdict) ? o.verdict : null;
+      if (Array.isArray(o.criticalIssues)) {
+        so.criticalIssues = o.criticalIssues.map((ci) => ({
+          category: capText(String(ci && ci.category != null ? ci.category : "")),
+          description: capText(scrubSecrets(String(ci && ci.description != null ? ci.description : ""))),
+        }));
+      }
+      return so;
+    });
   }
   if (record.verdict != null) out.verdict = capText(scrubSecrets(String(record.verdict)));
   if (record.blindVerdict != null) out.blindVerdict = capText(scrubSecrets(String(record.blindVerdict)));
@@ -185,7 +228,7 @@ function sanitizeRecord(record) {
   // (annotateSession already scrubs on append - this just makes write idempotent).
   if (Array.isArray(record.annotations)) {
     out.annotations = record.annotations.map((a) => ({
-      note: scrubSecrets(String(a && a.note != null ? a.note : "")),
+      note: capText(scrubSecrets(String(a && a.note != null ? a.note : ""))),
       at: a && a.at,
     }));
   }
