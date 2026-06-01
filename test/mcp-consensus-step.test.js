@@ -1,0 +1,118 @@
+// test/mcp-consensus-step.test.js
+"use strict";
+const { test } = require("node:test");
+const assert = require("node:assert/strict");
+const { buildServer } = require("../server/mcp/index.js");
+
+/** @param {string} name @param {(p:string)=>string} reply */
+function peer(name, reply) {
+  return {
+    name,
+    capabilities: { canImplement: false, fileUpload: false, multiTurn: false },
+    async health() { return { ok: true }; },
+    /** @param {{prompt:string}} req @returns {Promise<any>} */
+    async ask(req) { return { provider: name, model: "m", isError: false, text: reply(req.prompt), ms: 1 }; },
+  };
+}
+const approve = (n) => peer(n, () => "**Verdict**: APPROVE");
+const revSensitive = (n) => peer(n, (p) => (p.includes("REVISED") ? "**Verdict**: APPROVE" : "**Verdict**: REQUEST_CHANGES\n- [scope] thin"));
+const config = { providers: {}, openrouter: { maxFanout: 3, models: [] } };
+
+/** Drive one consensus-step action; return the parsed payload. */
+async function step(srv, args, id) {
+  const res = await srv.handle({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "consensus-step", arguments: args } });
+  return JSON.parse(res.result.content[0].text);
+}
+
+test("CS1: tools/list advertises consensus-step (advisory)", async () => {
+  const srv = buildServer({ providers: [approve("codex")], getConfig: () => config });
+  const res = await srv.handle({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+  const t = res.result.tools.find((x) => x.name === "consensus-step");
+  assert.ok(t);
+  assert.equal(t.annotations.readOnlyHint, true);
+});
+
+test("CS2: full happy path converges in round 1", async () => {
+  const srv = buildServer({ providers: [approve("codex"), approve("grok")], getConfig: () => config });
+  const init = await step(srv, { action: "init", prompt: "ship it", expert: "architect" }, 2);
+  assert.equal(init.status, "await_blind");
+  assert.ok(init.sessionId && init.blindPrompt.includes("ship it"));
+  const sid = init.sessionId;
+
+  const rb = await step(srv, { action: "record_blind", sessionId: sid, blindVerdict: "looks good, APPROVE" }, 3);
+  assert.equal(rb.status, "await_peers");
+
+  const dp = await step(srv, { action: "dispatch_peers", sessionId: sid }, 4);
+  assert.equal(dp.status, "await_adjudication");
+  assert.equal(dp.opinions.length, 2);
+  assert.ok(dp.opinions.every((o) => o.verdict === "APPROVE"));
+
+  const adj = await step(srv, { action: "submit_adjudication", sessionId: sid, verdict: "APPROVE", decisions: [] }, 5);
+  assert.equal(adj.converged, true);
+  assert.equal(adj.verdict, "APPROVE");
+  assert.ok(typeof adj.finalReport === "string" && adj.finalReport.length > 0);
+});
+
+test("CS3: out-of-order action -> structured error (no throw)", async () => {
+  const srv = buildServer({ providers: [approve("codex")], getConfig: () => config });
+  const init = await step(srv, { action: "init", prompt: "x" }, 6);
+  // skip record_blind -> dispatch_peers while status is await_blind
+  const bad = await step(srv, { action: "dispatch_peers", sessionId: init.sessionId }, 7);
+  assert.equal(bad.error, "unexpected-action-for-status");
+});
+
+test("CS4: unknown/expired sessionId -> session-expired error", async () => {
+  const srv = buildServer({ providers: [approve("codex")], getConfig: () => config });
+  const out = await step(srv, { action: "record_blind", sessionId: "nope-not-real", blindVerdict: "x" }, 8);
+  assert.equal(out.error, "session-expired");
+});
+
+test("CS5: dissent -> revise -> converge in round 2", async () => {
+  const srv = buildServer({ providers: [revSensitive("codex"), revSensitive("grok")], getConfig: () => config });
+  const sid = (await step(srv, { action: "init", prompt: "ship it" }, 10)).sessionId;
+  await step(srv, { action: "record_blind", sessionId: sid, blindVerdict: "needs work" }, 11);
+  const dp1 = await step(srv, { action: "dispatch_peers", sessionId: sid }, 12);
+  assert.ok(dp1.opinions.every((o) => o.verdict === "REQUEST_CHANGES"));
+  const adj1 = await step(srv, { action: "submit_adjudication", sessionId: sid, verdict: "REQUEST_CHANGES", decisions: [{ source: "codex", category: "scope", description: "thin", action: "accept" }] }, 13);
+  assert.equal(adj1.status, "await_revision");
+  const rev = await step(srv, { action: "submit_revision", sessionId: sid, revisedPlan: "REVISED plan with detail", diffSummary: "added detail" }, 14);
+  assert.equal(rev.status, "await_blind");
+  assert.equal(rev.round, 2);
+
+  await step(srv, { action: "record_blind", sessionId: sid, blindVerdict: "better now" }, 15);
+  const dp2 = await step(srv, { action: "dispatch_peers", sessionId: sid }, 16);
+  assert.ok(dp2.opinions.every((o) => o.verdict === "APPROVE"));
+  const adj2 = await step(srv, { action: "submit_adjudication", sessionId: sid, verdict: "APPROVE", decisions: [] }, 17);
+  assert.equal(adj2.converged, true);
+});
+
+test("CS7: dispatch_peers with record_blind skipped errors WITHOUT fanning out to peers", async () => {
+  let calls = 0;
+  const counted = {
+    name: "codex",
+    capabilities: { canImplement: false, fileUpload: false, multiTurn: false },
+    async health() { return { ok: true }; },
+    /** @returns {Promise<any>} */
+    async ask() { calls++; return { provider: "codex", model: "m", isError: false, text: "**Verdict**: APPROVE", ms: 1 }; },
+  };
+  const srv = buildServer({ providers: [counted], getConfig: () => config });
+  const sid = (await step(srv, { action: "init", prompt: "x" }, 30)).sessionId;
+  const bad = await step(srv, { action: "dispatch_peers", sessionId: sid }, 31); // skipped record_blind
+  assert.equal(bad.error, "unexpected-action-for-status");
+  assert.equal(calls, 0); // guard fired before any provider call
+});
+
+test("CS8: a non-init action without sessionId -> missing-sessionId", async () => {
+  const srv = buildServer({ providers: [approve("codex")], getConfig: () => config });
+  const out = await step(srv, { action: "record_blind", blindVerdict: "x" }, 32);
+  assert.equal(out.error, "missing-sessionId");
+});
+
+test("CS6: no-silent-dismissal - a dismiss without a reason is rejected", async () => {
+  const srv = buildServer({ providers: [approve("codex")], getConfig: () => config });
+  const sid = (await step(srv, { action: "init", prompt: "x" }, 20)).sessionId;
+  await step(srv, { action: "record_blind", sessionId: sid, blindVerdict: "b" }, 21);
+  await step(srv, { action: "dispatch_peers", sessionId: sid }, 22);
+  const adj = await step(srv, { action: "submit_adjudication", sessionId: sid, verdict: "REQUEST_CHANGES", decisions: [{ source: "codex", category: "ops", description: "x", action: "dismiss" }] }, 23);
+  assert.ok(adj.error); // submitAdjudication throws -> structured error
+});

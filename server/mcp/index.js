@@ -66,6 +66,26 @@ function sessionGetInputSchema() {
 function sessionAnnotateInputSchema() {
   return { type: "object", required: ["sessionId", "note"], properties: { sessionId: { type: "string" }, note: { type: "string" } } };
 }
+// consensus-step is a stateful, client-driven loop tool: one action per call,
+// state carried in the loop store by sessionId. Most fields are action-specific.
+function consensusStepInputSchema() {
+  return {
+    type: "object",
+    required: ["action"],
+    properties: {
+      action: { type: "string", enum: ["init", "record_blind", "dispatch_peers", "submit_adjudication", "submit_revision"] },
+      sessionId: { type: "string" },
+      prompt: { type: "string" },
+      expert: { type: "string" },
+      blindVerdict: { type: "string" },
+      verdict: { type: "string", enum: ["APPROVE", "REQUEST_CHANGES", "REJECT"] },
+      decisions: { type: "array" },
+      revisedPlan: { type: "string" },
+      diffSummary: { type: "string" },
+      cwd: { type: "string" },
+    },
+  };
+}
 
 function toolList() {
   /** @type {any[]} */
@@ -73,6 +93,7 @@ function toolList() {
     { name: "ask-all", description: "Fan out one question to GPT, Gemini, Grok, and any configured OpenRouter models in parallel for independent second opinions, then return all results (advisory, no cross-contamination). Pass `expert` to apply a persona to every delegate.", inputSchema: inputSchema(), annotations: ADVISORY },
     { name: "consensus", description: "Fan out one question to all enabled providers, then run a single arbiter pass that cross-reviews the independent opinions and returns one synthesized verdict (advisory). Pass `expert` to apply a persona to the fan-out and arbiter.", inputSchema: inputSchema(), annotations: ADVISORY },
     { name: "consensus-auto", description: "Run the FULL multi-round consensus convergence loop server-side with a provider arbiter (blind pass + peer fan-out -> adjudicate -> revise, up to 5 rounds) and return the converged verdict. For non-Claude hosts that want the loop in one call. Advisory; pass `expert` to apply a persona. Configure the arbiter via consensus.arbiter.", inputSchema: inputSchema(), annotations: ADVISORY },
+    { name: "consensus-step", description: "Client-driven consensus loop where YOU (the host model) are the arbiter, one step per call: action=init (start, returns sessionId + blind prompt) -> record_blind (your pre-commit verdict) -> dispatch_peers (server fans out to the providers) -> submit_adjudication (your verdict + per-issue accept/dismiss/defer) -> submit_revision (your revised plan), looping until converged or 5 rounds. State is held server-side by sessionId. Advisory.", inputSchema: consensusStepInputSchema(), annotations: ADVISORY },
   ];
   for (const t of Object.keys(ASK_PROVIDER)) {
     tools.push({ name: t, description: `Single-provider second opinion via ${ASK_PROVIDER[t]} (advisory, single-shot). Pass \`expert\` to apply one of the expert personas.`, inputSchema: inputSchema(), annotations: ADVISORY });
@@ -197,6 +218,13 @@ async function isHealthy(p) {
 function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
   const registry = makeRegistry(providers);
   const sessions = /** @type {any} */ (require("../../core/sessions.js"));
+  // Consensus-step (client-driven, host-arbitrated) loop pieces: the pure state
+  // machine, the review parser, and an ephemeral per-server store that carries
+  // LoopState across the stateless step tool calls (no sessions.persist needed).
+  const loop = /** @type {any} */ (require("../../core/consensus-loop.js"));
+  const { parseReview } = require("../../core/provider.js");
+  const { makeLoopStore } = require("../../core/loop-store.js");
+  const loopStore = makeLoopStore();
 
   // Client identity for arbiter-default selection. Connection-scoped: set from the
   // MCP `initialize` handshake (clientInfo.name) for the life of this stdio session.
@@ -467,6 +495,120 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
   }
 
   /**
+   * Enter the `await_blind` status: compute this round's prompts and stash the
+   * peer prompt on the stored state (the pure machine ignores the extra field;
+   * dispatch_peers reads it, since prepareRound is guarded to await_blind only).
+   * @param {any} state
+   * @returns {{state:any, blindPrompt:string}}
+   */
+  function enterBlind(state) {
+    const { peerPrompt, blindPrompt } = loop.prepareRound(state);
+    return { state: { ...state, peerPrompt }, blindPrompt };
+  }
+
+  /**
+   * Client-driven, host-arbitrated consensus loop - one action per MCP call,
+   * LoopState carried in the ephemeral loop store by sessionId. The host model
+   * supplies the blind verdict / adjudication / revision (visible in its
+   * transcript); the server only fans out to the peer providers. Never throws:
+   * a wrong-order action or an expired session returns a structured error so the
+   * driver can recover. Persistence of the final record lands in PR2b-4.
+   * @param {any} args
+   * @param {string|undefined} expert
+   * @returns {Promise<any>}
+   */
+  async function runConsensusStep(args, expert) {
+    const action = String(args.action || "");
+    try {
+      if (action === "init") {
+        const cfg = getConfig() || {};
+        const cc = cfg.consensus || {};
+        const maxRounds = Number.isInteger(cc.maxRounds) && cc.maxRounds > 0 ? cc.maxRounds : undefined;
+        let state = loop.initConsensusLoop({ plan: typeof args.prompt === "string" ? args.prompt : "", expert: args.expert, arbiterMode: "host", maxRounds });
+        const entered = enterBlind(state);
+        const sid = sessions.newSessionId();
+        loopStore.put(sid, entered.state);
+        return { sessionId: sid, status: entered.state.status, round: entered.state.round, blindPrompt: entered.blindPrompt, note: "write your blind verdict, then call record_blind" };
+      }
+
+      const sid = String(args.sessionId == null ? "" : args.sessionId);
+      if (!sid) return { error: "missing-sessionId", note: "sessionId is required for every action except init" };
+      const cur = loopStore.get(sid);
+      if (!cur) return { error: "session-expired", note: "no live session for that id (server restart or TTL); restart with action:init" };
+
+      if (action === "record_blind") {
+        const next = loop.recordBlindVerdict(cur, String(args.blindVerdict == null ? "" : args.blindVerdict));
+        // Defensive: pin the stashed peerPrompt across the transition (the pure
+        // machine carries it via spread today; don't rely on that staying true).
+        if (cur.peerPrompt && !next.peerPrompt) next.peerPrompt = cur.peerPrompt;
+        loopStore.put(sid, next);
+        return { sessionId: sid, status: next.status, round: next.round, note: "call dispatch_peers to fan out to the providers" };
+      }
+
+      if (action === "dispatch_peers") {
+        // Guard the status BEFORE the fan-out so a skipped record_blind cannot
+        // burn provider calls (addOpinions would otherwise throw only AFTER askAll).
+        if (cur.status !== "await_peers") {
+          return { error: "unexpected-action-for-status", detail: `dispatch_peers expects status 'await_peers', got '${cur.status}'` };
+        }
+        // peerPrompt was stashed on entry to await_blind; fall back to the plan
+        // text (NOT prepareRound, which is guarded to await_blind and would throw).
+        const peerPrompt = cur.peerPrompt || cur.currentPlan || "";
+        // One resolved expert for selection, persona, and the request - consistent.
+        const ex = cur.expert || expert || undefined;
+        const { providers: selected } = registry.selectForConsensus({ config: getConfig() || {}, expert: ex || "" });
+        /** @type {DelegationRequest} */
+        const peerReq = { prompt: peerPrompt, expert: ex, cwd: typeof args.cwd === "string" ? args.cwd : undefined };
+        const peerResults = await askAll(selected, withPersona(peerReq, ex));
+        const results = peerResults.map((r) =>
+          r.isError
+            ? { source: r.provider, isError: true, errorKind: r.errorKind, verdict: null, criticalIssues: [] }
+            : { ...parseReview(typeof r.text === "string" ? r.text : ""), source: r.provider, isError: false }
+        );
+        const next = loop.addOpinions(cur, results);
+        loopStore.put(sid, next);
+        return {
+          sessionId: sid,
+          status: next.status,
+          round: next.round,
+          opinions: results.map((r) => ({ source: r.source, isError: r.isError, verdict: r.verdict, criticalIssues: r.criticalIssues })),
+          note: "adjudicate the opinions, then call submit_adjudication with your verdict + per-issue decisions",
+        };
+      }
+
+      if (action === "submit_adjudication") {
+        const decisions = Array.isArray(args.decisions) ? args.decisions : [];
+        const next = loop.submitAdjudication(cur, { verdict: args.verdict, decisions });
+        if (next.status === "converged") {
+          const { finalReport, confidence } = loop.finalize(next);
+          loopStore.delete(sid);
+          return { sessionId: sid, status: "converged", converged: true, verdict: next.hostVerdict ? next.hostVerdict.verdict : null, confidence, finalReport };
+        }
+        loopStore.put(sid, next);
+        return { sessionId: sid, status: next.status, round: next.round, note: "not converged - revise the plan, then call submit_revision" };
+      }
+
+      if (action === "submit_revision") {
+        const advanced = loop.submitRevision(cur, typeof args.revisedPlan === "string" ? args.revisedPlan : cur.currentPlan, args.diffSummary);
+        if (advanced.status === "unresolved") {
+          const { finalReport, confidence } = loop.finalize(advanced);
+          loopStore.delete(sid);
+          return { sessionId: sid, status: "unresolved", converged: false, confidence, finalReport };
+        }
+        const entered = enterBlind(advanced);
+        loopStore.put(sid, entered.state);
+        return { sessionId: sid, status: entered.state.status, round: entered.state.round, blindPrompt: entered.blindPrompt, note: "next round - write your blind verdict, then call record_blind" };
+      }
+
+      return { error: `unknown action: ${action}` };
+    } catch (e) {
+      // A wrong-order action throws from the state-machine guard (assertStatus).
+      const msg = String((e && /** @type {any} */ (e).message) || e);
+      return { error: /expected status/.test(msg) ? "unexpected-action-for-status" : "step-failed", detail: msg };
+    }
+  }
+
+  /**
    * @param {string} name
    * @param {any} args  // untrusted JSON-RPC tool arguments
    */
@@ -511,6 +653,11 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
       // record with round history); not persisted here to avoid a lossy v1 record
       // that would silently downgrade to a one-shot rerun on revisit.
       return jsonResult(await runConsensusAuto(req, expert));
+    }
+    if (name === "consensus-step") {
+      // Client-driven, host-arbitrated loop. State lives in the ephemeral loop
+      // store by sessionId; the host model drives one action per call.
+      return jsonResult(await runConsensusStep(args, expert));
     }
     if (name === "session-get") {
       if (!persistEnabled()) return disabledMsg();
