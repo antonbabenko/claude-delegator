@@ -72,7 +72,7 @@
               "properties": {
                 "model": {
                   "type": "string",
-                  "description": "id of a models record to use as the arbiter (any record, even askAll:false / consensus:false).",
+                  "description": "id of one of THIS config's `models` records to use as the arbiter (a local record id, not an OpenRouter model slug). Any record qualifies, even askAll:false / consensus:false. An id that is not a configured record soft-degrades to \"auto\" at runtime with a warning.",
                   "examples": ["claude-arb"]
                 }
               }
