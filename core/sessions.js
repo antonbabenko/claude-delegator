@@ -24,6 +24,8 @@ const crypto = require("node:crypto");
 const SCHEMA_VERSION = 1;
 /** Anchored id guard: rejects `../`, dots, slashes - no path traversal. */
 const ID_RE = /^[A-Za-z0-9-]+$/;
+/** Exact shape of a write temp file (`<id>.json.tmp.<pid>.<ms>`) - reaped if orphaned. */
+const TMP_RE = /^[A-Za-z0-9-]+\.json\.tmp\.\d+\.\d+$/;
 /** ~100 KB cap per stored opinion/verdict text, so a runaway response can't bloat the store. */
 const MAX_TEXT_BYTES = 100 * 1024;
 
@@ -38,8 +40,15 @@ const DEFAULT_MAX_AGE_DAYS = 30;
  */
 
 /**
+ * Input attachment REF (never the body). Mirrors the request FileRef shape so a
+ * revisit re-runs with the same context regardless of ref kind. Location strings
+ * (path/dir) are scrubbed; file_id/file_url/mode pass through.
  * @typedef {Object} SessionFileRef
- * @property {string} path  attachment ref (path only, scrubbed) - NOT the body
+ * @property {string} [path]
+ * @property {string} [dir]
+ * @property {string} [file_id]
+ * @property {string} [file_url]
+ * @property {string} [mode]
  */
 
 /**
@@ -156,7 +165,16 @@ function sanitizeRecord(record) {
   if (record.verdict != null) out.verdict = capText(scrubSecrets(String(record.verdict)));
   if (record.blindVerdict != null) out.blindVerdict = capText(scrubSecrets(String(record.blindVerdict)));
   if (Array.isArray(record.files)) {
-    out.files = record.files.map((f) => ({ path: scrubSecrets(String(f && f.path != null ? f.path : "")) }));
+    out.files = record.files.map((f) => {
+      /** @type {SessionFileRef} */
+      const ref = {};
+      if (f && typeof f.path === "string") ref.path = scrubSecrets(f.path);
+      if (f && typeof f.dir === "string") ref.dir = scrubSecrets(f.dir);
+      if (f && typeof f.file_id === "string") ref.file_id = f.file_id;
+      if (f && typeof f.file_url === "string") ref.file_url = f.file_url;
+      if (f && typeof f.mode === "string") ref.mode = f.mode;
+      return ref;
+    });
   }
   // warnings come from config/provider error channels and can echo a key in an
   // error string; scrub them too (they would otherwise ride the spread untouched).
@@ -303,7 +321,7 @@ function pruneSessions(opts) {
   const TMP_REAP_MS = 60 * 60 * 1000;
   try {
     for (const name of fs.readdirSync(opts.dir)) {
-      if (!name.includes(".tmp.")) continue;
+      if (!TMP_RE.test(name)) continue; // only OUR write temps, not any ".tmp." file
       const p = path.join(opts.dir, name);
       let mt;
       try { mt = fs.statSync(p).mtimeMs; } catch { continue; }

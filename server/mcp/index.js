@@ -266,13 +266,21 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
     return jsonResult({ error: `session not found: ${String(id)}` });
   }
 
-  /** @param {any} files @returns {({path:string}[]|null)} input attachment REFS only (paths), never bodies */
+  /** @param {any} files @returns {(any[]|null)} input attachment REFS only (never bodies); preserves path/dir/file_id/file_url/mode so a revisit re-runs with the same context regardless of ref kind */
   function refsFromFiles(files) {
     if (!Array.isArray(files)) return null;
-    /** @type {{path:string}[]} */
+    /** @type {any[]} */
     const refs = [];
     for (const f of files) {
-      if (f && typeof f.path === "string") refs.push({ path: f.path });
+      if (!f || typeof f !== "object") continue;
+      /** @type {any} */
+      const ref = {};
+      if (typeof f.path === "string") ref.path = f.path;
+      if (typeof f.dir === "string") ref.dir = f.dir;
+      if (typeof f.file_id === "string") ref.file_id = f.file_id;
+      if (typeof f.file_url === "string") ref.file_url = f.file_url;
+      if (typeof f.mode === "string") ref.mode = f.mode;
+      if (Object.keys(ref).length) refs.push(ref);
     }
     return refs.length ? refs : null;
   }
@@ -464,8 +472,16 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
       // Carry the original attachment REFS so the re-run sees the same file
       // context the parent did (paths were scrubbed on write).
       const childFiles = Array.isArray(rec.files) && rec.files.length ? rec.files : undefined;
+      // Build childReq EXPLICITLY from the persisted record (+ cwd) - do NOT spread
+      // `req`, or a raw caller could smuggle developerInstructions/reasoningEffort
+      // into the rerun even though session-revisit only advertises sessionId + cwd.
       /** @type {DelegationRequest} */
-      const childReq = { ...req, prompt: rec.question, expert: childExpert, files: childFiles };
+      const childReq = {
+        prompt: rec.question,
+        expert: childExpert,
+        files: childFiles,
+        cwd: typeof args.cwd === "string" ? args.cwd : undefined,
+      };
       const tool = rec.tool === "ask-all" ? "ask-all" : "consensus";
       const { payload, parts } = tool === "ask-all"
         ? await runAskAll(childReq, childExpert)

@@ -345,3 +345,32 @@ test("S20: files persist as path REFS only", () => {
   if (!back) return;
   assert.deepEqual(back.files, [{ path: "./notes.md" }]);
 });
+
+test("S20b: non-path file refs (dir/file_id/file_url/mode) survive a round-trip", () => {
+  const dir = tmpDir();
+  const files = [
+    { dir: "src", mode: "inline" },
+    { file_id: "file-abc123" },
+    { file_url: "https://example.com/x.pdf" },
+  ];
+  const id = writeSession(rec({ files }), { dir });
+  const back = readSession(id, { dir });
+  assert.ok(back);
+  if (!back) return;
+  assert.deepEqual(back.files, files); // preserved so session-revisit keeps context
+});
+
+test("S18e: tmp reap only matches the writer's exact temp shape", () => {
+  const dir = tmpDir();
+  writeSession(rec({}), { dir });
+  const ours = path.join(dir, "abc.json.tmp.111.222");   // matches <id>.json.tmp.<pid>.<ms>
+  const theirs = path.join(dir, "notes.tmp.backup");      // unrelated ".tmp." file
+  fs.writeFileSync(ours, "x");
+  fs.writeFileSync(theirs, "keep me");
+  const old = Date.now() - 2 * 60 * 60 * 1000;
+  fs.utimesSync(ours, new Date(old), new Date(old));
+  fs.utimesSync(theirs, new Date(old), new Date(old));
+  pruneSessions({ dir, maxAgeDays: 3650, maxRecords: 100 });
+  assert.equal(fs.existsSync(ours), false);  // reaped
+  assert.equal(fs.existsSync(theirs), true); // left alone
+});
