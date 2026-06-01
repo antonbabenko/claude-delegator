@@ -1,3 +1,10 @@
+## [2.8.0](https://github.com/antonbabenko/deliberation/compare/v2.7.1...v2.8.0) (2026-06-01)
+
+
+### Features
+
+* opt-in session store + session tools (PLAN_1c) ([#84](https://github.com/antonbabenko/deliberation/issues/84)) ([f2a5a32](https://github.com/antonbabenko/deliberation/commit/f2a5a325b0cfbbaefaa8d9da0c3fc8adab8fd872))
+
 ## [2.7.1](https://github.com/antonbabenko/deliberation/compare/v2.7.0...v2.7.1) (2026-06-01)
 
 
@@ -25,11 +32,4 @@
 ### Features
 
 * unified config schema (providers + models map + routing + arbiter model) with JSON Schema + .vscode ([#75](https://github.com/antonbabenko/deliberation/issues/75)) ([54ec4ed](https://github.com/antonbabenko/deliberation/commit/54ec4ed385e44a9bc498a6407534d994bede1f80))
-
-## [2.4.0](https://github.com/antonbabenko/deliberation/compare/v2.3.0...v2.4.0) (2026-05-31)
-
-
-### Features
-
-* host-neutral XDG config + cache paths ([#73](https://github.com/antonbabenko/deliberation/issues/73)) ([0867b4d](https://github.com/antonbabenko/deliberation/commit/0867b4df6220203800d80836e3be9e2649accf46))
 
