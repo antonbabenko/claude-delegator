@@ -22,7 +22,9 @@ Fan-out and single-provider:
 - `ask-all` - send one question to GPT, Gemini, Grok, and configured OpenRouter
   models in parallel, get every answer back independently (no cross-talk).
 - `consensus` - fan out, then run one arbiter pass that cross-reviews the
-  independent answers and returns a single synthesized verdict.
+  independent answers and returns a single synthesized verdict. An optional
+  server-side blind pre-vote (`consensus.blindVote` in config) returns a
+  `blindVerdict` alongside the `verdict`.
 - `ask-gpt` / `ask-gemini` / `ask-grok` / `ask-openrouter` - one question to one
   provider for a single-shot second opinion.
 

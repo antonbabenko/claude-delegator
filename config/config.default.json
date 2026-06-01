@@ -29,5 +29,5 @@
     }
   },
   "routing": { "maxFanout": 3 },
-  "consensus": { "arbiter": "auto" }
+  "consensus": { "arbiter": "auto", "blindVote": false }
 }
