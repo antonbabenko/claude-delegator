@@ -7,9 +7,15 @@ name: Validate
 
 on:
   pull_request:
-  push:
-    branches: [master]
   workflow_dispatch:
+
+# All changes land on master via PR squash-merge, and master's ruleset requires
+# this "validate" check - so the pull_request run already gates every merge. A
+# post-merge push:[master] run would only re-test the identical tree, so it is
+# omitted. workflow_dispatch stays as a manual fallback.
+concurrency:
+  group: validate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
