@@ -5,7 +5,7 @@
 /** @typedef {import("../../core/types.js").DelegationRequest} DelegationRequest */
 
 const { makeRegistry, pinAlias } = require("../../core/registry.js");
-const { askAll, askOne, consensus } = require("../../core/orchestrate.js");
+const { askAll, askOne, consensus, runToConvergence } = require("../../core/orchestrate.js");
 const { PROMPTS } = require("../../core/prompts/index.js");
 
 const ADVISORY = { readOnlyHint: true };
@@ -72,6 +72,7 @@ function toolList() {
   const tools = [
     { name: "ask-all", description: "Fan out one question to GPT, Gemini, Grok, and any configured OpenRouter models in parallel for independent second opinions, then return all results (advisory, no cross-contamination). Pass `expert` to apply a persona to every delegate.", inputSchema: inputSchema(), annotations: ADVISORY },
     { name: "consensus", description: "Fan out one question to all enabled providers, then run a single arbiter pass that cross-reviews the independent opinions and returns one synthesized verdict (advisory). Pass `expert` to apply a persona to the fan-out and arbiter.", inputSchema: inputSchema(), annotations: ADVISORY },
+    { name: "consensus-auto", description: "Run the FULL multi-round consensus convergence loop server-side with a provider arbiter (blind pass + peer fan-out -> adjudicate -> revise, up to 5 rounds) and return the converged verdict. For non-Claude hosts that want the loop in one call. Advisory; pass `expert` to apply a persona. Configure the arbiter via consensus.arbiter.", inputSchema: inputSchema(), annotations: ADVISORY },
   ];
   for (const t of Object.keys(ASK_PROVIDER)) {
     tools.push({ name: t, description: `Single-provider second opinion via ${ASK_PROVIDER[t]} (advisory, single-shot). Pass \`expert\` to apply one of the expert personas.`, inputSchema: inputSchema(), annotations: ADVISORY });
@@ -406,6 +407,66 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
   }
 
   /**
+   * Run the full multi-round convergence loop server-side via runToConvergence.
+   * Needs a CONCRETE provider arbiter (the loop is provider-driven here); if the
+   * config resolves to host/none, fall back to a selected provider as the driver
+   * with a warning (the host-driven client loop is the consensus-step path, not
+   * this one). Shares runConsensus's panel selection + floor-of-2 exclusion.
+   * @param {DelegationRequest} req
+   * @param {string|undefined} expert
+   * @returns {Promise<any>}  the tool payload (converged/verdict/opinions/...); never throws
+   */
+  async function runConsensusAuto(req, expert) {
+    try {
+      const cfg = getConfig() || {};
+      const { providers: selected } = registry.selectForConsensus({ config: cfg, expert: expert || "" });
+      const cc = cfg.consensus || {};
+      const arbiterSpec = cc.arbiterDefaulted ? (isClaudeHost() ? "host" : "auto") : (cc.arbiter || "auto");
+      /** @type {string[]} */
+      const warnings = Array.isArray(cfg.consensusWarnings) ? cfg.consensusWarnings.slice() : [];
+      const cfgErr = typeof getConfigError === "function" ? getConfigError() : null;
+      if (cfgErr) warnings.push(`config not loaded: ${cfgErr}`);
+      const resolved = await resolveArbiter(arbiterSpec, selected, registry, getConfig);
+      if (resolved.warning) warnings.push(resolved.warning);
+
+      const arbiterP = resolved.provider;
+      if (!arbiterP) {
+        // consensus-auto needs a CONCRETE provider arbiter (the loop runs server-side).
+        // host mode is the client-driven /consensus path; do NOT silently pick a peer.
+        const host = resolved.mode === "host";
+        warnings.push(host
+          ? "consensus-auto runs the loop server-side and needs a concrete arbiter; set consensus.arbiter to a provider or openrouter:<alias> (host mode drives the client-side /consensus instead)"
+          : "no usable arbiter provider available");
+        return { converged: false, verdict: null, confidence: "none", rounds: 0, opinions: [], arbiter: { mode: resolved.mode, provider: null }, warnings, error: host ? "arbiter-is-host" : "no-arbiter" };
+      }
+
+      // Exclude the arbiter from the peer panel - never let it review its own output.
+      // A single distinct peer is a valid minimal panel (peer != arbiter).
+      const peers = selected.filter((p) => p.name !== arbiterP.name);
+      if (peers.length < 1) {
+        return { converged: false, verdict: null, confidence: "none", rounds: 0, opinions: [], arbiter: { mode: "server", provider: arbiterP.name }, warnings: warnings.concat(["consensus-auto needs at least one peer distinct from the arbiter"]), error: "insufficient-peers" };
+      }
+
+      const maxRounds = Number.isInteger(cc.maxRounds) && cc.maxRounds > 0 ? cc.maxRounds : undefined;
+      const out = await runToConvergence(peers, withPersona(req, expert), { arbiter: arbiterP, maxRounds });
+      const allWarnings = out.error ? warnings.concat([`loop: ${out.error}`]) : warnings;
+      return {
+        converged: out.converged,
+        verdict: out.verdict,
+        confidence: out.confidence,
+        rounds: Array.isArray(out.rounds) ? out.rounds.length : 0,
+        opinions: out.opinions,
+        arbiter: { mode: "server", provider: arbiterP.name },
+        warnings: allWarnings,
+        error: out.error,
+      };
+    } catch (e) {
+      // Never reject the tool call - degrade to a structured error.
+      return { converged: false, verdict: null, confidence: "none", rounds: 0, opinions: [], arbiter: null, warnings: [], error: `internal: ${String((e && /** @type {any} */ (e).message) || e)}` };
+    }
+  }
+
+  /**
    * @param {string} name
    * @param {any} args  // untrusted JSON-RPC tool arguments
    */
@@ -443,6 +504,13 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
       const sid = persistRun("consensus", req, expert, parts);
       if (sid) payload.sessionId = sid;
       return jsonResult(payload);
+    }
+    if (name === "consensus-auto") {
+      // Server-internal full convergence loop (provider arbiter). Persistence +
+      // session-revisit routing for the multi-round record land with PR2b-4 (v2
+      // record with round history); not persisted here to avoid a lossy v1 record
+      // that would silently downgrade to a one-shot rerun on revisit.
+      return jsonResult(await runConsensusAuto(req, expert));
     }
     if (name === "session-get") {
       if (!persistEnabled()) return disabledMsg();
