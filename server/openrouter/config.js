@@ -15,6 +15,10 @@ const DEFAULT_API_BASE = "https://openrouter.ai/api/v1";
 const DEFAULT_API_KEY_ENV = "OPENROUTER_API_KEY";
 const DEFAULT_MAX_FANOUT = 3;
 const DEFAULT_ARBITER = "auto";
+// Hard cap on consensus.maxRounds. Each round drives a blind pass + a peer fan-out
+// (multiple paid provider calls), so an unbounded value is a cost/runaway vector.
+// An over-cap config value is clamped to this (with a warning), not dropped.
+const MAX_ROUNDS_CAP = 50;
 // sessions block defaults (opt-in store; default OFF).
 const DEFAULT_SESSIONS_MAX_RECORDS = 200;
 const DEFAULT_SESSIONS_MAX_AGE_DAYS = 30;
@@ -322,11 +326,31 @@ function resolveConsensus(rawConsensus, models) {
     else warnings.push(`consensus.blindVote must be a boolean (got ${JSON.stringify(block.blindVote)}); using false`);
   }
 
+  // maxRounds: optional positive-integer cap on the server-side convergence loop
+  // (consensus-auto / consensus-step). Invalid -> omit so the loop's default (5)
+  // applies. Over MAX_ROUNDS_CAP -> clamp to the cap (the user wants many rounds;
+  // clamping is more faithful than dropping to the default). Only included in the
+  // resolved block when explicitly valid.
+  /** @type {number|undefined} */
+  let maxRounds;
+  if (block.maxRounds !== undefined) {
+    if (Number.isInteger(block.maxRounds) && block.maxRounds > 0) {
+      maxRounds = Math.min(block.maxRounds, MAX_ROUNDS_CAP);
+      if (block.maxRounds > MAX_ROUNDS_CAP) {
+        warnings.push(`consensus.maxRounds ${block.maxRounds} exceeds the cap ${MAX_ROUNDS_CAP}; using ${MAX_ROUNDS_CAP}`);
+      }
+    } else {
+      warnings.push(`consensus.maxRounds must be a positive integer (got ${JSON.stringify(block.maxRounds)}); using the default`);
+    }
+  }
+
   // arbiterDefaulted=true ONLY when the user did not set an arbiter at all, so the
   // server can pick host (under Claude Code) vs auto (elsewhere). An explicit but
   // invalid arbiter degrades to auto with arbiterDefaulted=false (the user did choose).
   const wrap = (/** @type {any} */ arbiter, /** @type {boolean} */ arbiterDefaulted) => ({
-    consensus: { arbiter, arbiterDefaulted, blindVote },
+    consensus: maxRounds === undefined
+      ? { arbiter, arbiterDefaulted, blindVote }
+      : { arbiter, arbiterDefaulted, blindVote, maxRounds },
     warnings,
   });
 

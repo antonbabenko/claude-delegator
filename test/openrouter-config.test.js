@@ -343,6 +343,35 @@ test("CB1c: non-boolean consensus.blindVote degrades to false + a warning", () =
   assert.ok(resolved.consensusWarnings.some((/** @type {string} */ w) => /blindVote must be a boolean/.test(w)));
 });
 
+test("CB1d: a valid positive-integer consensus.maxRounds is preserved", () => {
+  const c = base();
+  c.consensus = { arbiter: "auto", maxRounds: 3 };
+  const { resolved } = validateConfig(c);
+  assert.equal(resolved.consensus.maxRounds, 3);
+  assert.deepEqual(resolved.consensusWarnings, []);
+});
+
+test("CB1e: an invalid consensus.maxRounds is dropped (omitted) + warned, so the loop default applies", () => {
+  for (const bad of [0, -2, 1.5, "5", true, null]) {
+    const c = base();
+    c.consensus = { maxRounds: bad };
+    const { resolved } = validateConfig(c);
+    assert.equal("maxRounds" in resolved.consensus, false, `${JSON.stringify(bad)}: omitted`);
+    assert.ok(
+      resolved.consensusWarnings.some((/** @type {string} */ w) => /maxRounds must be a positive integer/.test(w)),
+      `${JSON.stringify(bad)}: warned`,
+    );
+  }
+});
+
+test("CB1f: a consensus.maxRounds above the cap (50) is clamped + warned, not dropped", () => {
+  const c = base();
+  c.consensus = { maxRounds: 1000000000 };
+  const { resolved } = validateConfig(c);
+  assert.equal(resolved.consensus.maxRounds, 50);
+  assert.ok(resolved.consensusWarnings.some((/** @type {string} */ w) => /exceeds the cap 50/.test(w)));
+});
+
 test("CB2: arbiter 'host' is accepted verbatim", () => {
   const c = base();
   c.consensus = { arbiter: "host" };

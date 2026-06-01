@@ -84,6 +84,13 @@
           "type": "boolean",
           "default": false,
           "description": "Run a blind arbiter pre-vote (the arbiter answers the question cold, before seeing peer opinions) to reduce anchoring. Server/concrete-arbiter mode only; adds one extra arbiter call."
+        },
+        "maxRounds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "default": 5,
+          "description": "Maximum rounds for the server-side convergence loop (consensus-auto / consensus-step) before returning UNRESOLVED. Positive integer 1-50 (values above 50 are clamped to 50); defaults to 5 when unset or invalid."
         }
       }
     },
