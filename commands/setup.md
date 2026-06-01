@@ -19,6 +19,12 @@ call with an AskUserQuestion, and do not split the main block.
 
 > Run the block below as ONE Bash call. Do NOT split it into smaller calls, and do NOT batch it
 > with any other tool call. It is idempotent - safe to re-run.
+>
+> **Run it with the Bash sandbox DISABLED.** The block writes `~/.claude.json` (MCP
+> registration), `~/.claude/commands/` (aliases), and `~/.claude/rules/deliberation/` - all
+> outside a typical sandbox write allowlist. Under a sandbox those writes fail silently and the
+> registration keeps pointing at an old plugin version. The block ends with a verification step
+> that prints a `CRITICAL` block telling you to re-run unsandboxed if it detects this.
 
 It does everything non-interactive: checks CLIs, reads `config.json` once, registers the enabled
 MCP servers at user scope (namespaced `deliberation-*`), installs the rules, and prints a status
@@ -123,9 +129,28 @@ add_mcp() {
   remove_mcp "$name"
   claude mcp add --transport stdio --scope user "$name" -- "$@" || echo "WARN: failed to register $name"
 }
+# Verify a registered server in ~/.claude.json points at the expected command/path.
+# Reads the file directly (a sandbox blocks WRITES to it, not reads), so this is the
+# source of truth even when `claude mcp add` silently no-ops because remove was blocked
+# and the stale entry survived. Echoes OK | STALE | MISSING | ERR.
+verify_reg() {
+  local name="" ; for name in "$@"; do break; done ; [ "$#" -gt 0 ] && shift
+  local expect="" ; for expect in "$@"; do break; done
+  node -e 'const fs=require("fs"),h=require("os").homedir();try{const j=JSON.parse(fs.readFileSync(h+"/.claude.json","utf8"));const s=(j.mcpServers||{})[process.argv[1]];if(!s){process.stdout.write("MISSING");process.exit(0)}const cmd=[s.command].concat(s.args||[]).join(" ");process.stdout.write(cmd.includes(process.argv[2])?"OK":"STALE")}catch(e){process.stdout.write("ERR")}' "$name" "$expect"
+}
 
 # --- CLI presence (external tools; bridges ship with the plugin so are not checked) ---
-command -v codex >/dev/null 2>&1 && CODEX_STATUS="$(codex --version 2>&1 | head -1)" || CODEX_STATUS="MISSING (npm i -g @openai/codex)"
+# Read --version from stdout only. Folding in stderr (2>&1) would capture codex's
+# "WARNING: proceeding, even though we could not update PATH" line (emitted when codex
+# cannot rewrite PATH, e.g. under a sandbox) and report it as the version. The grep
+# fallback covers builds that print the version on stderr while still dropping the warning.
+if command -v codex >/dev/null 2>&1; then
+  CODEX_STATUS="$(codex --version 2>/dev/null | head -1)"
+  [ -z "$CODEX_STATUS" ] && CODEX_STATUS="$(codex --version 2>&1 | grep -ivE 'warning|could not update path' | head -1)"
+  [ -z "$CODEX_STATUS" ] && CODEX_STATUS="installed"
+else
+  CODEX_STATUS="MISSING (npm i -g @openai/codex)"
+fi
 command -v agy   >/dev/null 2>&1 && AGY_STATUS="installed" || AGY_STATUS="MISSING (https://antigravity.google)"
 
 # --- register servers (each gated on provider_enabled; missing config = all on) ---
@@ -151,6 +176,21 @@ mkdir -p "$HOME/.claude/rules/deliberation"
 cp "$PLUGIN_ROOT"/rules/*.md "$HOME/.claude/rules/deliberation/" 2>/dev/null || true
 RULE_COUNT=$(find "$HOME/.claude/rules/deliberation" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
 
+# --- verify the registrations actually landed (catches silent sandbox write failures) ---
+# Node-path servers must contain the resolved $PLUGIN_ROOT (so a version bump is reflected);
+# codex must carry "codex mcp-server". Anything not OK is collected into REG_STALE.
+REG_STALE=""
+check_reg() {
+  local n="" ; for n in "$@"; do break; done ; [ "$#" -gt 0 ] && shift
+  local e="" ; for e in "$@"; do break; done
+  [ "$(verify_reg "$n" "$e")" = "OK" ] || REG_STALE="$REG_STALE $n"
+}
+[ "$(provider_enabled codex)" = "1" ]  && check_reg deliberation-codex "codex mcp-server"
+[ "$(provider_enabled gemini)" = "1" ] && check_reg deliberation-gemini "$PLUGIN_ROOT"
+[ "$(provider_enabled grok)" = "1" ]   && check_reg deliberation-grok "$PLUGIN_ROOT"
+[ "$(openrouter_enabled)" = "1" ]      && check_reg deliberation-openrouter "$PLUGIN_ROOT"
+check_reg deliberation "$PLUGIN_ROOT"
+
 # --- status ---
 echo
 echo "deliberation setup"
@@ -167,7 +207,14 @@ echo "                 store: $SESSIONS_DIR (max records: $SESS_RECS, max age: $
 echo "Rules:           $RULE_COUNT files in ~/.claude/rules/deliberation/"
 echo "Grok auth:       $([ -n "${XAI_API_KEY:-}" ] && echo "XAI_API_KEY set" || echo "XAI_API_KEY not set (calls return missing-auth)")"
 echo "OpenRouter auth: $([ -n "${OPENROUTER_API_KEY:-}" ] && echo set || echo "not set")"
-echo "MCP servers registered (user scope). Run 'claude mcp list' to confirm."
+if [ -n "$REG_STALE" ]; then
+  echo "MCP servers:     CRITICAL - registration did NOT update:$REG_STALE"
+  echo "                 Entries are missing or still point at an old path. The most likely cause"
+  echo "                 is a Bash sandbox blocking the write to ~/.claude.json. Re-run"
+  echo "                 /deliberation:setup with the sandbox DISABLED (see /sandbox), then restart."
+else
+  echo "MCP servers:     registered (user scope) and verified at $PLUGIN_ROOT. 'claude mcp list' to confirm."
+fi
 echo
 echo "Restart Claude Code so the deliberation-* tools load; until then /ask-* may not find them."
 ```
