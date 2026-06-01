@@ -58,7 +58,10 @@ function inputSchema() {
 // Session tools take a sessionId (+ note for annotate), NOT a prompt - so they
 // need their OWN input schemas rather than the prompt-required inputSchema().
 function sessionGetInputSchema() {
-  return { type: "object", required: ["sessionId"], properties: { sessionId: { type: "string" } } };
+  // `cwd` is advertised (optional) so session-revisit can resolve the original
+  // file refs against the caller's workspace, not the server process dir. It
+  // flows through req.cwd -> childReq.cwd. session-get ignores it harmlessly.
+  return { type: "object", required: ["sessionId"], properties: { sessionId: { type: "string" }, cwd: { type: "string" } } };
 }
 function sessionAnnotateInputSchema() {
   return { type: "object", required: ["sessionId", "note"], properties: { sessionId: { type: "string" }, note: { type: "string" } } };

@@ -218,7 +218,8 @@ test("S17: scrubSecrets redacts each key pattern", () => {
   const openrouter = "sk-or-v1-" + "b".repeat(24);
   const xai = "xai-" + "c".repeat(24);
   const google = "AIza" + "D".repeat(35);
-  const bearer = "Bearer tok.en-value_123";
+  const bearerTok = "abc.def-ghi_jkl+mno/pqrST"; // >= 20 chars, base64url-ish
+  const bearer = `Bearer ${bearerTok}`;
 
   assert.equal(scrubSecrets(openai).includes(openai), false);
   assert.ok(scrubSecrets(openai).includes("[REDACTED]"));
@@ -233,8 +234,24 @@ test("S17: scrubSecrets redacts each key pattern", () => {
   assert.ok(scrubSecrets(google).includes("[REDACTED]"));
 
   const scrubbedBearer = scrubSecrets(bearer);
-  assert.equal(scrubbedBearer.includes("tok.en-value_123"), false);
+  assert.equal(scrubbedBearer.includes(bearerTok), false);
   assert.ok(scrubbedBearer.includes("Bearer [REDACTED]"));
+});
+
+test("S17d: scrubSecrets leaves short hyphenated terms and the word 'bearer' intact", () => {
+  // {20,} minimum: these are NOT keys and must survive unchanged.
+  assert.equal(scrubSecrets("sk-folding-cube spinner"), "sk-folding-cube spinner");
+  assert.equal(scrubSecrets("xai-explainability docs"), "xai-explainability docs");
+  // No `i` flag: the English word "bearer" (lowercase, short follow) is untouched.
+  assert.equal(scrubSecrets("the bearer of this responsibility"), "the bearer of this responsibility");
+});
+
+test("S17e: scrubSecrets redacts GitHub and AWS key shapes", () => {
+  const gh = "ghp_" + "a".repeat(36);
+  const aws = "AKIA" + "ABCDEFGHIJKLMNOP"; // AKIA + 16
+  assert.ok(scrubSecrets(gh).includes("[REDACTED]"));
+  assert.equal(scrubSecrets(gh).includes(gh), false);
+  assert.ok(scrubSecrets(`id=${aws} x`).includes("[REDACTED]"));
 });
 
 test("S17b: scrubSecrets does NOT corrupt normal words containing key-like substrings", () => {
@@ -266,6 +283,38 @@ test("S18: secrets are scrubbed on write (question, opinion text, verdict, file 
   const blob = JSON.stringify(back);
   assert.equal(blob.includes(secret), false);
   assert.ok(blob.includes("[REDACTED]"));
+});
+
+test("S18b: secrets in the warnings array are scrubbed on write", () => {
+  const dir = tmpDir();
+  const secret = "sk-" + "w".repeat(30);
+  const id = writeSession(rec({ warnings: [`provider error: invalid key ${secret}`] }), { dir });
+  const back = readSession(id, { dir });
+  assert.ok(back);
+  if (!back) return;
+  assert.equal(JSON.stringify(back.warnings).includes(secret), false);
+  assert.ok((back.warnings || [])[0].includes("[REDACTED]"));
+});
+
+test("S18c: pruneSessions reaps an orphaned old .tmp file", () => {
+  const dir = tmpDir();
+  writeSession(rec({}), { dir });
+  // Simulate a crash-orphaned temp from a previous write, aged > 1h.
+  const orphan = path.join(dir, "abc.json.tmp.999.123");
+  fs.writeFileSync(orphan, "partial");
+  const old = Date.now() - 2 * 60 * 60 * 1000;
+  fs.utimesSync(orphan, new Date(old), new Date(old));
+  pruneSessions({ dir, maxAgeDays: 3650, maxRecords: 100 });
+  assert.equal(fs.existsSync(orphan), false);
+});
+
+test("S18d: pruneSessions leaves a FRESH .tmp file alone (in-flight write)", () => {
+  const dir = tmpDir();
+  writeSession(rec({}), { dir });
+  const fresh = path.join(dir, "abc.json.tmp.999.456");
+  fs.writeFileSync(fresh, "in-flight");
+  pruneSessions({ dir, maxAgeDays: 3650, maxRecords: 100 });
+  assert.equal(fs.existsSync(fresh), true); // younger than the 1h reap window
 });
 
 // --- 100 KB cap --------------------------------------------------------------

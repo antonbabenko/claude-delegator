@@ -81,17 +81,25 @@ function scrubSecrets(text) {
   if (typeof text !== "string" || text.length === 0) return text;
   return text
     // Leading \b so a key embedded in a normal word (e.g. "risk-analysis" ->
-    // "sk-analysis") is NOT matched. OpenRouter (sk-or-) BEFORE OpenAI (sk-) so the
-    // more specific shape wins.
-    .replace(/\bsk-or-[A-Za-z0-9_-]{8,}/g, "[REDACTED]")
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, "[REDACTED]")
+    // "sk-analysis") is NOT matched. {20,} (not {8,}) so short hyphenated terms
+    // (e.g. "sk-folding-cube", "xai-explainability") are not mistaken for keys -
+    // real OpenAI/OpenRouter/xAI keys are well over 20 chars. OpenRouter (sk-or-)
+    // BEFORE OpenAI (sk-) so the more specific shape wins.
+    .replace(/\bsk-or-[A-Za-z0-9_-]{20,}/g, "[REDACTED]")
+    .replace(/\bsk-[A-Za-z0-9_-]{20,}/g, "[REDACTED]")
     // xAI keys.
-    .replace(/\bxai-[A-Za-z0-9_-]{8,}/g, "[REDACTED]")
+    .replace(/\bxai-[A-Za-z0-9_-]{20,}/g, "[REDACTED]")
+    // GitHub tokens (ghp_/gho_/ghu_/ghs_/ghr_) and AWS access key ids (AKIA...).
+    .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}/g, "[REDACTED]")
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED]")
     // Google API keys: AIza + >=35 chars. {35,} (not {35}) so a longer-than-39
     // key cannot leak its tail; over-matching only redacts MORE, never less.
     .replace(/\bAIza[0-9A-Za-z_-]{35,}/g, "[REDACTED]")
-    // Generic `Bearer <token>` headers.
-    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]");
+    // `Bearer <token>` headers. No `i` flag (HTTP uses capital "Bearer") so the
+    // English word "bearer" is not matched; {20,} min + base64/base64url charset
+    // (+ / ~ -) and optional = padding so a real token is fully redacted, not
+    // partially leaked.
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]{20,}={0,2}/g, "Bearer [REDACTED]");
 }
 
 /**
@@ -149,6 +157,19 @@ function sanitizeRecord(record) {
   if (record.blindVerdict != null) out.blindVerdict = capText(scrubSecrets(String(record.blindVerdict)));
   if (Array.isArray(record.files)) {
     out.files = record.files.map((f) => ({ path: scrubSecrets(String(f && f.path != null ? f.path : "")) }));
+  }
+  // warnings come from config/provider error channels and can echo a key in an
+  // error string; scrub them too (they would otherwise ride the spread untouched).
+  if (Array.isArray(record.warnings)) {
+    out.warnings = record.warnings.map((w) => scrubSecrets(String(w == null ? "" : w)));
+  }
+  // Defensive: a hand-built record could carry annotation notes; scrub them too
+  // (annotateSession already scrubs on append - this just makes write idempotent).
+  if (Array.isArray(record.annotations)) {
+    out.annotations = record.annotations.map((a) => ({
+      note: scrubSecrets(String(a && a.note != null ? a.note : "")),
+      at: a && a.at,
+    }));
   }
   return out;
 }
@@ -275,6 +296,21 @@ function pruneSessions(opts) {
   const md = opts.maxAgeDays;
   const maxRecords = typeof mr === "number" && Number.isInteger(mr) && mr > 0 ? mr : DEFAULT_MAX_RECORDS;
   const maxAgeDays = typeof md === "number" && Number.isInteger(md) && md > 0 ? md : DEFAULT_MAX_AGE_DAYS;
+  // Sweep orphaned temp files first. A crash between writeFileSync(tmp) and the
+  // rename leaves a `<id>.json.tmp.<pid>.<ts>` that listSessions ignores (non-.json),
+  // so nothing else would ever reap it. Only sweep ones older than an hour to avoid
+  // racing a write in flight from another process.
+  const TMP_REAP_MS = 60 * 60 * 1000;
+  try {
+    for (const name of fs.readdirSync(opts.dir)) {
+      if (!name.includes(".tmp.")) continue;
+      const p = path.join(opts.dir, name);
+      let mt;
+      try { mt = fs.statSync(p).mtimeMs; } catch { continue; }
+      if (Date.now() - mt > TMP_REAP_MS) removeFile(p);
+    }
+  } catch { /* missing dir: nothing to sweep */ }
+
   const entries = listSessions({ dir: opts.dir });
   const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
   let removed = 0;
