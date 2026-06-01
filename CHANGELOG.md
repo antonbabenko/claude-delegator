@@ -1,3 +1,10 @@
+## [2.6.0](https://github.com/antonbabenko/deliberation/compare/v2.5.0...v2.6.0) (2026-06-01)
+
+
+### Features
+
+* native plugins for Cursor, Codex CLI, Kiro, and OpenCode ([#77](https://github.com/antonbabenko/deliberation/issues/77)) ([52dd6fe](https://github.com/antonbabenko/deliberation/commit/52dd6fef9c3fabc3028778b4b130590d4bf385f7)), closes [openai/codex#17066](https://github.com/openai/codex/issues/17066)
+
 ## [2.5.0](https://github.com/antonbabenko/deliberation/compare/v2.4.0...v2.5.0) (2026-05-31)
 
 
@@ -25,11 +32,4 @@
 ### Features
 
 * **core:** host-agnostic configurable consensus arbiter ([#69](https://github.com/antonbabenko/deliberation/issues/69)) ([cbeeff6](https://github.com/antonbabenko/deliberation/commit/cbeeff68532ddf20b8121d8a25a9c8cb02436203))
-
-## [2.1.0](https://github.com/antonbabenko/deliberation/compare/v2.0.3...v2.1.0) (2026-05-31)
-
-
-### Features
-
-* **core:** expert personas as data + server-side injection + self-describing tool schema ([#67](https://github.com/antonbabenko/deliberation/issues/67)) ([8aa4e6e](https://github.com/antonbabenko/deliberation/commit/8aa4e6e16ed27e68b9dcadf89d1a6062f32b39a5))
 
