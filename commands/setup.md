@@ -70,10 +70,19 @@ if [ ! -f "$CFG" ]; then
   fi
 fi
 
-json_eval() { node -e "$1" "$CFG" 2>/dev/null; }
+# Helpers take their first arg WITHOUT the literal $1/$2 tokens: Claude Code
+# interpolates $1..$9 / $ARGUMENTS in a command body before bash runs, and this is a
+# no-arg command, so any $1 here would be blanked. `for x in "$@"; do break; done`
+# binds x to the first arg; the guarded shift drops it so "$@" is the remainder.
+# `$@` is NOT a slash-command placeholder, so it survives intact.
+json_eval() {
+  local prog="" ; for prog in "$@"; do break; done ; [ "$#" -gt 0 ] && shift
+  node -e "$prog" "$CFG" "$@" 2>/dev/null
+}
 # providers.<name>.enabled: missing => enabled (returns 1); explicit false => 0.
 provider_enabled() {
-  json_eval 'try{const c=require(process.argv[1]);const p=(c.providers&&c.providers[process.argv[2]])||{};process.stdout.write(p.enabled===false?"0":"1")}catch(e){process.stdout.write("1")}' "$1"
+  local prov="" ; for prov in "$@"; do break; done
+  json_eval 'try{const c=require(process.argv[1]);const p=(c.providers&&c.providers[process.argv[2]])||{};process.stdout.write(p.enabled===false?"0":"1")}catch(e){process.stdout.write("1")}' "$prov"
 }
 # openrouter on iff providers.openrouter.enabled!=false AND (>=1 models record OR defaultModel).
 # Unified v1 shape: connection lives under providers.openrouter; models is the top-level map.
@@ -84,9 +93,16 @@ or_key_env() {
   json_eval 'try{const c=require(process.argv[1]);const p=(c.providers&&c.providers.openrouter)||{};process.stdout.write(p.apiKeyEnv||"OPENROUTER_API_KEY")}catch(e){process.stdout.write("OPENROUTER_API_KEY")}'
 }
 
-remove_mcp() { claude mcp remove "$1" >/dev/null 2>&1 || true; }
+remove_mcp() {
+  local name="" ; for name in "$@"; do break; done
+  claude mcp remove "$name" >/dev/null 2>&1 || true
+}
 # remove-then-add (do not assume `claude mcp add` upserts). Never aborts the rest on one failure.
-add_mcp() { name="$1"; shift; remove_mcp "$name"; claude mcp add --transport stdio --scope user "$name" -- "$@" || echo "WARN: failed to register $name"; }
+add_mcp() {
+  local name="" ; for name in "$@"; do break; done ; [ "$#" -gt 0 ] && shift
+  remove_mcp "$name"
+  claude mcp add --transport stdio --scope user "$name" -- "$@" || echo "WARN: failed to register $name"
+}
 
 # --- CLI presence (external tools; bridges ship with the plugin so are not checked) ---
 command -v codex >/dev/null 2>&1 && CODEX_STATUS="$(codex --version 2>&1 | head -1)" || CODEX_STATUS="MISSING (npm i -g @openai/codex)"
