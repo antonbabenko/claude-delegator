@@ -161,7 +161,7 @@ Bundled with the plugin (available once installed):
 | `/deliberation:uninstall` | Remove MCP config, rules, and aliases |
 | `/deliberation:grok-files` | List, prune, or gc Grok-uploaded files (storage + local cache cleanup) |
 
-`/setup` can also install short aliases (`/ask-gpt`, `/ask-gemini`, `/ask-grok`, `/ask-all`, `/consensus`, `/grok-files`) into `~/.claude/commands/`. This is opt-in. Existing same-named commands are kept by default; setup asks before overwriting any of them. `/uninstall` removes an alias only if it is byte-identical to the bundled copy.
+`/setup` can also install short aliases (`/ask-gpt`, `/ask-gemini`, `/ask-grok`, `/ask-all`, `/consensus`, `/grok-files`) into `~/.claude/commands/`. This is opt-in. Existing same-named commands are kept by default; setup asks before overwriting any of them. `/deliberation:uninstall` removes an alias only if it is byte-identical to the bundled copy.
 
 ## The Experts
 
