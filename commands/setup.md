@@ -11,7 +11,7 @@ Configure GPT (via Codex), Gemini, Grok, and OpenRouter as expert subagents via 
 orchestration rules, and (optionally) the short command aliases. Grok and OpenRouter are
 advisory-only.
 
-This command runs in three phases: ONE main Bash call (checks + register + install + status), then
+This command runs in three phases: ONE main Bash call (checks + seed config + migrate + install rules + status), then
 isolated question turns for the optional aliases and the optional GitHub star. Do not batch a Bash
 call with an AskUserQuestion, and do not split the main block.
 
@@ -20,15 +20,15 @@ call with an AskUserQuestion, and do not split the main block.
 > Run the block below as ONE Bash call. Do NOT split it into smaller calls, and do NOT batch it
 > with any other tool call. It is idempotent - safe to re-run.
 >
-> **Run it with the Bash sandbox DISABLED.** The block writes `~/.claude.json` (MCP
-> registration), `~/.claude/commands/` (aliases), and `~/.claude/rules/deliberation/` - all
-> outside a typical sandbox write allowlist. Under a sandbox those writes fail silently and the
-> registration keeps pointing at an old plugin version. The block ends with a verification step
-> that prints a `CRITICAL` block telling you to re-run unsandboxed if it detects this.
+> **Run it with the Bash sandbox DISABLED.** The block writes `~/.claude/rules/deliberation/`
+> and `~/.claude.json`, both outside a typical sandbox write allowlist. Under a sandbox those
+> writes fail silently; the block verifies the result at the end and prints a `CRITICAL` block
+> telling you to re-run unsandboxed if it detects a problem.
 
-It does everything non-interactive: checks CLIs, reads `config.json` once, registers the enabled
-MCP servers at user scope (namespaced `deliberation-*`), installs the rules, and prints a status
-report.
+The MCP servers are registered by the plugin manifest (`.claude-plugin/mcp.json`), so they load
+automatically when the plugin is enabled and update with `/plugin update` + `/reload-plugins`.
+This block is non-interactive: it seeds a default `config.json`, checks the provider CLIs, installs
+the rules, and prints a status report.
 
 ```bash
 set -u
@@ -100,11 +100,6 @@ json_eval() {
   local prog="" ; for prog in "$@"; do break; done ; [ "$#" -gt 0 ] && shift
   node -e "$prog" "$CFG" "$@" 2>/dev/null
 }
-# providers.<name>.enabled: missing => enabled (returns 1); explicit false => 0.
-provider_enabled() {
-  local prov="" ; for prov in "$@"; do break; done
-  json_eval 'try{const c=require(process.argv[1]);const p=(c.providers&&c.providers[process.argv[2]])||{};process.stdout.write(p.enabled===false?"0":"1")}catch(e){process.stdout.write("1")}' "$prov"
-}
 # openrouter on iff providers.openrouter.enabled!=false AND (>=1 models record OR defaultModel).
 # Unified v1 shape: connection lives under providers.openrouter; models is the top-level map.
 openrouter_enabled() {
@@ -119,24 +114,15 @@ sessions_summary() {
   json_eval 'try{const c=require(process.argv[1]);const s=c.sessions||{};const on=s.persist===true?"ON":"OFF";const mr=Number.isInteger(s.maxRecords)?s.maxRecords:200;const md=Number.isInteger(s.maxAgeDays)?s.maxAgeDays:30;const recs=mr===-1?"unlimited":String(mr);const age=md===-1?"unlimited":md+"d";process.stdout.write(on+"|"+recs+"|"+age)}catch(e){process.stdout.write("OFF|200|30d")}'
 }
 
+# Remove a user-scope MCP registration so it cannot shadow the manifest entry. Tolerant of absence.
 remove_mcp() {
   local name="" ; for name in "$@"; do break; done
-  claude mcp remove "$name" >/dev/null 2>&1 || true
+  claude mcp remove --scope user "$name" >/dev/null 2>&1 || true
 }
-# remove-then-add (do not assume `claude mcp add` upserts). Never aborts the rest on one failure.
-add_mcp() {
-  local name="" ; for name in "$@"; do break; done ; [ "$#" -gt 0 ] && shift
-  remove_mcp "$name"
-  claude mcp add --transport stdio --scope user "$name" -- "$@" || echo "WARN: failed to register $name"
-}
-# Verify a registered server in ~/.claude.json points at the expected command/path.
-# Reads the file directly (a sandbox blocks WRITES to it, not reads), so this is the
-# source of truth even when `claude mcp add` silently no-ops because remove was blocked
-# and the stale entry survived. Echoes OK | STALE | MISSING | ERR.
-verify_reg() {
-  local name="" ; for name in "$@"; do break; done ; [ "$#" -gt 0 ] && shift
-  local expect="" ; for expect in "$@"; do break; done
-  node -e 'const fs=require("fs"),h=require("os").homedir();try{const j=JSON.parse(fs.readFileSync(h+"/.claude.json","utf8"));const s=(j.mcpServers||{})[process.argv[1]];if(!s){process.stdout.write("MISSING");process.exit(0)}const cmd=[s.command].concat(s.args||[]).join(" ");process.stdout.write(cmd.includes(process.argv[2])?"OK":"STALE")}catch(e){process.stdout.write("ERR")}' "$name" "$expect"
+# List any user-scope deliberation-* / deliberation entries in ~/.claude.json (a sandbox blocks
+# WRITES to it, not reads, so this read is the source of truth). Echoes a space-joined list.
+stale_userscope() {
+  node -e 'const fs=require("fs"),h=require("os").homedir();try{const j=JSON.parse(fs.readFileSync(h+"/.claude.json","utf8"));const m=j.mcpServers||{};process.stdout.write(Object.keys(m).filter(k=>k==="deliberation"||k.indexOf("deliberation-")===0).join(" "))}catch(e){process.stdout.write("")}'
 }
 
 # --- CLI presence (external tools; bridges ship with the plugin so are not checked) ---
@@ -153,43 +139,29 @@ else
 fi
 command -v agy   >/dev/null 2>&1 && AGY_STATUS="installed" || AGY_STATUS="MISSING (https://antigravity.google)"
 
-# --- register servers (each gated on provider_enabled; missing config = all on) ---
-# Codex: inherits model from ~/.codex/config.toml. Pin with `-c model=<id>` (see notes below).
-if [ "$(provider_enabled codex)" = "1" ]; then add_mcp deliberation-codex codex mcp-server; else remove_mcp deliberation-codex; fi
+# --- keep the plugin manifest as the only MCP registration ---
+# The manifest (.claude-plugin/mcp.json) registers the servers with ${CLAUDE_PLUGIN_ROOT}, which
+# Claude Code re-resolves on each load. Clear any user-scope copies so they cannot shadow it.
+# Per-provider enable/disable is gated in config via the unified server's fan-out (/ask-all,
+# /consensus); the direct provider tools always load.
+for s in deliberation deliberation-codex deliberation-gemini deliberation-grok deliberation-openrouter; do
+  remove_mcp "$s"
+done
 
-if [ "$(provider_enabled gemini)" = "1" ]; then add_mcp deliberation-gemini node "$PLUGIN_ROOT/server/gemini/index.js"; else remove_mcp deliberation-gemini; fi
-
-if [ "$(provider_enabled grok)" = "1" ]; then add_mcp deliberation-grok node "$PLUGIN_ROOT/server/grok/index.js"; else remove_mcp deliberation-grok; fi
-
+# OpenRouter auth note (the manifest registers the server; this is only a key reminder).
 if [ "$(openrouter_enabled)" = "1" ]; then
-  add_mcp deliberation-openrouter node "$PLUGIN_ROOT/server/openrouter/index.js"
   KEYENV="$(or_key_env)"; [ -z "$(printenv "$KEYENV" 2>/dev/null)" ] && echo "Note: \$$KEYENV is empty; OpenRouter calls return auth errors until you export it."
-else
-  remove_mcp deliberation-openrouter
 fi
-
-# Unified fan-out server (powers /ask-all and /consensus). Always on.
-add_mcp deliberation node "$PLUGIN_ROOT/server/mcp/index.js"
 
 # --- install orchestration rules (copy only; never deletes) ---
 mkdir -p "$HOME/.claude/rules/deliberation"
 cp "$PLUGIN_ROOT"/rules/*.md "$HOME/.claude/rules/deliberation/" 2>/dev/null || true
 RULE_COUNT=$(find "$HOME/.claude/rules/deliberation" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
 
-# --- verify the registrations actually landed (catches silent sandbox write failures) ---
-# Node-path servers must contain the resolved $PLUGIN_ROOT (so a version bump is reflected);
-# codex must carry "codex mcp-server". Anything not OK is collected into REG_STALE.
-REG_STALE=""
-check_reg() {
-  local n="" ; for n in "$@"; do break; done ; [ "$#" -gt 0 ] && shift
-  local e="" ; for e in "$@"; do break; done
-  [ "$(verify_reg "$n" "$e")" = "OK" ] || REG_STALE="$REG_STALE $n"
-}
-[ "$(provider_enabled codex)" = "1" ]  && check_reg deliberation-codex "codex mcp-server"
-[ "$(provider_enabled gemini)" = "1" ] && check_reg deliberation-gemini "$PLUGIN_ROOT"
-[ "$(provider_enabled grok)" = "1" ]   && check_reg deliberation-grok "$PLUGIN_ROOT"
-[ "$(openrouter_enabled)" = "1" ]      && check_reg deliberation-openrouter "$PLUGIN_ROOT"
-check_reg deliberation "$PLUGIN_ROOT"
+# --- confirm no user-scope entry shadows the manifest (catches a sandbox-blocked write) ---
+# A sandbox blocks the WRITE to ~/.claude.json, so a user-scope entry can survive the removal
+# above. Collect anything that remains; clean state is empty.
+USERSCOPE_LEFT="$(stale_userscope)"
 
 # --- status ---
 echo
@@ -207,16 +179,17 @@ echo "                 store: $SESSIONS_DIR (max records: $SESS_RECS, max age: $
 echo "Rules:           $RULE_COUNT files in ~/.claude/rules/deliberation/"
 echo "Grok auth:       $([ -n "${XAI_API_KEY:-}" ] && echo "XAI_API_KEY set" || echo "XAI_API_KEY not set (calls return missing-auth)")"
 echo "OpenRouter auth: $([ -n "${OPENROUTER_API_KEY:-}" ] && echo set || echo "not set")"
-if [ -n "$REG_STALE" ]; then
-  echo "MCP servers:     CRITICAL - registration did NOT update:$REG_STALE"
-  echo "                 Entries are missing or still point at an old path. The most likely cause"
-  echo "                 is a Bash sandbox blocking the write to ~/.claude.json. Re-run"
-  echo "                 /deliberation:setup with the sandbox DISABLED (see /sandbox), then restart."
+if [ -n "$USERSCOPE_LEFT" ]; then
+  echo "MCP servers:     CRITICAL - user-scope entries shadow the manifest:$USERSCOPE_LEFT"
+  echo "                 A Bash sandbox most likely blocked the write to ~/.claude.json. Re-run"
+  echo "                 /deliberation:setup with the sandbox DISABLED (see /sandbox)."
 else
-  echo "MCP servers:     registered (user scope) and verified at $PLUGIN_ROOT. 'claude mcp list' to confirm."
+  echo "MCP servers:     registered by the plugin manifest (.claude-plugin/mcp.json); load on enable."
+  echo "                 'claude mcp list' shows them once the plugin loads."
 fi
 echo
-echo "Restart Claude Code so the deliberation-* tools load; until then /ask-* may not find them."
+echo "Update flow: '/plugin update' then '/reload-plugins' (or restart Claude Code)."
+echo "If the deliberation-* tools are not visible yet, run /reload-plugins or restart Claude Code."
 ```
 
 After it runs, report the printed status to the user.
@@ -224,15 +197,15 @@ After it runs, report the printed status to the user.
 ### Optional provider tuning (no extra setup calls needed)
 
 - **Codex model:** by default Codex reads its model from `~/.codex/config.toml` (`model` key). To
-  pin it on the server, append `-c model=<id>` to the `deliberation-codex` registration (re-run with
-  the flag, e.g. `claude mcp add --transport stdio --scope user deliberation-codex -- codex mcp-server -c model=gpt-5.5`),
-  or pass `model:` per call to `mcp__deliberation-codex__codex(...)`. Other Codex flags go before
-  `mcp-server` (e.g. `-p nosandbox`).
-- **Grok key in config (vs env):** the `deliberation-grok` registration omits `--env` so no secret
-  is written to `~/.claude.json`; the bridge inherits `XAI_API_KEY` from Claude Code's launch
-  environment (export it in your shell profile). To persist it in config instead, re-register with
-  `--env XAI_API_KEY="$XAI_API_KEY"` before `-- node ...` (writes the key in plaintext to
-  `~/.claude.json`).
+  pin it without touching config, pass `model:` per call to `mcp__deliberation-codex__codex(...)`.
+  To pin it on the server itself, add the args to the `deliberation-codex` entry in
+  `.claude-plugin/mcp.json` (e.g. `"args": ["mcp-server", "-c", "model=gpt-5.5"]`); other Codex
+  flags go before `mcp-server` (e.g. `-p nosandbox`).
+- **Grok key (env vs manifest):** the `deliberation-grok` manifest entry sets no `env`, so the
+  bridge inherits `XAI_API_KEY` from Claude Code's launch environment (export it in your shell
+  profile - no secret in any committed file). To pin it on the server instead, add an `"env":
+  { "XAI_API_KEY": "..." }` block to that entry in `.claude-plugin/mcp.json` (note this writes the
+  key in plaintext into the manifest - prefer the shell-env path).
 - **Grok file TTL / reasoning:** uploads default to a 7-day `expires_after`; override with
   `GROK_FILE_TTL_SECONDS=<3600..2592000>`. Reasoning effort defaults to `high`; override with
   `GROK_REASONING_EFFORT=<low|medium|high|none>` (env, `--env` on the registration, or per call).

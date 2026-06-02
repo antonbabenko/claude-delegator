@@ -46,8 +46,12 @@ No build step, no dependencies. Codex exposes a native MCP server; Gemini, Grok,
   at the repo root is the Official MCP Registry manifest.
 - **`server/{gemini,grok,openrouter}/`** - the provider bridges (gemini wraps the `agy` CLI;
   grok = xAI HTTP; openrouter = any OpenAI-compatible HTTP) plus openrouter `config.js`
-  (`validateConfig` / `makeConfigReader`, the config SSOT). Registered as their own MCP servers in
-  `.claude-plugin/mcp.json` for the single-provider commands.
+  (`validateConfig` / `makeConfigReader`, the config SSOT). Registered (with the unified
+  `server/mcp` server) in `.claude-plugin/mcp.json` under the `deliberation-*` / `deliberation`
+  keys - this manifest is the SOLE runtime MCP registration. The args use `${CLAUDE_PLUGIN_ROOT}`,
+  which Claude Code resolves to the installed version on every load, so updating is just
+  `/plugin update` + `/reload-plugins`. `/deliberation:setup` seeds config and installs rules; it
+  does not register MCP servers.
 - **Typecheck gate** - `tsconfig.json` strict `checkJs` over `core/**` + `server/mcp/**/*.js`
   (excludes `server/mcp/dist`). `npm run check` = `typecheck` + `node --test test/*.test.js`,
   enforced in CI by `.github/workflows/validate.yml`.

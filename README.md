@@ -69,6 +69,24 @@ with `DELIBERATION_CONFIG`) and hot-reload without restarting Claude Code.
 
 Claude now routes complex tasks to your GPT, Gemini, Grok, and OpenRouter experts (Grok and OpenRouter advise; GPT and Gemini can also implement).
 
+> **Setup is a one-time step.** The MCP servers are registered by the plugin manifest, so they load
+> automatically and stay current across updates.
+
+### Updating (Claude Code)
+
+```
+/plugin update              # pull the new version from the marketplace
+/reload-plugins             # reconnect the MCP servers (or just restart Claude Code)
+```
+
+The manifest paths use `${CLAUDE_PLUGIN_ROOT}`, which Claude Code resolves to the installed version
+on every load.
+
+**Updating on non-Claude hosts:** hosts that run the standalone server via `npx -y
+@antonbabenko/deliberation-mcp` get the latest published version on each fresh resolve. `npx`
+caches resolved packages, so if a host serves an old build, clear the npx cache
+(`rm -rf ~/.npm/_npx`) or pin/refresh the version.
+
 ### Alternative: Use `deliberation` MCP server (standalone, works with any agents)
 
 The orchestration server is also published on its own - npm [`@antonbabenko/deliberation-mcp`](https://www.npmjs.com/package/@antonbabenko/deliberation-mcp), Official MCP Registry name `io.github.antonbabenko/deliberation`.
