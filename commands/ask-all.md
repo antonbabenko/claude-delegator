@@ -1,7 +1,7 @@
 ---
 name: ask-all
 description: Ask GPT, Gemini, Grok, and any configured OpenRouter models in parallel for independent second opinions, then synthesize and compare. Zero cross-contamination.
-allowed-tools: mcp__deliberation__ask-all, mcp__deliberation-openrouter__openrouter-list, Read, Bash
+allowed-tools: mcp__deliberation__panel, mcp__deliberation__ask-one, mcp__deliberation__ask-all, mcp__deliberation-openrouter__openrouter-list, Read, Bash
 timeout: 300000
 ---
 
@@ -62,42 +62,57 @@ User question or topic: $ARGUMENTS
 
 4. **Set cwd** - use `process.cwd()` as the MCP `cwd`; the server resolves each provider's working directory from it.
 
-5. **Single dispatch** - make ONE call to `mcp__deliberation__ask-all`. The server selects
-   AND dispatches the active delegate set in parallel: the enabled built-ins (Codex / Gemini /
-   Grok) plus every eligible OpenRouter alias, applying `askAll` eligibility, expert
-   eligibility, and the fanout cap server-side. The command NEVER names an OpenRouter alias and
-   never re-derives selection. This closes the disabled-alias dispatch gap structurally: a
-   disabled or stale alias cannot be dispatched because the orchestrator has no alias to pass
-   and the server owns validation.
+4b. **Discover the panel** - call `mcp__deliberation__panel` to get the EXACT provider set the
+   server would dispatch for this config + expert (enabled built-ins + eligible OpenRouter
+   aliases, fanout cap already applied), WITHOUT calling any provider:
    ```
-   mcp__deliberation__ask-all({
-     prompt: "[identical 7-section prompt]",
-     expert: "[chosen expert]",
-     cwd: "[cwd]"
-   })
+   mcp__deliberation__panel({ expert: "[chosen expert]", cwd: "[cwd]" })
    ```
+   It returns `{ providers: ["codex","gemini","grok","openrouter:<alias>", ...], omitted: [...] }`.
+   `omitted` lists aliases dropped for the fanout cap - report it as the cap note in the
+   synthesis, never silent truncation. Dispatch EXACTLY `providers` (no more, no fewer): the
+   server owns selection, so a disabled/over-cap alias can never appear here.
 
-   The tool returns `{ results: DelegationResult[], omitted: [...] }`. Each result is
-   `{ provider, model, text?, isError, errorKind?, ms }` where `provider` is `codex`,
-   `gemini`, `grok`, or `openrouter:<alias>`. `omitted` lists aliases the server dropped to
-   honor the fanout cap - report it as the cap note in the synthesis, never silent truncation.
+5. **Dispatch per-provider, IN PARALLEL.** Print one expectation line, then in ONE assistant
+   message issue ONE `mcp__deliberation__ask-one` call PER name in `providers` (all in the same
+   message so the host runs them concurrently - parallel wall-time, but each sub-call renders
+   independently as it lands, so progress is visible by expanding the collapsed tool header):
+   ```
+   Asking [N] providers in parallel (one call each)... ETA ~30-90s (longer if Gemini runs deep).
+   ```
+   ```
+   // one per provider name, ALL in the same message:
+   mcp__deliberation__ask-one({ provider: "codex",              prompt: "[identical 7-section prompt]", expert: "[expert]", cwd: "[cwd]" })
+   mcp__deliberation__ask-one({ provider: "grok",               prompt: "[identical 7-section prompt]", expert: "[expert]", cwd: "[cwd]" })
+   mcp__deliberation__ask-one({ provider: "openrouter:<alias>", prompt: "[identical 7-section prompt]", expert: "[expert]", cwd: "[cwd]" })
+   ```
+   The prompt + expert are BYTE-IDENTICAL across every call (no cross-contamination). Each
+   returns `{ result: DelegationResult }` where `result` is
+   `{ provider, model, text?, isError, errorKind?, ms, reasoningEffort }`. Collect the N
+   `result` objects into a `results` array for the steps below. (A call that returns
+   `{ error, panel }` instead of `{ result }` means the name was not in the panel - skip it; it
+   should not happen when the names come from `panel`.)
 
-6. **Print status block** - after `mcp__deliberation__ask-all` returns and before the
-   synthesis, print one line per delegate the server actually dispatched. Source every line
-   from the returned `results` array (one line per result): the `provider` label and its
-   `model`. Reasoning effort is not carried in the result, so print `n/a` in that column. Do
-   not print a generic single line, and do not list delegates the server skipped.
+6. **Print status block** - after all `ask-one` calls return and before the synthesis, print
+   one line per `result` (the `provider` label, its `model`, and
+   `reasoning: <result.reasoningEffort>`). The HTTP providers (Grok, OpenRouter) carry a real
+   effort; print `n/a (CLI)` when `reasoningEffort` is `null` (Codex, Gemini have no such knob).
 
    ```
    Worked in parallel:
-     - Codex (GPT)                   gpt-5.5                       reasoning: n/a
-     - Gemini                        auto-gemini-3                 reasoning: n/a
-     - Grok (xAI)                    grok-4.3                      reasoning: n/a
-     - OpenRouter / deepseek-v4-pro  deepseek/deepseek-v4-pro      reasoning: n/a
-     - OpenRouter / kimi-k2-thinking moonshotai/kimi-k2-thinking   reasoning: n/a
+     - Codex (GPT)                   gpt-5.5                       reasoning: n/a (CLI)
+     - Gemini                        auto-gemini-3                 reasoning: n/a (CLI)
+     - Grok (xAI)                    grok-4.3                      reasoning: high
+     - OpenRouter / deepseek-v4-pro  deepseek/deepseek-v4-pro      reasoning: high
+     - OpenRouter / kimi-k2-thinking moonshotai/kimi-k2-thinking   reasoning: medium
    ```
 
-   If a field is missing from a result, print `unknown` for it (never invent a value).
+   If `reasoningEffort` is entirely absent from a result, print `unknown` (never invent a
+   value). After the block, print a one-line time footer from the results' `ms` (the calls run
+   in parallel, so wall time ~ the slowest result):
+   ```
+   Time: 44s (slowest: gemini 44s)
+   ```
 
 7. **Synthesize comparison** - read the `results` array (each result's `provider` + `text`)
    and produce the structure below. A result with `isError: true` is NOT a command failure:
@@ -134,9 +149,10 @@ User question or topic: $ARGUMENTS
 ## Rules
 
 - **Identical prompt** - every delegate receives byte-identical input. The server forwards the same `prompt` and `developerInstructions` to all of them; no "GPT said..." leakage between delegates.
-- **Single-shot only** - one `mcp__deliberation__ask-all` call per invocation. The server starts a fresh advisory thread per delegate; do not chain prior threads.
-- **One call, server fans out** - a single tool call replaces N parallel provider calls. The server dispatches the delegates concurrently, so the host harness cannot stagger them.
-- **Selection is server-side** - the server decides which built-ins are enabled and which OpenRouter aliases are eligible (applying `askAll`, expert eligibility, and the fanout cap). The command never reads `config.json`, never lists aliases, and never names an alias. This is the structural fix for the disabled-alias dispatch gap: a disabled or stale alias cannot be dispatched.
+- **Single-shot only** - each provider gets ONE `ask-one` call per invocation; do not chain prior threads.
+- **One message, parallel ask-one** - issue all `ask-one` calls in ONE assistant message so the host runs them concurrently (parallel wall-time) AND each renders independently as it lands (per-provider progress on expand). Do NOT issue them in separate messages (that serializes them = sum-of-latencies). `panel` is the only call that precedes them.
+- **Selection is server-side** - `panel` returns the exact set (enabled built-ins + eligible aliases + fanout cap); dispatch EXACTLY those names. The command never reads `config.json`, never re-derives selection, and never names an alias the server did not return. A disabled/over-cap alias cannot appear in `panel`, so it cannot be dispatched.
+- **Legacy fan-out** - the single `mcp__deliberation__ask-all` tool still exists (other hosts / fallback); this command uses the per-provider path for visible progress instead.
 - **Advisory only** - all delegates run advisory; `/ask-all` is never an implementation command.
 - **Disagreement is signal** - when the models diverge, treat it as a flag to dig deeper, not a tie to break by majority. Often more than one is partly wrong.
 - **Never paste raw output** - always synthesize.

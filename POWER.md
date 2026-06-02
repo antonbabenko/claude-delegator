@@ -47,6 +47,19 @@ Fan-out and single-provider:
   or the round cap. State is held server-side by `sessionId` (ephemeral).
 - `ask-gpt` / `ask-gemini` / `ask-grok` / `ask-openrouter` - one question to one
   provider for a single-shot second opinion.
+- `panel` - return the exact provider names `ask-all` would dispatch for the current
+  config + expert (enabled built-ins + eligible OpenRouter aliases, fanout cap applied),
+  WITHOUT calling them. Read-only.
+- `ask-one { provider, prompt }` - one question to ONE provider named by `panel`
+  (e.g. `codex`, `grok`, `openrouter:<alias>`). The progress pattern: call `panel`, then
+  issue one `ask-one` per name **in a single turn** so they run concurrently and each
+  result lands independently as it finishes - visible per-provider progress with parallel
+  wall-time, instead of the one opaque `ask-all` call. (The single-call `ask-all` still
+  works; `ask-one` is the progressive alternative.)
+
+Every result carries `provider`, `model`, `text`, `ms` (wall time), and the effective
+`reasoningEffort` (real value for HTTP providers; `null` for the Codex/Gemini CLIs). HTTP
+providers (Grok, OpenRouter) also include token `usage`.
 
 Expert personas (pass as the tool, or via the `expert` argument on the fan-out
 tools to apply one persona to every delegate):
@@ -71,6 +84,22 @@ Session tools (only useful when `sessions.persist` is enabled in config; they re
 Every fan-out, single-provider, and expert tool takes a `prompt`. Give it full context: the goal, the relevant code
 or paths, and any prior attempts. The experts do not share your session, so a
 self-contained prompt gets a better answer.
+
+## Performance + debugging (optional)
+
+These apply to every MCP host, not just Claude Code:
+
+- **Per-provider progress** - prefer `panel` + parallel `ask-one` (above) when you want
+  to watch each model finish instead of waiting on one opaque `ask-all` call.
+- **Debug log** - set `"debug": { "enabled": true }` in `config.json` to append one JSON
+  line per provider call and per consensus round to `<XDG cache>/deliberation/debug.jsonl`
+  (override with `DELIBERATION_DEBUG_LOG`). It records latency, reasoning effort, HTTP
+  token usage, and voting/approval outcomes - never prompts, responses, or issue text.
+  OFF by default.
+- **Live progress notifications** - the server declares the MCP `logging` capability and
+  emits `notifications/message` per provider as it settles during a fan-out. Hosts that
+  render server log notifications mid-call show this automatically (Claude Code does not -
+  hence the `panel` + `ask-one` pattern there).
 
 ## When to delegate
 

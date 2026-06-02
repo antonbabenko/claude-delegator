@@ -10,9 +10,12 @@ install instructions per host:
 - [OpenCode](opencode.md) - `.opencode/commands/` + `.opencode/agents/` + an `opencode.json` MCP snippet.
 
 All four route the same MCP tools (`ask-all`, `consensus`, `ask-gpt` / `ask-gemini`
-/ `ask-grok` / `ask-openrouter`) and the seven expert personas (`architect`,
-`plan-reviewer`, `scope-analyst`, `code-reviewer`, `security-analyst`, `researcher`,
-`debugger`). Provider credentials come from the host environment - set only the
-providers you use; missing keys just disable that one provider.
+/ `ask-grok` / `ask-openrouter`, plus `panel` + `ask-one` for per-provider progress)
+and the seven expert personas (`architect`, `plan-reviewer`, `scope-analyst`,
+`code-reviewer`, `security-analyst`, `researcher`, `debugger`). Every result carries
+`ms` + reasoning effort (HTTP providers add token usage), and an optional config-gated
+debug log records latency / tokens / votes - all server-side, so they apply on every
+host (see [AGENTS.md](../../AGENTS.md)). Provider credentials come from the host
+environment - set only the providers you use; missing keys just disable that one provider.
 
 For the Claude Code plugin itself, see the repo [README](../../README.md).

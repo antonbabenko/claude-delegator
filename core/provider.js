@@ -9,11 +9,14 @@
  * @param {number} started   // Date.now() at call start
  * @param {{status?:number, code?:string}} err
  * @param {(status?:number, code?:string) => {errorKind:string, retryable:boolean}} classify
+ * @param {Partial<DelegationError>} [extra]  merged onto the result (e.g. reasoningEffort)
  * @returns {DelegationError}
  */
-function toErrorResult(name, model, started, err, classify) {
+function toErrorResult(name, model, started, err, classify, extra) {
   const { errorKind, retryable } = classify(err && err.status, err && err.code);
-  return { provider: name, model, isError: true, errorKind, retryable, ms: Date.now() - started };
+  // Spread `extra` FIRST so the canonical envelope fields always win - a caller's
+  // stray `extra` key (or a non-object) can never clobber provider/isError/ms/etc.
+  return { ...(extra && typeof extra === "object" ? extra : {}), provider: name, model, isError: true, errorKind, retryable, ms: Date.now() - started };
 }
 
 /** Recursively freeze a plain object/array literal so the exported schema is truly immutable. */

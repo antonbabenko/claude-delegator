@@ -93,7 +93,19 @@ async function callOpenRouter({ apiBase, apiKey, model, messages, reasoningEffor
   if (!res.ok) { const e = new Error(`OpenRouter API error ${res.status}: ${truncate(bodyText, 500)}`); e.status = res.status; throw e; }
   let data;
   try { data = JSON.parse(bodyText); } catch (e2) { const e = new Error(`Parse error: invalid JSON: ${e2.message}`); e.code = "parse"; throw e; }
-  return { text: parseCompletion(data) };
+  // `usage` is normalized for the debug log only (token counts); never displayed.
+  return { text: parseCompletion(data), usage: normalizeUsage(data.usage) };
+}
+
+// Normalize an OpenAI-style usage object to {promptTokens,completionTokens,totalTokens}.
+// Returns undefined when no usable counts are present.
+function normalizeUsage(u) {
+  if (!u || typeof u !== "object") return undefined;
+  const out = {};
+  if (typeof u.prompt_tokens === "number") out.promptTokens = u.prompt_tokens;
+  if (typeof u.completion_tokens === "number") out.completionTokens = u.completion_tokens;
+  if (typeof u.total_tokens === "number") out.totalTokens = u.total_tokens;
+  return Object.keys(out).length ? out : undefined;
 }
 
 const crypto = require("node:crypto");

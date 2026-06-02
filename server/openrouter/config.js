@@ -98,6 +98,7 @@ function validateConfig(raw) {
 
   const { consensus, warnings } = resolveConsensus(raw.consensus, models);
   const { sessions, warnings: sessionsWarnings } = resolveSessions(raw.sessions);
+  const { debug, warnings: debugWarnings } = resolveDebug(raw.debug);
 
   return {
     ok: true,
@@ -108,12 +109,39 @@ function validateConfig(raw) {
       openrouter: { enabled, apiKeyEnv, apiBase, allowRawModel, maxFanout, defaultModel, defaults, models, invalidModels },
       consensus,
       sessions,
-      // Defaults- and sessions-validation warnings ride the same consensusWarnings
-      // channel the bridge already surfaces, so a dropped/degraded value is
-      // visible, not silent.
-      consensusWarnings: [...defaultsWarnings, ...warnings, ...sessionsWarnings],
+      debug,
+      // Defaults-, sessions-, and debug-validation warnings ride the same
+      // consensusWarnings channel the bridge already surfaces, so a dropped/degraded
+      // value is visible, not silent.
+      consensusWarnings: [...defaultsWarnings, ...warnings, ...sessionsWarnings, ...debugWarnings],
     },
   };
+}
+
+// Resolve the optional `debug` block (opt-in debug log; default OFF). Soft-degrade
+// like resolveSessions: an invalid value never rejects the config.
+//   - enabled: boolean (non-bool -> false + warning); default false (log OFF).
+//   - path: optional non-empty string (an absolute file path). Invalid -> dropped
+//     + warning; the server then falls back to the canonical cache-dir default.
+// @param {*} raw  the raw debug block (untrusted)
+// @returns {{debug:{enabled:boolean, path:(string|null)}, warnings:string[]}}
+function resolveDebug(raw) {
+  const warnings = [];
+  const out = { enabled: false, path: null };
+  if (raw === undefined) return { debug: out, warnings };
+  if (!isObject(raw)) {
+    warnings.push(`debug must be an object (got ${JSON.stringify(raw)}); debug logging disabled`);
+    return { debug: out, warnings };
+  }
+  if (raw.enabled !== undefined) {
+    if (typeof raw.enabled === "boolean") out.enabled = raw.enabled;
+    else warnings.push(`debug.enabled must be a boolean (got ${JSON.stringify(raw.enabled)}); using false`);
+  }
+  if (raw.path !== undefined) {
+    if (typeof raw.path === "string" && raw.path.trim()) out.path = raw.path.trim();
+    else warnings.push(`debug.path must be a non-empty string (got ${JSON.stringify(raw.path)}); using the default cache-dir path`);
+  }
+  return { debug: out, warnings };
 }
 
 // Resolve the optional `sessions` block (opt-in per-session store) with

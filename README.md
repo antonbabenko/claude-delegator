@@ -115,7 +115,7 @@ Per-host config location and the key it expects:
 
 Provider prerequisites are the same as the plugin (see [Requirements](#requirements)): the Codex CLI for GPT, `agy` for Gemini, `XAI_API_KEY` for Grok, and `OPENROUTER_API_KEY` plus `~/.config/deliberation/config.json` for OpenRouter (Windows: `%APPDATA%\deliberation\config.json`; override the config path with `DELIBERATION_CONFIG`).
 
-Tools exposed: `ask-all`, `consensus` (the full convergence loop in one call, or a single synthesis pass with `synthesizeAlways:true`), `consensus-step` (drive the loop yourself, one action per call), `ask-gpt` / `ask-gemini` / `ask-grok` / `ask-openrouter`, the seven experts (`architect`, `plan-reviewer`, `scope-analyst`, `code-reviewer`, `security-analyst`, `researcher`, `debugger`), and the session tools (`session-get` / `session-revisit` / `session-annotate`).
+Tools exposed: `ask-all`, `consensus` (the full convergence loop in one call, or a single synthesis pass with `synthesizeAlways:true`), `consensus-step` (drive the loop yourself, one action per call), `ask-gpt` / `ask-gemini` / `ask-grok` / `ask-openrouter`, `panel` + `ask-one` (discover the active provider set, then call providers individually - issue them in parallel for visible per-provider progress), the seven experts (`architect`, `plan-reviewer`, `scope-analyst`, `code-reviewer`, `security-analyst`, `researcher`, `debugger`), and the session tools (`session-get` / `session-revisit` / `session-annotate`). Every result carries `ms` + the effective `reasoningEffort` (HTTP providers add token `usage`). An optional debug log (`"debug": { "enabled": true }`) records latency / tokens / votes - never prompts or responses. These are server-side, so they work on every MCP host, not just Claude Code (see [AGENTS.md](AGENTS.md)).
 
 The package also ships a `deliberation-setup` bin. Run it once with `npx -y --package @antonbabenko/deliberation-mcp deliberation-setup` to write a starter `~/.config/deliberation/config.json` (it never overwrites an existing one). The plain `npx -y @antonbabenko/deliberation-mcp` form runs the default bin (the server), which is what your MCP host launches. For host rule wiring, see [`AGENTS.md`](AGENTS.md) and the per-host snippets in [`examples/`](examples/).
 
@@ -256,12 +256,12 @@ truth: changes to `models`, `routing`, or the `providers.openrouter` block hot-r
 without restarting Claude Code. Toggling a built-in provider (codex / gemini / grok)
 still requires `/setup`.
 
-The config has five sections: `providers` (transport / connection per provider),
+The config has six sections: `providers` (transport / connection per provider),
 `models` (named model records keyed by id), `routing` (fan-out policy),
 `consensus` (`arbiter` = who synthesizes the verdict; optional `blindVote` for a blind
-arbiter pre-vote), and `sessions` (opt-in run persistence; default off - see
-[Session persistence](#session-persistence)). The `$schema` key gives editors validation
-and autocomplete - VS Code needs no extension.
+arbiter pre-vote), `sessions` (opt-in run persistence; default off - see
+[Session persistence](#session-persistence)), and `debug` (opt-in debug log; default off).
+The `$schema` key gives editors validation and autocomplete - VS Code needs no extension.
 
 Minimal example:
 
@@ -298,9 +298,15 @@ Minimal example:
   },
   "routing": { "maxFanout": 3 },
   "consensus": { "arbiter": { "model": "claude-arb" }, "blindVote": true, "maxRounds": 5 },
-  "sessions": { "persist": false, "maxRecords": 200, "maxAgeDays": 30 }
+  "sessions": { "persist": false, "maxRecords": 200, "maxAgeDays": 30 },
+  "debug": { "enabled": false }
 }
 ```
+
+`debug.enabled` (default `false`) appends one JSON line per provider call and per consensus
+round to `<XDG cache>/deliberation/debug.jsonl` (override with `debug.path` or
+`DELIBERATION_DEBUG_LOG`): latency, reasoning effort, HTTP token usage, and voting/approval
+outcomes - never prompts, responses, or issue text. Useful for debugging slow runs.
 
 Browse model slugs at [openrouter.ai/models](https://openrouter.ai/models?input_modalities=text);
 the `model` field takes any slug listed there. Each record's `provider` must be

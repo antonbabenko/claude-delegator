@@ -60,7 +60,8 @@ function makeCodexProvider(opts = {}) {
       const full = req.developerInstructions ? `${req.developerInstructions}\n\n---\n\n${req.prompt}` : req.prompt;
       const { code, stdout, stderr } = await run({ prompt: full, cwd: req.cwd, timeoutMs: req.timeoutMs });
       if (code === 0) {
-        return { provider: "codex", model, text: stdout.trim(), isError: false, ms: Date.now() - started };
+        // Codex CLI has no per-call reasoning-effort knob in this integration -> null.
+        return { provider: "codex", model, text: stdout.trim(), isError: false, ms: Date.now() - started, reasoningEffort: null };
       }
       const { errorKind, retryable } = classifyCodex(stderr);
       return {
@@ -72,6 +73,7 @@ function makeCodexProvider(opts = {}) {
         // Error results carry no text; surface stdout/stderr diagnostics in message.
         message: (stdout && stdout.trim()) || stderr || undefined,
         ms: Date.now() - started,
+        reasoningEffort: null,
       };
     },
   };
