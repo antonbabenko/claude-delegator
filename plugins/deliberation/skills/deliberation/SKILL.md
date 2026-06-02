@@ -113,3 +113,12 @@ These apply to every MCP host, not just Claude Code:
 
 Skip delegation for simple edits, the first attempt at a fix, and trivial
 questions you can answer directly.
+
+## Updating
+
+If you run the standalone server via `npx -y @antonbabenko/deliberation-mcp`,
+each fresh resolve picks up the latest published version. `npx` caches resolved
+packages, so if you keep getting an old build, clear the cache
+(`rm -rf ~/.npm/_npx`) or pin/refresh the version in your host's MCP config.
+(The Claude Code plugin manifest is a separate mechanism and does not affect
+non-Claude hosts.)
