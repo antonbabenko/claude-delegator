@@ -1,3 +1,10 @@
+## [3.5.0](https://github.com/antonbabenko/deliberation/compare/v3.4.0...v3.5.0) (2026-06-02)
+
+
+### Features
+
+* register MCP servers via plugin manifest so updates need no setup re-run ([#123](https://github.com/antonbabenko/deliberation/issues/123)) ([00be051](https://github.com/antonbabenko/deliberation/commit/00be051c9f37fe395da0dac2c5c9ff2e341dcac7))
+
 ## [3.4.0](https://github.com/antonbabenko/deliberation/compare/v3.3.0...v3.4.0) (2026-06-02)
 
 
@@ -25,11 +32,4 @@
 ### Bug Fixes
 
 * pin mcp-publisher asset name in the registry publish step ([#115](https://github.com/antonbabenko/deliberation/issues/115)) ([78e5d05](https://github.com/antonbabenko/deliberation/commit/78e5d05412d61f15e0b8c7a160923368384c017c))
-
-## [3.1.0](https://github.com/antonbabenko/deliberation/compare/v3.0.0...v3.1.0) (2026-06-01)
-
-
-### Features
-
-* auto-publish on release, npm README, per-tenant key seam (extras A) ([#113](https://github.com/antonbabenko/deliberation/issues/113)) ([bf0355b](https://github.com/antonbabenko/deliberation/commit/bf0355b43703d27e7376493b37c58b52e8074a27))
 
