@@ -17,6 +17,7 @@ from a second opinion or cross-model review, then apply your own judgment.
 - `ask-gemini` - Ask Gemini for a single-shot second opinion.
 - `ask-grok` - Ask Grok (xAI) for a single-shot second opinion.
 - `ask-openrouter` - Ask a configured OpenRouter model for a single-shot second opinion.
+- `analyze` - Analyze recent runs (latency, tokens, verdict agreement) and suggest model/reasoning/fanout tuning.
 
 ## Expert personas
 

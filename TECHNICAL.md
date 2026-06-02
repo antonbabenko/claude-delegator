@@ -225,6 +225,31 @@ refs) returns the prior SUCCESS instantly with a `cached:true` marker. LRU-bound
 10-minute TTL; errors are never cached; file-bearing requests skip it (file content can
 change under a path); `session-revisit` bypasses it (a revisit is a deliberate re-run).
 
+### `analyze` (run analytics + tuning advice)
+
+`core/analyze.js` is pure (zero-dep, unit-tested); the read-only `analyze` MCP tool does the
+IO and calls it. It answers "is my model panel pulling its weight?" from real measured data,
+in two lenses that are **never joined** (the debug log and the session store share no run id):
+
+- **Lens A - timing/cost** (debug log): `aggregateByModel` -> per provider+model count,
+  error rate, p50/p95/max latency, mean tokens (HTTP only), reasoning efforts + tools seen.
+  The tool tail-reads the log (last ~1 MB by default; `limitBytes`) so a large file cannot
+  bloat memory, and returns pre-aggregated stats, never raw lines.
+- **Lens B - agreement** (sessions): `aggregateAgreement` -> per model, the share of its
+  review verdicts that matched the run's FINAL verdict. Only consensus-loop records (which
+  carry a final verdict) contribute votes; ask-all opinions are abstentions. This is the
+  "uniqueness" proxy (a model that rarely dissents adds little), without reading opinion text
+  or an LLM pass.
+
+`detectOutliers` flags slow (relative to the fastest-peer baseline, or absolute) and
+high-error models; `recommend` turns those + the agreement signal into advisory `Suggestion`s
+naming the exact `config.json` key (`models.<id>.askAll`, `models.<id>.reasoningEffort`,
+`routing.maxFanout`). Codex/Gemini reasoning is flagged as external (`~/.codex/config.toml` /
+agy) since it is outside deliberation's config. The tool writes nothing; `/deliberation:analyze`
+renders it for humans and prints suggested edits without applying them. Needs `debug.enabled`
+for Lens A and `sessions.persist` for Lens B; when the log is empty it returns
+`meta.insufficientData:true` instead of fabricating numbers.
+
 ## Manual MCP setup
 
 If `/setup` does not work, register the MCP servers manually. Each command is

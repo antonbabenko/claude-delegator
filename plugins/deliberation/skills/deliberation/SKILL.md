@@ -53,6 +53,12 @@ Fan-out and single-provider:
   result lands independently as it finishes - visible per-provider progress with parallel
   wall-time, instead of the one opaque `ask-all` call. (The single-call `ask-all` still
   works; `ask-one` is the progressive alternative.)
+- `analyze` - read-only run analytics. Reads the opt-in debug log (per-model p50/p95/max
+  latency, mean tokens, error rate, reasoning effort) and the session store (verdict
+  agreement rate), then returns advisory tuning suggestions (disable a slow/redundant model
+  in `ask-all`, lower an OpenRouter model's reasoning, adjust `maxFanout`). Two lenses
+  reported side by side - timing and agreement are NOT joined. Needs `debug.enabled` for the
+  timing lens. Writes nothing.
 
 Every result carries `provider`, `model`, `text`, `ms` (wall time), and the effective
 `reasoningEffort` (real value for HTTP providers; `null` for the Codex/Gemini CLIs). HTTP
