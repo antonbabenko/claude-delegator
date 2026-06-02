@@ -156,6 +156,7 @@ This is the single source of truth for the bridge environment variables.
 | `GROK_REASONING_EFFORT` | Grok | `high` | `low`/`medium`/`high`; `none` or `off` omits the field |
 | `GROK_FILE_TTL_SECONDS` | Grok | `604800` (7 days) | Upload lifetime, clamped 1h..30d |
 | `DELIBERATION_SESSIONS` | sessions | `<XDG cache>/deliberation/sessions` | Override the session store directory (see [Session persistence](#session-persistence)) |
+| `DELIBERATION_DEBUG_LOG` | debug | `<XDG cache>/deliberation/debug.jsonl` | Override the debug log path (see [Observability](#observability--per-provider-progress)); only written when `debug.enabled` |
 
 Codex has no bridge environment variables: it ships its own native MCP server and
 reads `~/.codex/config.toml` directly. The **model** comes from the `model` key in
@@ -163,6 +164,66 @@ that file by default (the Codex analog of `GEMINI_DEFAULT_MODEL` /
 `GROK_DEFAULT_MODEL`). Override it on the server with `-c model=<id>` on the
 `claude mcp add ... deliberation-codex` registration, or per call with the `model` parameter of
 `mcp__deliberation-codex__codex(...)`. See [Configuration in the README](README.md#configuration).
+
+## Observability + per-provider progress
+
+These are server-side on the unified `deliberation` server, so every MCP host gets them -
+not only Claude Code. Every `DelegationResult` carries `ms` (wall time) and the effective
+`reasoningEffort` (a real value for HTTP providers; `null` for the Codex/Gemini CLIs, which
+have no per-call knob); HTTP providers (Grok, OpenRouter) also include token `usage`.
+
+### `panel` + `ask-one` (visible per-provider progress)
+
+`ask-all` is one tool call that fans out to N providers server-side - opaque until all
+finish. The alternative, for hosts where that opacity hurts:
+
+- **`panel { expert?, cwd? }`** returns `{ providers: string[], omitted: string[] }` - the
+  EXACT set `selectForAskAll` would dispatch (enabled built-ins + eligible OpenRouter
+  aliases, fanout cap applied), WITHOUT calling any provider. `omitted` is the fanout-cap
+  drop list. Read-only.
+- **`ask-one { provider, prompt, expert?, cwd?, reasoningEffort?, files? }`** runs ONE
+  provider named by `panel` (resolved from the same selection set, so a pinned
+  `openrouter:<alias>` works and a disabled/over-cap name returns `{ error, panel }`).
+- The pattern (`commands/ask-all.md` on Claude Code): call `panel`, then issue one
+  `ask-one` per name **in a single turn**. The host runs them concurrently (parallel
+  wall-time) and surfaces each result as it settles, so progress is visible per provider.
+  The legacy single-call `ask-all` tool is retained for back-compat / other hosts.
+
+Why two paths: Claude Code does NOT render mid-call MCP `notifications/message` (verified),
+but DOES surface each parallel tool result as it lands - so the per-provider tool path is
+the progress lever there. Hosts that DO render server log notifications get live progress
+from the single `ask-all` call too (next section).
+
+### MCP `logging` capability
+
+The server declares the `logging` capability in `initialize` and accepts `logging/setLevel`.
+During a fan-out it emits one `notifications/message` (level `info`, logger `deliberation`)
+per provider as it settles, plus a `dispatch_start`. The payload carries event/provider/ms/
+verdict metadata only - never prompt or response text (MCP logging security rule). A client
+that raises its min level above `info` suppresses them.
+
+### Debug log (`debug.enabled`, OFF by default)
+
+Set `"debug": { "enabled": true }` (optional `"path"`) in `config.json` to append one
+compact JSON line per provider call and per consensus round to
+`<XDG cache>/deliberation/debug.jsonl` (override with `debug.path` or
+`DELIBERATION_DEBUG_LOG`). The logger (`core/debug-log.js`) is INJECTED through `core`
+(`askAll` / `askOne` / `consensus` / `runToConvergence`) and emitted at the source, so the
+Claude host-arbiter path and the in-core provider-arbiter loop log identically - one code
+path, every host. Records: timestamp, tool, provider, model, reasoning effort, `ms`,
+HTTP token `usage`, and consensus round/verdict/converged/accepted-issue COUNT. A strict
+`ALLOWED_KEYS` whitelist is applied on every write, so prompts, responses, and free-text
+issue descriptions can never land in the file. Off by default; nothing is written unless
+`enabled`.
+
+### In-session result cache
+
+`core/result-cache.js` is an in-memory (process-lifetime) dedup cache wired to the advisory
+`ask-all` / `ask-one` paths only (NOT the consensus loop). An identical re-ask (same
+provider + model + reasoning effort + temperature + developer instructions + prompt + file
+refs) returns the prior SUCCESS instantly with a `cached:true` marker. LRU-bounded (100) +
+10-minute TTL; errors are never cached; file-bearing requests skip it (file content can
+change under a path); `session-revisit` bypasses it (a revisit is a deliberate re-run).
 
 ## Manual MCP setup
 
