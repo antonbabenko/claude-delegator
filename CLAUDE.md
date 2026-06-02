@@ -47,11 +47,14 @@ No build step, no dependencies. Codex exposes a native MCP server; Gemini, Grok,
 - **`server/{gemini,grok,openrouter}/`** - the provider bridges (gemini wraps the `agy` CLI;
   grok = xAI HTTP; openrouter = any OpenAI-compatible HTTP) plus openrouter `config.js`
   (`validateConfig` / `makeConfigReader`, the config SSOT). Registered (with the unified
-  `server/mcp` server) in `.claude-plugin/mcp.json` under the `deliberation-*` / `deliberation`
-  keys - this manifest is the SOLE runtime MCP registration. The args use `${CLAUDE_PLUGIN_ROOT}`,
-  which Claude Code resolves to the installed version on every load, so updating is just
-  `/plugin update` + `/reload-plugins`. `/deliberation:setup` seeds config and installs rules; it
-  does not register MCP servers.
+  `server/mcp` server) inline in `.claude-plugin/plugin.json` under the `mcpServers` key
+  (`deliberation-*` / `deliberation`) - this inline block is the SOLE runtime MCP registration.
+  Claude Code reads MCP servers from a plugin's root `.mcp.json` OR inline in `plugin.json`; the
+  inline form is used so the manifest is NOT also auto-loaded as a project-scope `.mcp.json` when
+  working inside this repo (which would duplicate every server with an unresolved
+  `${CLAUDE_PLUGIN_ROOT}`). The args use `${CLAUDE_PLUGIN_ROOT}`, which Claude Code resolves to the
+  installed version on every load, so updating is just `/plugin update` + `/reload-plugins`.
+  `/deliberation:setup` seeds config and installs rules; it does not register MCP servers.
 - **Typecheck gate** - `tsconfig.json` strict `checkJs` over `core/**` + `server/mcp/**/*.js`
   (excludes `server/mcp/dist`). `npm run check` = `typecheck` + `node --test test/*.test.js`,
   enforced in CI by `.github/workflows/validate.yml`.

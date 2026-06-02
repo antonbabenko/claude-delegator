@@ -25,8 +25,9 @@ call with an AskUserQuestion, and do not split the main block.
 > writes fail silently; the block verifies the result at the end and prints a `CRITICAL` block
 > telling you to re-run unsandboxed if it detects a problem.
 
-The MCP servers are registered by the plugin manifest (`.claude-plugin/mcp.json`), so they load
-automatically when the plugin is enabled and update with `/plugin update` + `/reload-plugins`.
+The MCP servers are registered by the plugin manifest (inline `mcpServers` in
+`.claude-plugin/plugin.json`), so they load automatically when the plugin is enabled and update
+with `/plugin update` + `/reload-plugins`.
 This block is non-interactive: it seeds a default `config.json`, checks the provider CLIs, installs
 the rules, and prints a status report.
 
@@ -140,8 +141,9 @@ fi
 command -v agy   >/dev/null 2>&1 && AGY_STATUS="installed" || AGY_STATUS="MISSING (https://antigravity.google)"
 
 # --- keep the plugin manifest as the only MCP registration ---
-# The manifest (.claude-plugin/mcp.json) registers the servers with ${CLAUDE_PLUGIN_ROOT}, which
-# Claude Code re-resolves on each load. Clear any user-scope copies so they cannot shadow it.
+# The manifest (inline mcpServers in .claude-plugin/plugin.json) registers the servers with
+# ${CLAUDE_PLUGIN_ROOT}, which Claude Code re-resolves on each load. Clear any user-scope copies
+# so they cannot shadow it.
 # Per-provider enable/disable is gated in config via the unified server's fan-out (/ask-all,
 # /consensus); the direct provider tools always load.
 for s in deliberation deliberation-codex deliberation-gemini deliberation-grok deliberation-openrouter; do
@@ -184,7 +186,7 @@ if [ -n "$USERSCOPE_LEFT" ]; then
   echo "                 A Bash sandbox most likely blocked the write to ~/.claude.json. Re-run"
   echo "                 /deliberation:setup with the sandbox DISABLED (see /sandbox)."
 else
-  echo "MCP servers:     registered by the plugin manifest (.claude-plugin/mcp.json); load on enable."
+  echo "MCP servers:     registered by the plugin manifest (inline in .claude-plugin/plugin.json); load on enable."
   echo "                 'claude mcp list' shows them once the plugin loads."
 fi
 echo

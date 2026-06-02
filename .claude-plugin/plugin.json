@@ -9,5 +9,32 @@
   "homepage": "https://github.com/antonbabenko/deliberation",
   "repository": "https://github.com/antonbabenko/deliberation",
   "license": "MIT",
-  "keywords": ["delegation", "mcp", "codex", "gpt", "openai", "gemini", "antigravity", "agy", "google", "grok", "xai", "files", "experts", "subagents", "orchestration"]
+  "keywords": ["delegation", "mcp", "codex", "gpt", "openai", "gemini", "antigravity", "agy", "google", "grok", "xai", "files", "experts", "subagents", "orchestration"],
+  "mcpServers": {
+    "deliberation-codex": {
+      "command": "codex",
+      "args": ["mcp-server"],
+      "type": "stdio"
+    },
+    "deliberation-gemini": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/gemini/index.js"],
+      "type": "stdio"
+    },
+    "deliberation-grok": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/grok/index.js"],
+      "type": "stdio"
+    },
+    "deliberation-openrouter": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/openrouter/index.js"],
+      "type": "stdio"
+    },
+    "deliberation": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/mcp/index.js"],
+      "type": "stdio"
+    }
+  }
 }
