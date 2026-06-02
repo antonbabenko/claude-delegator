@@ -53,8 +53,7 @@ No build step, no dependencies. Codex exposes a native MCP server; Gemini, Grok,
   inline form is used so the manifest is NOT also auto-loaded as a project-scope `.mcp.json` when
   working inside this repo (which would duplicate every server with an unresolved
   `${CLAUDE_PLUGIN_ROOT}`). The args use `${CLAUDE_PLUGIN_ROOT}`, which Claude Code resolves to the
-  installed version on every load, so updating is just `/plugin update` + `/reload-plugins`.
-  `/deliberation:setup` seeds config and installs rules; it does not register MCP servers.
+  installed version on every load, so updating is just `/plugin marketplace update antonbabenko` + `/reload-plugins`. `/deliberation:setup` seeds config and installs rules; it does not register MCP servers.
 - **Typecheck gate** - `tsconfig.json` strict `checkJs` over `core/**` + `server/mcp/**/*.js`
   (excludes `server/mcp/dist`). `npm run check` = `typecheck` + `node --test test/*.test.js`,
   enforced in CI by `.github/workflows/validate.yml`.

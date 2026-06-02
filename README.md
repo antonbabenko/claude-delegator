@@ -75,12 +75,9 @@ Claude now routes complex tasks to your GPT, Gemini, Grok, and OpenRouter expert
 ### Updating (Claude Code)
 
 ```
-/plugin update              # pull the new version from the marketplace
-/reload-plugins             # reconnect the MCP servers (or just restart Claude Code)
+/plugin marketplace update antonbabenko  # pull the new version from the marketplace
+/reload-plugins                          # reconnect the MCP servers (or just restart Claude Code)
 ```
-
-The manifest paths use `${CLAUDE_PLUGIN_ROOT}`, which Claude Code resolves to the installed version
-on every load.
 
 **Updating on non-Claude hosts:** hosts that run the standalone server via `npx -y
 @antonbabenko/deliberation-mcp` get the latest published version on each fresh resolve. `npx`

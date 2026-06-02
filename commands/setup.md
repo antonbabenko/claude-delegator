@@ -27,7 +27,7 @@ call with an AskUserQuestion, and do not split the main block.
 
 The MCP servers are registered by the plugin manifest (inline `mcpServers` in
 `.claude-plugin/plugin.json`), so they load automatically when the plugin is enabled and update
-with `/plugin update` + `/reload-plugins`.
+with `/plugin marketplace update antonbabenko` + `/reload-plugins`.
 This block is non-interactive: it seeds a default `config.json`, checks the provider CLIs, installs
 the rules, and prints a status report.
 
