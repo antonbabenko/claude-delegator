@@ -1,3 +1,10 @@
+## [3.2.0](https://github.com/antonbabenko/deliberation/compare/v3.1.1...v3.2.0) (2026-06-02)
+
+
+### Features
+
+* performance observability + per-provider progress for ask-all/consensus ([#117](https://github.com/antonbabenko/deliberation/issues/117)) ([a4e1617](https://github.com/antonbabenko/deliberation/commit/a4e161730e971e2a84c2ed083267e8a9c0b6a23c)), closes [#8](https://github.com/antonbabenko/deliberation/issues/8)
+
 ## [3.1.1](https://github.com/antonbabenko/deliberation/compare/v3.1.0...v3.1.1) (2026-06-01)
 
 
@@ -32,11 +39,4 @@ before this change are not supported by session-revisit.
 ### Features
 
 * rewrite /consensus as a thin driver over consensus-step ([#108](https://github.com/antonbabenko/deliberation/issues/108)) ([243d093](https://github.com/antonbabenko/deliberation/commit/243d09334735288b62389429e7efd64efbb8713d))
-
-## [2.17.0](https://github.com/antonbabenko/deliberation/compare/v2.16.0...v2.17.0) (2026-06-01)
-
-
-### Features
-
-* persist consensus-auto runs + route session-revisit (PR2b-4b) ([#106](https://github.com/antonbabenko/deliberation/issues/106)) ([8d6d3d5](https://github.com/antonbabenko/deliberation/commit/8d6d3d52fd64dccca5c2000988b8568c8c4f50c4))
 
