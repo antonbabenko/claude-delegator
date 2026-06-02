@@ -1,3 +1,10 @@
+## [3.4.0](https://github.com/antonbabenko/deliberation/compare/v3.3.0...v3.4.0) (2026-06-02)
+
+
+### Features
+
+* add /deliberation:analyze run-analytics command + analyze MCP tool ([#121](https://github.com/antonbabenko/deliberation/issues/121)) ([ea00eca](https://github.com/antonbabenko/deliberation/commit/ea00eca8384df148c4248d5afcdb37e54ab351f8))
+
 ## [3.3.0](https://github.com/antonbabenko/deliberation/compare/v3.2.0...v3.3.0) (2026-06-02)
 
 
@@ -25,18 +32,4 @@
 ### Features
 
 * auto-publish on release, npm README, per-tenant key seam (extras A) ([#113](https://github.com/antonbabenko/deliberation/issues/113)) ([bf0355b](https://github.com/antonbabenko/deliberation/commit/bf0355b43703d27e7376493b37c58b52e8074a27))
-
-## [3.0.0](https://github.com/antonbabenko/deliberation/compare/v2.18.0...v3.0.0) (2026-06-01)
-
-
-### ⚠ BREAKING CHANGES
-
-* the `consensus-auto` MCP tool is removed (folded into `consensus`, which
-now runs the loop by default); the one-shot `consensus` behavior moves behind
-`synthesizeAlways:true`. Session `schemaVersion` is 1 (no v2 reader); records written
-before this change are not supported by session-revisit.
-
-### Features
-
-* unify consensus tools into one + drop schema versioning ([#111](https://github.com/antonbabenko/deliberation/issues/111)) ([6974bb9](https://github.com/antonbabenko/deliberation/commit/6974bb908e9a07dfbe0ac36703161b70b24461fc))
 
