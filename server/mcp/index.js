@@ -7,6 +7,7 @@
 const { makeRegistry, pinAlias } = require("../../core/registry.js");
 const { askAll, askOne, consensus, runToConvergence } = require("../../core/orchestrate.js");
 const { PROMPTS } = require("../../core/prompts/index.js");
+const analyzeCore = require("../../core/analyze.js");
 
 const ADVISORY = { readOnlyHint: true };
 /** @type {Record<string, string>} */
@@ -35,6 +36,17 @@ function panelInputSchema() {
     properties: {
       expert: { type: "string" },
       cwd: { type: "string" },
+    },
+  };
+}
+
+/** Schema for `analyze` (read-only run analytics over the debug log + sessions). */
+function analyzeInputSchema() {
+  return {
+    type: "object",
+    properties: {
+      sessions: { type: "integer", description: "How many recent session records to read for the agreement lens (default 50)." },
+      limitBytes: { type: "integer", description: "Tail size of the debug log to read, in bytes (default 1048576)." },
     },
   };
 }
@@ -166,6 +178,7 @@ function toolList() {
     { name: "consensus-step", description: "Client-driven consensus loop where YOU (the host model) are the arbiter, one step per call: action=init (start, returns sessionId + blind prompt) -> record_blind (your pre-commit verdict) -> dispatch_peers (server fans out to the providers) -> submit_adjudication (your verdict + per-issue accept/dismiss/defer) -> submit_revision (your revised plan), looping until converged or consensus.maxRounds rounds (default 5). State is held server-side by sessionId. Advisory.", inputSchema: consensusStepInputSchema(), annotations: ADVISORY },
     { name: "panel", description: "Return the names of the providers `ask-all` WOULD dispatch for the current config + expert (enabled built-ins + eligible OpenRouter aliases, fanout cap applied), WITHOUT calling them. Use this to discover the panel, then issue one `ask-one` call per provider in parallel for visible per-provider progress. Advisory, read-only.", inputSchema: panelInputSchema(), annotations: ADVISORY },
     { name: "ask-one", description: "Second opinion from ONE named provider in the active panel (e.g. `codex`, `gemini`, `grok`, `openrouter:<alias>` - get the names from `panel`). Returns the standard result envelope. Issue N of these in parallel (one per `panel` name) so each renders independently as it lands. Advisory, single-shot.", inputSchema: askOneInputSchema(), annotations: ADVISORY },
+    { name: "analyze", description: "Analyze recent runs from the opt-in debug log (latency/tokens/reasoning-effort per model) plus the session store (verdict agreement rate), and return advisory tuning suggestions (disable a slow/redundant model in ask-all, lower an OpenRouter model's reasoning, adjust maxFanout). Two lenses reported side by side - timing and agreement are NOT joined (no shared run id). Suggestions are advisory; it writes nothing. Requires `debug.enabled` for the timing lens. Read-only. The `/deliberation:analyze` slash command renders this for humans.", inputSchema: analyzeInputSchema(), annotations: ADVISORY },
   ];
   for (const t of Object.keys(ASK_PROVIDER)) {
     tools.push({ name: t, description: `Single-provider second opinion via ${ASK_PROVIDER[t]} (advisory, single-shot). Pass \`expert\` to apply one of the expert personas.`, inputSchema: inputSchema(), annotations: ADVISORY });
@@ -864,6 +877,59 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir, notify
   }
 
   /**
+   * Read-only run analytics for the `analyze` tool: tail the opt-in debug log,
+   * read recent persisted sessions, and return aggregated stats + advisory
+   * recommendations (core/analyze.js). Writes nothing. Tail-bounds the log read so
+   * a large file cannot bloat memory, and drops the partial first line.
+   * @param {any} args  // untrusted JSON-RPC tool arguments
+   * @returns {import("../../core/analyze.js").Analysis}
+   */
+  function runAnalyze(args) {
+    const fs = require("node:fs");
+    const cfg = getConfig() || {};
+    const dbg = cfg.debug || {};
+    const debugEnabled = !!dbg.enabled;
+    const logPath = (typeof dbg.path === "string" && dbg.path) || resolveDebugLogPath();
+    const limitBytes = Number.isInteger(args.limitBytes) && args.limitBytes > 0 ? args.limitBytes : 1024 * 1024;
+    let text = "";
+    try {
+      const fd = fs.openSync(logPath, "r");
+      try {
+        const size = fs.fstatSync(fd).size;
+        const start = size > limitBytes ? size - limitBytes : 0;
+        const len = size - start;
+        if (len > 0) {
+          const buf = Buffer.alloc(len);
+          fs.readSync(fd, buf, 0, len, start);
+          text = buf.toString("utf8");
+          if (start > 0) {
+            const nl = text.indexOf("\n");
+            if (nl >= 0) text = text.slice(nl + 1);
+          }
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      // Missing/unreadable log -> no timing data; buildAnalysis flags insufficientData.
+    }
+    const events = analyzeCore.parseDebugLog(text);
+
+    // Agreement lens: only when persistence is on (otherwise there are no records).
+    /** @type {any[]} */
+    const records = [];
+    const persist = persistEnabled();
+    if (persist) {
+      const n = Number.isInteger(args.sessions) && args.sessions > 0 ? args.sessions : 50;
+      for (const e of sessions.listSessions({ dir: sessionsDir }).slice(0, n)) {
+        const rec = sessions.readSession(e.id, { dir: sessionsDir });
+        if (rec) records.push(rec);
+      }
+    }
+    return analyzeCore.buildAnalysis(events, records, cfg, { logPath, debugEnabled, sessionsPersist: persist });
+  }
+
+  /**
    * @param {string} name
    * @param {any} args  // untrusted JSON-RPC tool arguments
    */
@@ -906,6 +972,9 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir, notify
       }
       const result = await askOne(p, withPersona(req, expert), { logger: currentLogger(), tool: "ask-one", cache: resultCache });
       return jsonResult({ result });
+    }
+    if (name === "analyze") {
+      return jsonResult(runAnalyze(args));
     }
     if (name === "ask-all") {
       // selectForAskAll returns a FLAT provider list: enabled built-ins + per-alias OR wrappers.

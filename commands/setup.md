@@ -261,7 +261,7 @@ resolve_plugin_root() {
 PLUGIN_ROOT="$(resolve_plugin_root)" || { echo "Error: cannot locate the deliberation plugin root."; exit 1; }
 mkdir -p "$HOME/.claude/commands"
 collisions=""
-for c in ask-gpt ask-gemini ask-grok ask-openrouter ask-all consensus grok-files; do
+for c in ask-gpt ask-gemini ask-grok ask-openrouter ask-all consensus analyze; do
   dest="$HOME/.claude/commands/$c.md"
   if [ -e "$dest" ]; then collisions="$collisions $c"
   else cp "$PLUGIN_ROOT/commands/$c.md" "$dest" && echo "installed /$c"; fi
