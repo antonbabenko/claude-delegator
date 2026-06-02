@@ -1,3 +1,10 @@
+## [3.3.0](https://github.com/antonbabenko/deliberation/compare/v3.2.0...v3.3.0) (2026-06-02)
+
+
+### Features
+
+* single-source command fallbacks + capability-gate expert personas ([#119](https://github.com/antonbabenko/deliberation/issues/119)) ([ba5b5ba](https://github.com/antonbabenko/deliberation/commit/ba5b5ba319bea61161075027618ca16731f81deb))
+
 ## [3.2.0](https://github.com/antonbabenko/deliberation/compare/v3.1.1...v3.2.0) (2026-06-02)
 
 
@@ -32,11 +39,4 @@ before this change are not supported by session-revisit.
 ### Features
 
 * unify consensus tools into one + drop schema versioning ([#111](https://github.com/antonbabenko/deliberation/issues/111)) ([6974bb9](https://github.com/antonbabenko/deliberation/commit/6974bb908e9a07dfbe0ac36703161b70b24461fc))
-
-## [2.18.0](https://github.com/antonbabenko/deliberation/compare/v2.17.0...v2.18.0) (2026-06-01)
-
-
-### Features
-
-* rewrite /consensus as a thin driver over consensus-step ([#108](https://github.com/antonbabenko/deliberation/issues/108)) ([243d093](https://github.com/antonbabenko/deliberation/commit/243d09334735288b62389429e7efd64efbb8713d))
 
