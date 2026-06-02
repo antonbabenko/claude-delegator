@@ -47,14 +47,14 @@ function makeOpenAICompatibleProvider(opts) {
           // Defaults guard a bridge that returns only { blocks }.
           ({ blocks = [], notes = [] } = bridge.inlineFiles(req.files, { roots: [req.cwd || process.cwd()] }));
         } catch (e) {
-          return toErrorResult(name, model, started, /** @type {any} */ (e), () => ({ errorKind: "config", retryable: false }));
+          return toErrorResult(name, model, started, /** @type {any} */ (e), () => ({ errorKind: "config", retryable: false }), { reasoningEffort: req.reasoningEffort ?? null });
         }
       }
       const turns = prior
         ? [...prior, { role: "user", text: req.prompt, inlineBlocks: blocks }]
         : bridge.buildInitialTurns(req.developerInstructions, req.prompt, blocks);
       try {
-        const { text } = await bridge.callOpenRouter({
+        const { text, usage } = await bridge.callOpenRouter({
           apiBase, apiKey: (req && req.apiKey) || process.env[apiKeyEnv], model,
           messages: bridge.buildMessages(turns),
           reasoningEffort: req.reasoningEffort, temperature: req.temperature, timeoutMs: req.timeoutMs,
@@ -65,9 +65,13 @@ function makeOpenAICompatibleProvider(opts) {
         // Surface skip notes (missing/binary/over-cap/over-budget files) like the standalone
         // bridge, so a file-based ask is never silently answered with no file content.
         const outText = notes.length ? `${text}\n\n[files] ${notes.join("; ")}` : text;
-        return { provider: name, model, text: outText, threadId, isError: false, ms: Date.now() - started };
+        // `req.reasoningEffort` is already the EFFECTIVE effort on the ask-all/consensus
+        // path: registry.js `pinAlias` merges the per-alias `reasoning_effort` into the
+        // request before this runs. (The global `openrouter.defaults` block applies only
+        // on the standalone /ask-openrouter bridge, not here.) So echoing it is correct.
+        return { provider: name, model, text: outText, threadId, isError: false, ms: Date.now() - started, reasoningEffort: req.reasoningEffort ?? null, usage };
       } catch (e) {
-        return toErrorResult(name, model, started, /** @type {any} */ (e), bridge.classifyError);
+        return toErrorResult(name, model, started, /** @type {any} */ (e), bridge.classifyError, { reasoningEffort: req.reasoningEffort ?? null });
       }
     },
   });

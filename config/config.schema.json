@@ -117,6 +117,22 @@
           "description": "Delete records older than this many days after each write. Use -1 for unlimited (never delete by age)."
         }
       }
+    },
+    "debug": {
+      "type": "object",
+      "description": "Opt-in debug log for performance debugging (per-provider latency, token counts, voting/approval outcomes). Default OFF. Never records prompts, responses, or issue descriptions.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Append one JSON line per provider call and per consensus round to the debug log. Default OFF."
+        },
+        "path": {
+          "type": "string",
+          "description": "Absolute path to the JSONL debug log file. When omitted, defaults to <cache>/deliberation/debug.jsonl (override via DELIBERATION_DEBUG_LOG)."
+        }
+      }
     }
   },
   "$defs": {

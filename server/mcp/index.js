@@ -28,6 +28,46 @@ const EXPERT_DESCRIPTIONS = {
   "debugger": "Debugging specialist that produces ranked root-cause hypotheses and the smallest safe fix from a bug report, logs, and code - or says honestly that the evidence shows no bug. Use for crashes, failing tests, or wrong output.",
 };
 
+/** Schema for `panel` (discover the active provider set without dispatching). */
+function panelInputSchema() {
+  return {
+    type: "object",
+    properties: {
+      expert: { type: "string" },
+      cwd: { type: "string" },
+    },
+  };
+}
+
+/** Schema for `ask-one` (single named provider from the active panel). */
+function askOneInputSchema() {
+  return {
+    type: "object",
+    required: ["provider", "prompt"],
+    properties: {
+      provider: { type: "string", description: 'A name from `panel` (e.g. "codex", "openrouter:<alias>")' },
+      prompt: { type: "string" },
+      expert: { type: "string" },
+      developerInstructions: { type: "string" },
+      cwd: { type: "string" },
+      reasoningEffort: { type: "string", enum: ["low", "medium", "high", "none"] },
+      files: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            dir: { type: "string" },
+            file_id: { type: "string" },
+            file_url: { type: "string" },
+            mode: { type: "string", enum: ["auto", "inline", "upload"] },
+          },
+        },
+      },
+    },
+  };
+}
+
 function inputSchema() {
   return {
     type: "object",
@@ -124,6 +164,8 @@ function toolList() {
     { name: "ask-all", description: "Fan out one question to GPT, Gemini, Grok, and any configured OpenRouter models in parallel for independent second opinions, then return all results (advisory, no cross-contamination). Pass `expert` to apply a persona to every delegate.", inputSchema: inputSchema(), annotations: ADVISORY },
     { name: "consensus", description: "Run the FULL multi-round consensus convergence loop server-side with a provider arbiter (blind pass + peer fan-out -> adjudicate -> revise) and return the converged verdict. Default depth is `consensus.maxRounds` (config, default 5); pass `maxRounds` to override. Pass `synthesizeAlways:true` for a SINGLE arbiter synthesis pass instead of the loop (best for open questions, not plan convergence): it returns a free-text `synthesis` and `maxRounds` is ignored. Configure the arbiter via `consensus.arbiter` - a concrete provider/openrouter alias runs server-side; `host` mode returns the opinions for YOU to synthesize. Advisory; pass `expert` to apply a persona. NOTE (Claude Code): use the `/consensus` slash command for the transcript-visible host-arbiter loop (it drives `consensus-step`); this tool is the provider-arbiter path for any host.", inputSchema: consensusInputSchema(), annotations: ADVISORY },
     { name: "consensus-step", description: "Client-driven consensus loop where YOU (the host model) are the arbiter, one step per call: action=init (start, returns sessionId + blind prompt) -> record_blind (your pre-commit verdict) -> dispatch_peers (server fans out to the providers) -> submit_adjudication (your verdict + per-issue accept/dismiss/defer) -> submit_revision (your revised plan), looping until converged or consensus.maxRounds rounds (default 5). State is held server-side by sessionId. Advisory.", inputSchema: consensusStepInputSchema(), annotations: ADVISORY },
+    { name: "panel", description: "Return the names of the providers `ask-all` WOULD dispatch for the current config + expert (enabled built-ins + eligible OpenRouter aliases, fanout cap applied), WITHOUT calling them. Use this to discover the panel, then issue one `ask-one` call per provider in parallel for visible per-provider progress. Advisory, read-only.", inputSchema: panelInputSchema(), annotations: ADVISORY },
+    { name: "ask-one", description: "Second opinion from ONE named provider in the active panel (e.g. `codex`, `gemini`, `grok`, `openrouter:<alias>` - get the names from `panel`). Returns the standard result envelope. Issue N of these in parallel (one per `panel` name) so each renders independently as it lands. Advisory, single-shot.", inputSchema: askOneInputSchema(), annotations: ADVISORY },
   ];
   for (const t of Object.keys(ASK_PROVIDER)) {
     tools.push({ name: t, description: `Single-provider second opinion via ${ASK_PROVIDER[t]} (advisory, single-shot). Pass \`expert\` to apply one of the expert personas.`, inputSchema: inputSchema(), annotations: ADVISORY });
@@ -244,9 +286,14 @@ async function isHealthy(p) {
  * @param {() => any} deps.getConfig
  * @param {() => (string|null)} [deps.getConfigError]  // last config load error (e.g. JSON parse), or null
  * @param {string} [deps.sessionsDir]  // dir for the opt-in session store; omit to disable persistence
+ * @param {(method:string, params:any) => void} [deps.notify]  // server->client JSON-RPC notification sender (Phase 4); no-op if omitted
  */
-function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
+function buildServer({ providers, getConfig, getConfigError, sessionsDir, notify }) {
   const registry = makeRegistry(providers);
+  // Server->client notification sender (Phase 4 spike). Injected by the stdio loop
+  // so it can write an unsolicited JSON-RPC notification to stdout; a no-op in tests
+  // and any host that did not wire one.
+  const sendNotify = typeof notify === "function" ? notify : (/** @type {string} */ _m, /** @type {any} */ _p) => {};
   const sessions = /** @type {any} */ (require("../../core/sessions.js"));
   // Consensus-step (client-driven, host-arbitrated) loop pieces: the pure state
   // machine, the review parser, and an ephemeral per-server store that carries
@@ -255,6 +302,61 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
   const { parseReview } = require("../../core/provider.js");
   const { makeLoopStore } = require("../../core/loop-store.js");
   const loopStore = makeLoopStore();
+
+  // In-session dedup cache (Phase 5) for the ADVISORY paths only (ask-all / ask-one):
+  // an identical re-ask returns the prior success instantly. Deliberately NOT used on
+  // the consensus loop - each round's plan text changes, and a cached peer verdict
+  // must never substitute for a fresh review inside the convergence loop.
+  const { makeResultCache } = require("../../core/result-cache.js");
+  const resultCache = makeResultCache();
+
+  // Debug logging seam (Phase 2). Build the file sink lazily and memoize it by
+  // path so we do not rebuild per call; rebuild only when the config's enabled
+  // flag or path changes (hot-reload). Returns NULL_LOGGER when debug is off, so
+  // the orchestrate call sites can always pass `logger` unconditionally.
+  const debugLog = require("../../core/debug-log.js");
+  const { resolveDebugLogPath } = require("../../core/paths.js");
+  /** @type {{key:string, logger:import("../../core/debug-log.js").Logger}} */
+  let _fileCache = { key: "", logger: debugLog.NULL_LOGGER };
+  /** Build (or reuse) the file sink for the current config. NULL when debug off. */
+  function fileSink() {
+    const dbg = (getConfig() || {}).debug || { enabled: false, path: null };
+    if (!dbg.enabled) { _fileCache = { key: "", logger: debugLog.NULL_LOGGER }; return debugLog.NULL_LOGGER; }
+    const path = (typeof dbg.path === "string" && dbg.path) || resolveDebugLogPath();
+    const key = `file:${path}`;
+    if (_fileCache.key !== key) _fileCache = { key, logger: debugLog.createFileLogger(path) };
+    return _fileCache.logger;
+  }
+
+  // Phase 4 spike: live MCP-notification sink. Emits a `notifications/message`
+  // (spec: server/utilities/logging) per core event so the host can render
+  // per-provider progress DURING the one blocking tool call. Syslog levels;
+  // suppressed when the client raised the min level above "info" via
+  // `logging/setLevel`. Carries NO prompt/response text (spec security rule).
+  const LEVEL_RANK = Object.freeze({ debug: 0, info: 1, notice: 2, warning: 3, error: 4, critical: 5, alert: 6, emergency: 7 });
+  let notifyMinLevel = /** @type {keyof typeof LEVEL_RANK} */ ("info"); // emit info+ by default; a client can raise it
+  const notifySink = {
+    /** @param {import("../../core/debug-log.js").DebugEvent} e */
+    logEvent(e) {
+      if (LEVEL_RANK.info < LEVEL_RANK[notifyMinLevel]) return; // client raised the bar
+      try {
+        sendNotify("notifications/message", {
+          level: "info",
+          logger: "deliberation",
+          data: { event: e.event, tool: e.tool, provider: e.provider, ms: e.ms, round: e.round, verdict: e.verdict, isError: e.isError, errorKind: e.errorKind },
+        });
+      } catch { /* notifications must never break a call */ }
+    },
+  };
+  /** Set the client's minimum log level (logging/setLevel). */
+  function setLogLevel(/** @type {any} */ level) {
+    if (typeof level === "string" && Object.prototype.hasOwnProperty.call(LEVEL_RANK, level)) { notifyMinLevel = /** @type {keyof typeof LEVEL_RANK} */ (level); return true; }
+    return false;
+  }
+  /** Composite logger: file sink (when debug on) + live notification sink (always). */
+  function currentLogger() {
+    return debugLog.composeLoggers([fileSink(), notifySink]);
+  }
 
   // Client identity for arbiter-default selection. Connection-scoped: set from the
   // MCP `initialize` handshake (clientInfo.name) for the life of this stdio session.
@@ -426,9 +528,13 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
    * @param {string|undefined} expert
    * @returns {Promise<{payload:any, parts:any}>}
    */
-  async function runAskAll(req, expert) {
+  async function runAskAll(req, expert, opts = /** @type {{noCache?:boolean}} */ ({})) {
     const { providers: selected, omitted } = registry.selectForAskAll({ config: getConfig(), expert: expert || "" });
-    const results = await askAll(selected, withPersona(req, expert));
+    const lg = currentLogger();
+    try { lg.logEvent({ event: "dispatch_start", at: Date.now(), tool: "ask-all", voices: selected.length }); } catch { /* never break */ }
+    // session-revisit passes noCache: a revisit is a deliberate RE-RUN of the stored
+    // question, so it must never replay a cached opinion from the live tool path.
+    const results = await askAll(selected, withPersona(req, expert), { logger: lg, tool: "ask-all", cache: opts.noCache ? undefined : resultCache });
     return {
       payload: { results, omitted },
       parts: { opinions: results, blindVerdict: null, verdict: null, arbiter: null, warnings: [] },
@@ -457,14 +563,14 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
     if (resolved.warning) warnings.push(resolved.warning);
 
     if (resolved.mode === "host") {
-      const opinions = await askAll(selected, withPersona(req, expert));
+      const opinions = await askAll(selected, withPersona(req, expert), { logger: currentLogger(), tool: "consensus" });
       const arbiter = { mode: "host" };
       const body = { opinions, blindVerdict: null, verdict: null, arbiter, warnings };
       return { payload: body, parts: body };
     }
 
     if (!resolved.provider) {
-      const out = await consensus(selected, withPersona(req, expert), { arbiterInstructions: PROMPTS.arbiter });
+      const out = await consensus(selected, withPersona(req, expert), { arbiterInstructions: PROMPTS.arbiter, logger: currentLogger() });
       const arbiter = { mode: "server", provider: null };
       return {
         payload: { opinions: out.opinions, blindVerdict: out.blindVerdict, verdict: out.verdict, error: out.error, arbiter, warnings },
@@ -478,7 +584,7 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
       peers = selected;
       warnings.push(`panel too small to exclude arbiter '${arbiterP.name}'; kept it in the peer panel (floor of 2)`);
     }
-    const out = await consensus(peers, withPersona(req, expert), { arbiter: arbiterP, arbiterInstructions: PROMPTS.arbiter, blindVote });
+    const out = await consensus(peers, withPersona(req, expert), { arbiter: arbiterP, arbiterInstructions: PROMPTS.arbiter, blindVote, logger: currentLogger() });
     const arbiter = { mode: "server", provider: arbiterP.name };
     return {
       payload: { opinions: out.opinions, blindVerdict: out.blindVerdict, verdict: out.verdict, error: out.error, arbiter, warnings },
@@ -532,7 +638,7 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
       const maxRounds = Number.isInteger(maxRoundsOverride) && /** @type {number} */ (maxRoundsOverride) > 0
         ? maxRoundsOverride
         : (Number.isInteger(cc.maxRounds) && cc.maxRounds > 0 ? cc.maxRounds : undefined);
-      const out = await runToConvergence(peers, withPersona(req, expert), { arbiter: arbiterP, maxRounds });
+      const out = await runToConvergence(peers, withPersona(req, expert), { arbiter: arbiterP, maxRounds, logger: currentLogger() });
       const allWarnings = out.error ? warnings.concat([`loop: ${out.error}`]) : warnings;
       const rounds = Array.isArray(out.rounds) ? out.rounds.length : 0;
       const arbiter = { mode: "server", provider: arbiterP.name };
@@ -695,11 +801,13 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
         const { providers: selected } = registry.selectForConsensus({ config: getConfig() || {}, expert: ex || "" });
         /** @type {DelegationRequest} */
         const peerReq = { prompt: peerPrompt, expert: ex, cwd: typeof args.cwd === "string" ? args.cwd : undefined };
-        const peerResults = await askAll(selected, withPersona(peerReq, ex));
+        const lg = currentLogger();
+        try { lg.logEvent({ event: "dispatch_start", at: Date.now(), tool: "consensus", round: cur.round, voices: selected.length }); } catch { /* never break */ }
+        const peerResults = await askAll(selected, withPersona(peerReq, ex), { logger: lg, tool: "consensus" });
         const results = peerResults.map((r) =>
           r.isError
-            ? { source: r.provider, isError: true, errorKind: r.errorKind, verdict: null, criticalIssues: [] }
-            : { ...parseReview(typeof r.text === "string" ? r.text : ""), source: r.provider, isError: false }
+            ? { source: r.provider, isError: true, errorKind: r.errorKind, verdict: null, criticalIssues: [], model: r.model, reasoningEffort: r.reasoningEffort ?? null, ms: r.ms }
+            : { ...parseReview(typeof r.text === "string" ? r.text : ""), source: r.provider, isError: false, model: r.model, reasoningEffort: r.reasoningEffort ?? null, ms: r.ms }
         );
         const next = loop.addOpinions(cur, results);
         loopStore.put(sid, next);
@@ -707,7 +815,9 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
           sessionId: sid,
           status: next.status,
           round: next.round,
-          opinions: results.map((r) => ({ source: r.source, isError: r.isError, verdict: r.verdict, criticalIssues: r.criticalIssues })),
+          // model + reasoningEffort + ms ride along so the command can show real
+          // reasoning effort per voice (no more hardcoded "n/a") and a time footer.
+          opinions: results.map((r) => ({ source: r.source, isError: r.isError, errorKind: r.errorKind, verdict: r.verdict, criticalIssues: r.criticalIssues, model: r.model, reasoningEffort: r.reasoningEffort, ms: r.ms })),
           note: "adjudicate the opinions, then call submit_adjudication with your verdict + per-issue decisions",
         };
       }
@@ -715,6 +825,15 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
       if (action === "submit_adjudication") {
         const decisions = Array.isArray(args.decisions) ? args.decisions : [];
         const next = loop.submitAdjudication(cur, { verdict: args.verdict, decisions });
+        try {
+          currentLogger().logEvent({
+            event: "round", at: Date.now(), tool: "consensus", round: cur.round,
+            verdict: typeof args.verdict === "string" ? args.verdict : null,
+            converged: next.status === "converged",
+            acceptedCritical: decisions.filter((/** @type {any} */ d) => d && d.action === "accept").length,
+            voices: Array.isArray(cur.results) ? cur.results.length : undefined,
+          });
+        } catch { /* logging must never break the step */ }
         if (next.status === "converged") {
           const { finalReport, confidence } = loop.finalize(next);
           loopStore.delete(sid);
@@ -766,6 +885,28 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
       reasoningEffort: args.reasoningEffort,
       files: args.files,
     };
+    if (name === "panel") {
+      // Echo the EXACT set ask-all would dispatch (same selection function, same
+      // fanout cap), WITHOUT calling any provider. The command issues one ask-one
+      // per name in parallel for visible per-provider progress.
+      const { providers: selected, omitted } = registry.selectForAskAll({ config: getConfig(), expert: expert || "" });
+      return jsonResult({
+        providers: selected.map((p) => p.name),
+        omitted: (Array.isArray(omitted) ? omitted : []).map((o) => (o && o.alias) || String(o)),
+      });
+    }
+    if (name === "ask-one") {
+      // Resolve ONE provider by name from the SAME selection set (so a pinned
+      // openrouter:<alias> resolves and a disabled/over-cap one is rejected).
+      const want = typeof args.provider === "string" ? args.provider : "";
+      const { providers: selected } = registry.selectForAskAll({ config: getConfig(), expert: expert || "" });
+      const p = selected.find((x) => x.name === want);
+      if (!p) {
+        return jsonResult({ error: `provider "${want}" is not in the active panel`, panel: selected.map((x) => x.name) });
+      }
+      const result = await askOne(p, withPersona(req, expert), { logger: currentLogger(), tool: "ask-one", cache: resultCache });
+      return jsonResult({ result });
+    }
     if (name === "ask-all") {
       // selectForAskAll returns a FLAT provider list: enabled built-ins + per-alias OR wrappers.
       const { payload, parts } = await runAskAll(req, expert);
@@ -841,7 +982,7 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
       // unsupported - pre-1.0, no users; wipe the local session store if any exist.)
       const tool = rec.tool === "ask-all" ? "ask-all" : "consensus";
       const { payload, parts } = tool === "ask-all"
-        ? await runAskAll(childReq, childExpert)
+        ? await runAskAll(childReq, childExpert, { noCache: true })
         : await runConsensusTool(childReq, childExpert, { synthesizeAlways: rec.synthesizeAlways === true });
       if (parts) {
         const sid = persistRun(tool, childReq, childExpert, { ...parts, parentId: rec.id });
@@ -853,12 +994,12 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
     if (Object.prototype.hasOwnProperty.call(ASK_PROVIDER, name)) {
       const p = registry.get(ASK_PROVIDER[name]);
       if (!p) return { content: [{ type: "text", text: JSON.stringify({ error: `provider ${ASK_PROVIDER[name]} not registered` }) }] };
-      const result = await askOne(p, withPersona(req, expert));
+      const result = await askOne(p, withPersona(req, expert), { logger: currentLogger(), tool: "ask-one", cache: resultCache });
       return { content: [{ type: "text", text: JSON.stringify({ result }) }] };
     }
     if (EXPERTS.includes(name)) {
       const { providers: selected } = registry.selectForAskAll({ config: getConfig(), expert: name });
-      const results = await askAll(selected, withPersona({ ...req, expert: name }, expert));
+      const results = await askAll(selected, withPersona({ ...req, expert: name }, expert), { logger: currentLogger(), tool: name, cache: resultCache });
       return { content: [{ type: "text", text: JSON.stringify({ results }) }] };
     }
     throw new Error(`unknown tool: ${name}`);
@@ -871,7 +1012,13 @@ function buildServer({ providers, getConfig, getConfigError, sessionsDir }) {
         // Capture the client name (hint for the arbiter default; see isClaudeHost).
         const ci = msg.params && msg.params.clientInfo;
         if (ci && typeof ci.name === "string") clientName = ci.name;
-        return { jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "deliberation-mcp", version: "0.1.0" } } };
+        // `logging: {}` advertises that we emit `notifications/message` (Phase 4 spike).
+        return { jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {}, logging: {} }, serverInfo: { name: "deliberation-mcp", version: "0.1.0" } } };
+      }
+      if (msg.method === "logging/setLevel") {
+        const level = msg.params && msg.params.level;
+        if (!setLogLevel(level)) return { jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: `invalid log level: ${String(level)}` } };
+        return { jsonrpc: "2.0", id: msg.id, result: {} };
       }
       if (msg.method === "tools/list") return { jsonrpc: "2.0", id: msg.id, result: { tools: toolList() } };
       if (msg.method === "tools/call") {
@@ -923,7 +1070,11 @@ function startStdio() {
     }),
   ];
   const sessionsDir = require("../../core/paths.js").resolveSessionsDir();
-  const srv = buildServer({ providers, getConfig, getConfigError, sessionsDir });
+  // Server->client notification writer (Phase 4): an unsolicited JSON-RPC message
+  // (no `id`) on stdout. Used to stream per-provider progress during a blocking call.
+  const notify = (/** @type {string} */ method, /** @type {any} */ params) =>
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n");
+  const srv = buildServer({ providers, getConfig, getConfigError, sessionsDir, notify });
 
   if (typeof globalThis.fetch !== "function") {
     console.error("deliberation-mcp requires Node 18+ (global fetch unavailable).");

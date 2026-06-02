@@ -129,21 +129,30 @@ in-memory `LoopState` for that `sessionId` may be gone, so recover by re-running
    mcp__deliberation__consensus-step({ action: "record_blind", sessionId: "[sid]", blindVerdict: "[your full blind verdict text]" })
    ```
 
-4. **Dispatch the panel** (pass `cwd` here - this is where the peers run):
+4. **Dispatch the panel** (pass `cwd` here - this is where the peers run). FIRST, on the line
+   before the call, print a short expectation note so the wait never looks like a hang (the
+   call returns only after ALL voices finish; no partial output mid-call):
+   ```
+   Round R of [maxRounds]: dispatching the panel in parallel... ETA ~30-90s (longer if Gemini runs deep).
+   ```
+   Then call:
    ```
    mcp__deliberation__consensus-step({ action: "dispatch_peers", sessionId: "[sid]", cwd: "[cwd]" })
    ```
    The server selects the voting panel (enabled built-ins + eligible OpenRouter delegates,
    from the live hot-reloaded config) and fans out in parallel, then parses each reply.
-   It returns `opinions[]`: one `{ source, isError, errorKind?, verdict, criticalIssues }`
+   It returns `opinions[]`: one
+   `{ source, isError, errorKind?, verdict, criticalIssues, model, reasoningEffort, ms }`
    per voice. `source` is `codex`, `gemini`, `grok`, or `openrouter:<alias>`.
-   - On **round 1 only**, print the panel block (one line per voice from `opinions[]`):
+   - On **round 1 only**, print the panel block (one line per voice from `opinions[]`),
+     showing the real reasoning effort - `reasoningEffort` for the HTTP voices (Grok,
+     OpenRouter), or `n/a (CLI)` when it is `null` (Codex, Gemini have no such knob):
      ```
      Consensus panel (round 1, typical 30-60s/round):
-       - codex                          (built-in)
-       - gemini                         (built-in)
-       - grok                           (built-in)
-       - openrouter:<alias>             (delegate)
+       - codex                          (built-in)    reasoning: n/a (CLI)
+       - gemini                         (built-in)    reasoning: n/a (CLI)
+       - grok                           (built-in)    reasoning: high
+       - openrouter:<alias>             (delegate)    reasoning: high
      ```
      If `opinions[]` has > 3 voices, also print:
      `Warning: N voting voices x up to maxRounds rounds = significant token cost AND a stricter convergence bar (every responding voice must APPROVE).`
@@ -152,6 +161,11 @@ in-memory `LoopState` for that `sessionId` may be gone, so recover by re-running
      codex (R{R}): APPROVE
      gemini (R{R}): REQUEST CHANGES (3 critical)
      grok (R{R}): ERRORED (missing-auth)
+     ```
+   - After the per-voice lines, print a one-line round time footer from the voices' `ms`
+     (the fan-out is parallel, so the round wall time ~ the slowest voice):
+     ```
+     Round time: 52s (slowest: gemini 52s)
      ```
 
    **Repo-wide context (file-blind voices):** Grok and OpenRouter delegates see only what
@@ -214,6 +228,7 @@ reviewer text.
 
 **Mode**: arbiter-mediated consensus (external voices vote; Claude adjudicates + synthesizes; engine-driven loop)
 **Outcome**: CONVERGED in N rounds (confidence: high|medium|low) | UNRESOLVED after N rounds (confidence: none)
+**Time**: ~Ns total across N rounds (sum of each round's slowest-voice `ms`; provider time only, excludes your adjudication/revision turns)
 **Final plan**:
 [the engine's finalReport plan, or last revision]
 

@@ -176,8 +176,34 @@ function resolveSessionsDir(opts) {
   return path.join(canonicalCacheDir(home, env, platform), "sessions");
 }
 
+/**
+ * Resolve the absolute path to the opt-in debug log file (core/debug-log.js).
+ *
+ * Precedence:
+ *   1. DELIBERATION_DEBUG_LOG if non-empty -> return it verbatim.
+ *   2. Else `<canonicalCacheDir>/debug.jsonl`.
+ *
+ * The config's `debug.path` (when set) takes precedence over BOTH at the call
+ * site; this resolver is the fallback when no explicit path is configured.
+ * Pure path logic - no FS access, no side effects.
+ *
+ * @param {ResolveOptions} [opts]
+ * @returns {string} absolute path to the debug log file to use
+ */
+function resolveDebugLogPath(opts) {
+  const { home, env, platform } = resolveInjection(opts);
+
+  const override = env.DELIBERATION_DEBUG_LOG;
+  if (typeof override === "string" && override.length > 0) {
+    return override;
+  }
+
+  return path.join(canonicalCacheDir(home, env, platform), "debug.jsonl");
+}
+
 module.exports = {
   resolveConfigPath,
   resolveGrokCachePath,
   resolveSessionsDir,
+  resolveDebugLogPath,
 };

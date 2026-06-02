@@ -625,7 +625,23 @@ async function runGrok({ turns, model, timeoutMs, apiKey, apiBase, fetchImpl, re
   }
   const text = parseResponsesOutput(data);
   // `output` is captured so grok-reply can replay the server's own items verbatim.
-  return { text, output: Array.isArray(data.output) ? data.output : null };
+  // `usage` is normalized for the debug log only (token counts); never displayed.
+  return { text, output: Array.isArray(data.output) ? data.output : null, usage: normalizeUsage(data.usage) };
+}
+
+// Normalize an xAI/OpenAI-style usage object to {promptTokens,completionTokens,totalTokens}.
+// Returns undefined when no usable counts are present (so the field is simply absent).
+function normalizeUsage(u) {
+  if (!u || typeof u !== "object") return undefined;
+  const prompt = typeof u.prompt_tokens === "number" ? u.prompt_tokens : (typeof u.input_tokens === "number" ? u.input_tokens : undefined);
+  const completion = typeof u.completion_tokens === "number" ? u.completion_tokens : (typeof u.output_tokens === "number" ? u.output_tokens : undefined);
+  const total = typeof u.total_tokens === "number" ? u.total_tokens : undefined;
+  if (prompt === undefined && completion === undefined && total === undefined) return undefined;
+  const out = {};
+  if (prompt !== undefined) out.promptTokens = prompt;
+  if (completion !== undefined) out.completionTokens = completion;
+  if (total !== undefined) out.totalTokens = total;
+  return out;
 }
 
 // --- Stale-File Recovery ---
@@ -675,7 +691,7 @@ async function runWithFiles(args) {
 
   try {
     const out = await attempt(buildTurns(refs));
-    return { text: out.text, output: out.output, refs, ownedIds };
+    return { text: out.text, output: out.output, refs, ownedIds, usage: out.usage };
   } catch (e) {
     if (!isStaleFileError(e)) throw e;
     const matches = (e.message || "").match(STALE_FILE_ID_EXTRACT) || [];
@@ -712,7 +728,7 @@ async function runWithFiles(args) {
     }
 
     const out = await attempt(buildTurns(refs));
-    return { text: out.text, output: out.output, refs, ownedIds };
+    return { text: out.text, output: out.output, refs, ownedIds, usage: out.usage };
   }
 }
 

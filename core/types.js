@@ -31,6 +31,16 @@
  */
 
 /**
+ * Token usage, when the provider reports it. HTTP providers (OpenRouter, Grok)
+ * return a `usage` object; CLI providers (Codex, Gemini) do not. Logged for
+ * debugging only - never rendered in command output.
+ * @typedef {Object} Usage
+ * @property {number} [promptTokens]
+ * @property {number} [completionTokens]
+ * @property {number} [totalTokens]
+ */
+
+/**
  * @typedef {Object} DelegationSuccess
  * @property {false}    isError
  * @property {string}   provider
@@ -38,6 +48,10 @@
  * @property {string}   text
  * @property {string}   [threadId]
  * @property {number}   ms
+ * @property {(string|null)} [reasoningEffort]  effective reasoning effort the call
+ *   used; `null` for providers with no such knob (Codex, Gemini CLIs).
+ * @property {Usage}    [usage]  HTTP-provider token usage; absent for CLIs.
+ * @property {boolean}  [cached]  true when served from the in-session dedup cache.
  */
 
 /**
@@ -49,6 +63,7 @@
  * @property {boolean}  retryable
  * @property {string}   [message]
  * @property {number}   ms
+ * @property {(string|null)} [reasoningEffort]
  */
 
 /** @typedef {DelegationSuccess | DelegationError} DelegationResult */

@@ -6,20 +6,87 @@
 
 const { parseReview } = require("./provider.js");
 const loop = require("./consensus-loop.js");
+const { NULL_LOGGER } = require("./debug-log.js");
+
+/** @typedef {import("./debug-log.js").Logger} Logger */
+
+/**
+ * Emit one `provider_result` debug event for a settled call. Never throws.
+ * @param {Logger} logger
+ * @param {string} tool
+ * @param {DelegationResult} r
+ */
+function logProviderResult(logger, tool, r) {
+  try {
+    logger.logEvent({
+      event: "provider_result",
+      at: Date.now(),
+      tool,
+      provider: r.provider,
+      model: r.model,
+      reasoningEffort: r.reasoningEffort ?? null,
+      ms: r.ms,
+      isError: r.isError,
+      errorKind: r.isError ? r.errorKind : undefined,
+      usage: r.isError ? undefined : r.usage,
+    });
+  } catch { /* logging must never break a call */ }
+}
+
+/**
+ * One provider call with optional in-session cache + debug logging. On a cache
+ * hit, returns the cached SUCCESS instantly (no model call) and still logs the
+ * (cached) result so progress output is consistent. Only successes are cached.
+ * @param {Provider} provider
+ * @param {DelegationRequest} req
+ * @param {Logger} logger
+ * @param {string} tool
+ * @param {(import("./result-cache.js").ResultCache|undefined)} cache
+ * @returns {Promise<DelegationResult>}
+ */
+async function callProvider(provider, req, logger, tool, cache) {
+  // File-bearing requests skip the cache: file CONTENT can change under the same
+  // path, and the key only fingerprints the reference, not the bytes.
+  const useCache = cache && !(Array.isArray(req.files) && req.files.length);
+  if (useCache) {
+    const hit = cache.get(provider.name, req);
+    if (hit) { logProviderResult(logger, tool, hit); return hit; }
+  }
+  const started = Date.now();
+  /** @type {DelegationResult} */
+  let r;
+  try {
+    r = await provider.ask({ ...req, files: req.files ? req.files.map((f) => ({ ...f })) : undefined });
+  } catch (e) {
+    // A provider that REJECTS (rather than returning an error envelope) must not
+    // break the call OR vanish from the log. Synthesize + log a uniform error -
+    // `unknown` matches askAll's existing allSettled-rejection fallback vocabulary.
+    r = {
+      provider: provider.name, model: "unknown", isError: true, errorKind: "unknown",
+      retryable: false, message: String((e && /** @type {any} */ (e).message) || e), ms: Date.now() - started,
+    };
+  }
+  logProviderResult(logger, tool, r);
+  if (useCache) cache.set(provider.name, req, r);
+  return r;
+}
 
 /**
  * Fan out ONE request to N providers concurrently. The whole serialization fix:
  * the host harness sees a single tool call, so it cannot stagger the providers.
- * Failures are isolated - the batch never rejects.
+ * Failures are isolated - the batch never rejects. Each provider is logged AS IT
+ * SETTLES (not after the barrier), so the injected logger - file sink and/or live
+ * MCP-notification sink - reports per-provider progress during the one call.
  * @param {Provider[]} providers
  * @param {DelegationRequest} req
+ * @param {{logger?:Logger, tool?:string, cache?:import("./result-cache.js").ResultCache}} [opts]
  * @returns {Promise<DelegationResult[]>}
  */
-async function askAll(providers, req) {
+async function askAll(providers, req, opts = {}) {
+  const logger = opts.logger || NULL_LOGGER;
+  const tool = opts.tool || "ask-all";
   const settled = await Promise.allSettled(
-    providers.map((/** @type {Provider} */ p) =>
-      p.ask({ ...req, files: req.files ? req.files.map((f) => ({ ...f })) : undefined })
-    )
+    providers.map((/** @type {Provider} */ p) => callProvider(p, req, logger, tool, opts.cache))
   );
   return settled.map((s, i) =>
     s.status === "fulfilled"
@@ -40,10 +107,11 @@ async function askAll(providers, req) {
  * Single-provider call (advisory one-shot). Shared entrypoint for ask-* tools.
  * @param {Provider} provider
  * @param {DelegationRequest} req
+ * @param {{logger?:Logger, tool?:string, cache?:import("./result-cache.js").ResultCache}} [opts]
  * @returns {Promise<DelegationResult>}
  */
-async function askOne(provider, req) {
-  return provider.ask({ ...req, files: req.files ? req.files.map((f) => ({ ...f })) : undefined });
+async function askOne(provider, req, opts = {}) {
+  return callProvider(provider, req, opts.logger || NULL_LOGGER, opts.tool || "ask-one", opts.cache);
 }
 
 /**
@@ -82,7 +150,7 @@ function buildArbiterPrompt(question, opinions) {
  * the run. `blindVerdict` is `null` when `blindVote` is off or no arbiter exists.
  * @param {Provider[]} providers
  * @param {DelegationRequest} req
- * @param {{arbiter?:Provider, arbiterInstructions?:string, blindVote?:boolean}} [opts]
+ * @param {{arbiter?:Provider, arbiterInstructions?:string, blindVote?:boolean, logger?:Logger}} [opts]
  * @returns {Promise<{opinions:DelegationResult[], blindVerdict:(DelegationResult|null), verdict:(DelegationResult|null), error?:string}>}
  */
 async function consensus(providers, req, opts = {}) {
@@ -104,7 +172,7 @@ async function consensus(providers, req, opts = {}) {
         .then((v) => v, () => null)
     : Promise.resolve(/** @type {DelegationResult|null} */ (null));
 
-  const [opinions, blindVerdict] = await Promise.all([askAll(providers, req), blindPromise]);
+  const [opinions, blindVerdict] = await Promise.all([askAll(providers, req, { logger: opts.logger, tool: "consensus" }), blindPromise]);
   // The union guarantees `text` on the success branch, so `!o.isError` alone
   // narrows each survivor to DelegationSuccess - no `&& o.text` guard needed.
   const ok = /** @type {DelegationSuccess[]} */ (opinions.filter((o) => !o.isError));
@@ -179,11 +247,12 @@ function okText(/** @type {any} */ res) {
  * revision keeps the current plan.
  * @param {Provider[]} providers  peer panel
  * @param {DelegationRequest} req  `prompt` is the initial plan
- * @param {{arbiter?:Provider, maxRounds?:number}} [opts]
+ * @param {{arbiter?:Provider, maxRounds?:number, logger?:Logger}} [opts]
  * @returns {Promise<{converged:boolean, verdict:(string|null), confidence:string, finalReport?:string, rounds:any[], opinions:any[], error?:string}>}
  */
 async function runToConvergence(providers, req, opts = {}) {
   const arbiter = opts.arbiter;
+  const logger = opts.logger || NULL_LOGGER;
   if (!arbiter) return { converged: false, verdict: null, confidence: "none", rounds: [], opinions: [], error: "no-arbiter" };
 
   let state = loop.initConsensusLoop({
@@ -202,9 +271,10 @@ async function runToConvergence(providers, req, opts = {}) {
     while (state.status !== "converged" && state.status !== "unresolved") {
       const { peerPrompt, blindPrompt } = loop.prepareRound(state);
       // Blind pass runs concurrently with the peer fan-out; isolate its failure.
+      const roundNo = state.round;
       const [blindRes, peerResults] = await Promise.all([
         Promise.resolve().then(() => arbiter.ask({ ...req, prompt: blindPrompt })).then((r) => r, () => null),
-        askAll(providers, { ...req, prompt: peerPrompt }),
+        askAll(providers, { ...req, prompt: peerPrompt }, { logger, tool: "consensus" }),
       ]);
       state = loop.recordBlindVerdict(state, okText(blindRes) || "(blind pass unavailable)");
 
@@ -224,6 +294,14 @@ async function runToConvergence(providers, req, opts = {}) {
         if (t) { const p = parseReview(t); if (p.verdict) verdict = p.verdict; }
       } catch { /* arbiter adjudication failed -> hold at REQUEST_CHANGES */ }
       state = loop.submitAdjudication(state, { verdict, decisions: [] });
+      try {
+        logger.logEvent({
+          event: "round", at: Date.now(), tool: "consensus", round: roundNo,
+          verdict, converged: state.status === "converged",
+          blindVerdict: okText(blindRes) ? "(recorded)" : null,
+          voices: lastResults.length,
+        });
+      } catch { /* logging must never break the loop */ }
       if (state.status === "converged") break;
 
       let revised = state.currentPlan;
