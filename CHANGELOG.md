@@ -1,3 +1,10 @@
+## [3.5.3](https://github.com/antonbabenko/deliberation/compare/v3.5.2...v3.5.3) (2026-06-05)
+
+
+### Bug Fixes
+
+* relocate per-host install guides to docs/hosts ([#129](https://github.com/antonbabenko/deliberation/issues/129)) ([667a33f](https://github.com/antonbabenko/deliberation/commit/667a33f4e535ec3b3a55b2792015b232f1ee6628))
+
 ## [3.5.2](https://github.com/antonbabenko/deliberation/compare/v3.5.1...v3.5.2) (2026-06-02)
 
 
@@ -25,11 +32,4 @@
 ### Features
 
 * add /deliberation:analyze run-analytics command + analyze MCP tool ([#121](https://github.com/antonbabenko/deliberation/issues/121)) ([ea00eca](https://github.com/antonbabenko/deliberation/commit/ea00eca8384df148c4248d5afcdb37e54ab351f8))
-
-## [3.3.0](https://github.com/antonbabenko/deliberation/compare/v3.2.0...v3.3.0) (2026-06-02)
-
-
-### Features
-
-* single-source command fallbacks + capability-gate expert personas ([#119](https://github.com/antonbabenko/deliberation/issues/119)) ([ba5b5ba](https://github.com/antonbabenko/deliberation/commit/ba5b5ba319bea61161075027618ca16731f81deb))
 
