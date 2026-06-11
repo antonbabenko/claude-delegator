@@ -108,8 +108,8 @@ Flag mapping the bridge applies to `agy`:
 
 | Bridge input | `agy` flag |
 |--------------|------------|
-| `sandbox: read-only` (advisory) | `--sandbox` |
-| `sandbox: workspace-write` | `--dangerously-skip-permissions` (best-effort) |
+| `sandbox: read-only` (advisory) | `--sandbox` (terminal-only; see below) |
+| `sandbox: workspace-write` | `--dangerously-skip-permissions` |
 | `include-directories: [...]` | repeated `--add-dir <dir>` |
 | `gemini-reply` (multi-turn) | `--conversation <id>` |
 | always | `--print-timeout <duration>` and `-p <prompt>` |
@@ -120,9 +120,31 @@ parameter is advisory only. The bridge default model is `auto-gemini-3`; overrid
 default with `GEMINI_DEFAULT_MODEL`, or point at a different `agy` binary with
 `AGY_BIN`. `agy` print mode does not enforce folder trust.
 
-`agy` print-mode writes go to a scratch dir, so Gemini-via-agy is advisory-effective:
-it can read context to advise but cannot mutate the real workspace, even under
-`workspace-write`.
+**Read-only is enforced by the bridge, not by `agy`.** `agy`'s `--sandbox`
+restricts only terminal commands - the agent's file-edit tool is unrestricted, and
+the model can bypass the terminal restriction per tool call. So a `read-only`
+dispatch does NOT rely on `--sandbox` alone. The bridge layers its own enforcement
+on every read-only run:
+
+1. **macOS OS sandbox** - the `agy` process is wrapped in `sandbox-exec` with a
+   Seatbelt profile that denies all file writes except `~/.gemini` (OAuth + the
+   conversation cache that backs `threadId` continuity) and temp dirs. Workspace
+   writes are blocked at the kernel. Disable with `DELIBERATION_DISABLE_OS_SANDBOX=1`.
+2. **Prompt guard** - a hard advisory instruction block is prepended to the prompt.
+3. **Git mutation detection** (all platforms) - the bridge snapshots `git rev-parse
+   HEAD` + `git status --porcelain` of the consulted cwd (and any `--add-dir` roots)
+   before and after the run; on a diff it prepends a `WORKSPACE MUTATION DETECTED`
+   warning and sets `workspaceMutated: true` on the result. No auto-revert - the
+   result is surfaced as tainted for the caller to act on.
+4. **Env scrub** - the child env drops the kill-switch and push/exfil credentials
+   (`GITHUB_TOKEN`, `GH_TOKEN`, `GIT_ASKPASS`, `SSH_AUTH_SOCK`).
+
+The network is intentionally NOT isolated (`agy` needs its API + OAuth token
+refresh), so a determined delegate could still push pre-existing commits or exfil
+over the network - read-only contains local writes. On Linux there is no OS sandbox
+in v1; read-only there relies on the prompt guard + mutation detection (`bwrap` is a
+documented future seam). `workspace-write` (the direct `gemini` tool only) is an
+explicit opt-in that intentionally skips all of the above.
 
 ### Grok bridge
 
@@ -848,15 +870,20 @@ to invoke or not invoke. Edit these to change expert behavior for your workflow.
 | Provider not authenticated | Codex: `codex login`. Gemini: run `agy` once (or set `GOOGLE_API_KEY`). Grok: export `XAI_API_KEY` (else calls return `errorKind: missing-auth`) |
 | Tool not appearing | Run `claude mcp list` and verify registration |
 | Expert not triggered | Ask explicitly: "Ask GPT to review...", "Ask Gemini to review...", or "Ask Grok to review..." |
-| Gemini writes don't land in the workspace | Expected: `agy` print mode writes to a scratch dir, so Gemini-via-agy is advisory-effective (great for analysis and review, but it cannot mutate the real workspace). Use Codex for implementation. |
+| An advisory Gemini run returned `workspaceMutated: true` | The delegate wrote to the consulted repo despite read-only mode (the OS sandbox is macOS-only; Linux relies on detection). Nothing was auto-reverted - review `git status` / `git log` and discard unwanted changes. Treat that result as tainted. |
+| Advisory Gemini run errors with a `sandbox-exec` failure on macOS | The Seatbelt wrapper could not start. Set `DELIBERATION_DISABLE_OS_SANDBOX=1` to fall back to prompt-guard + detection while investigating. |
 
 `agy` print mode does not enforce folder trust, so there is no trust prompt to clear. Soft-timeout recovery (stdout-drain) is documented in [Gemini timeout recovery](#gemini-timeout-recovery).
 
 ## Known limitations
 
-- `agy` print mode writes to a scratch dir, so the Gemini expert is
-  advisory-effective: it cannot mutate the real workspace even under
-  `workspace-write`. Route implementation work to Codex (GPT).
+- Advisory (read-only) Gemini enforcement is strongest on macOS, where the `agy`
+  process is wrapped in a `sandbox-exec` Seatbelt profile that denies workspace
+  writes. On Linux there is no OS sandbox in v1 - read-only relies on the prompt
+  guard + post-run git mutation detection (which sets `workspaceMutated: true`),
+  and the network is never isolated on any platform. Route deliberate
+  implementation work to Codex (GPT) or the direct `gemini` tool with
+  `workspace-write`.
 - `agy` resolves a conversation id per cwd (in
   `~/.gemini/antigravity-cli/cache/last_conversations.json`). Heavy parallel calls
   from the same cwd (for example `/ask-all`, `/consensus`) share that single

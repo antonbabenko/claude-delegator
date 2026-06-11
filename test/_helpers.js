@@ -17,6 +17,10 @@ function startBridge({ env = {}, fakeBin = "fake-agy.sh" } = {}) {
       ...process.env,
       AGY_BIN: agyBin,
       CDG_ARGV_LOG: path.join(tmpDir, "argv.log"),
+      // Keep the integration suite hermetic + cross-platform: the macOS sandbox-exec
+      // wrapper denies workspace writes, which would block the fixture's own argv log.
+      // Tests that exercise the wrapper opt back in by overriding this via `env`.
+      DELIBERATION_DISABLE_OS_SANDBOX: "1",
       ...env,
     },
     stdio: ["pipe", "pipe", "pipe"],

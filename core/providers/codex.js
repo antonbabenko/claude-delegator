@@ -16,13 +16,28 @@ function classifyCodex(stderr) {
 }
 
 /**
+ * Argv for an advisory `codex exec` run. `--sandbox read-only` is hard-pinned so
+ * the run cannot inherit a writable global default from ~/.codex/config.toml
+ * (e.g. sandbox_mode = "workspace-write" + approval_policy = "never"). codex
+ * enforces this at the OS level (Seatbelt on macOS, Landlock/seccomp on Linux).
+ * Core providers only ever serve advisory paths (ask-one / ask-all / consensus);
+ * implementation mode runs through the separate native codex MCP server, which
+ * owns its own sandbox parameter and is untouched here. The opts.run injection
+ * point remains the escape hatch if a caller ever needs different argv.
+ * @returns {string[]}
+ */
+function codexExecArgs() {
+  return ["exec", "--sandbox", "read-only", "--skip-git-repo-check"];
+}
+
+/**
  * Default spawner: `codex exec` reading the prompt on stdin, capturing stdout.
  * @param {{prompt:string, cwd?:string, timeoutMs?:number}} args
  * @returns {Promise<{code:number, stdout:string, stderr:string}>}
  */
 function defaultRun({ prompt, cwd, timeoutMs }) {
   return new Promise((resolve) => {
-    const child = spawn("codex", ["exec", "--skip-git-repo-check"], { cwd: cwd || process.cwd() });
+    const child = spawn("codex", codexExecArgs(), { cwd: cwd || process.cwd() });
     let stdout = "", stderr = "", settled = false;
     const timer = timeoutMs ? setTimeout(() => child.kill("SIGKILL"), timeoutMs) : null;
     if (timer) timer.unref(); // never hold the event loop open on the timeout timer
@@ -79,4 +94,4 @@ function makeCodexProvider(opts = {}) {
   };
 }
 
-module.exports = { makeCodexProvider, classifyCodex };
+module.exports = { makeCodexProvider, classifyCodex, codexExecArgs };

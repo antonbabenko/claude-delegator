@@ -2,7 +2,11 @@
 "use strict";
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { makeCodexProvider } = require("../core/providers/codex.js");
+const { makeCodexProvider, codexExecArgs } = require("../core/providers/codex.js");
+
+test("CX5: codexExecArgs hard-pins --sandbox read-only (advisory cannot inherit a writable global default)", () => {
+  assert.deepEqual(codexExecArgs(), ["exec", "--sandbox", "read-only", "--skip-git-repo-check"]);
+});
 
 test("CX1: ask returns the captured stdout as text on exit 0", async () => {
   const p = makeCodexProvider({ run: async () => ({ code: 0, stdout: "codex says hi", stderr: "" }) });

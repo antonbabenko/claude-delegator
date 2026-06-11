@@ -52,6 +52,9 @@
  *   used; `null` for providers with no such knob (Codex, Gemini CLIs).
  * @property {Usage}    [usage]  HTTP-provider token usage; absent for CLIs.
  * @property {boolean}  [cached]  true when served from the in-session dedup cache.
+ * @property {boolean}  [workspaceMutated]  true when an advisory (read-only) run
+ *   nonetheless changed the consulted workspace (git mutation detected); the result
+ *   should be treated as tainted.
  */
 
 /**

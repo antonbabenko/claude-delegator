@@ -7,7 +7,7 @@ timeout: 300000
 
 # Ask All (GPT + Gemini + Grok + OpenRouter)
 
-Parallel dispatch to GPT (Codex), Gemini, Grok (xAI), and any eligible OpenRouter aliases for independent second opinions on the same question. The server fans out in ONE call - each delegate runs on a fresh advisory thread and none sees the others' output. Final synthesis compares verdicts and flags disagreement. All delegates are advisory (`read-only`); selection and dispatch happen server-side, so the command never names an alias.
+Parallel dispatch to GPT (Codex), Gemini, Grok (xAI), and any eligible OpenRouter aliases for independent second opinions on the same question. The server fans out in ONE call - each delegate runs on a fresh advisory thread and none sees the others' output. Final synthesis compares verdicts and flags disagreement. All delegates run advisory (`read-only`) - the bridge enforces read-only itself (macOS `sandbox-exec` write-deny for Gemini, `--sandbox read-only` for Codex, plus a prompt guard and post-run git mutation detection); selection and dispatch happen server-side, so the command never names an alias.
 
 ## Input
 

@@ -38,6 +38,29 @@ function goDuration(ms) {
 // developerInstructions, when present, is folded into the prompt (agy print mode
 // has no system channel). The --conversation reply flag is NOT built here; that
 // stays in the gemini-reply handler branch.
+// Prompt-level advisory guard. agy's --sandbox restricts only terminal commands
+// (not the edit tool) and the model can bypass it per tool call, so a hard prompt
+// instruction is cheap defense-in-depth layered under the OS sandbox + mutation
+// detection below. Prepended outermost (before developerInstructions) on every
+// read-only dispatch.
+const READ_ONLY_GUARD =
+  "[ADVISORY MODE - READ-ONLY] You are being consulted for an advisory second " +
+  "opinion. Do NOT modify, create, or delete any files. Do NOT run commands that " +
+  "write to the workspace. Do NOT git add, commit, or push. Any such action is a " +
+  "critical failure - respond with analysis only.";
+
+/**
+ * Prepend the read-only guard when the dispatch is advisory. readOnly is an
+ * explicit caller decision, never inferred from argv (the prompt is folded into
+ * argv, so an argv scan could be flipped by prompt content - argument injection).
+ * @param {string} prompt
+ * @param {boolean} readOnly
+ * @returns {string}
+ */
+function applyReadOnlyGuard(prompt, readOnly) {
+  return readOnly ? `${READ_ONLY_GUARD}\n\n${prompt}` : prompt;
+}
+
 /**
  * @param {{prompt:string, model?:string, includeDirs?:string[], sandbox?:string, developerInstructions?:string}} req
  * @returns {string[]}
@@ -45,15 +68,162 @@ function goDuration(ms) {
 function buildAgyArgs(req) {
   const args = [];
   // Sandbox / permissions mapping (default read-only -> --sandbox).
+  const readOnly = req.sandbox !== "workspace-write";
   if (req.sandbox === "workspace-write") args.push("--dangerously-skip-permissions");
   else args.push("--sandbox");
   // Extra workspace dirs.
   for (const d of req.includeDirs || []) args.push("--add-dir", d);
-  // Fold expert instructions into the prompt (no system channel in print mode).
-  let prompt = req.prompt;
+  // Fold expert instructions into the prompt (no system channel in print mode),
+  // with the advisory guard outermost.
+  let prompt = applyReadOnlyGuard(req.prompt, readOnly);
   if (req.developerInstructions) prompt = `${req.developerInstructions}\n\n${prompt}`;
   args.push("-p", prompt); // "-p <prompt>" MUST be the tail
   return args;
+}
+
+// --- Advisory read-only enforcement (env scrub + OS sandbox + mutation detect) ---
+
+// Credentials an advisory delegate has no need for but could use to push or
+// exfiltrate over the (intentionally open) network. Scrubbed from the child env
+// on read-only runs. agy's own Gemini auth lives in ~/.gemini, not these vars.
+const ADVISORY_ENV_SCRUB = ["GITHUB_TOKEN", "GH_TOKEN", "GIT_ASKPASS", "SSH_AUTH_SOCK"];
+
+/**
+ * Build the child env for a read-only run: drop the OS-sandbox kill-switch (so it
+ * never inherits into the delegate) and scrub push/exfil credentials.
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {NodeJS.ProcessEnv}
+ */
+function advisoryEnv(env) {
+  const out = { ...env };
+  delete out.DELIBERATION_DISABLE_OS_SANDBOX;
+  for (const k of ADVISORY_ENV_SCRUB) delete out[k];
+  return out;
+}
+
+// Escape a path for embedding in a Seatbelt string literal.
+function seatbeltLiteral(p) {
+  return String(p).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+/**
+ * macOS Seatbelt profile: allow everything by default (reads, process, network -
+ * agy needs the network for its API + OAuth token refresh), deny ALL file writes,
+ * then re-allow the few paths agy must write: ~/.gemini (oauth creds + the
+ * conversation cache that backs threadId continuity) and temp dirs. Network is NOT
+ * isolated - this contains local writes only. (An apple-event deny was considered
+ * for IPC-escape hardening but `apple-event*` is not a valid operation in a `-p`
+ * string profile on current macOS - it fails the whole profile compile - so it is
+ * intentionally omitted.)
+ * @param {{home:string, tmpdir:string}} o
+ * @returns {string}
+ */
+function buildSeatbeltProfile(o) {
+  const gem = seatbeltLiteral(path.join(o.home, ".gemini"));
+  const tmp = seatbeltLiteral(o.tmpdir);
+  return [
+    "(version 1)",
+    "(allow default)",
+    "(deny file-write*)",
+    "(allow file-write*",
+    `  (subpath "${gem}")`,
+    `  (subpath "${tmp}")`,
+    '  (subpath "/private/var/folders")',
+    '  (subpath "/private/tmp")',
+    '  (literal "/dev/null")',
+    '  (literal "/dev/dtracehelper")',
+    '  (regex #"^/dev/tty"))',
+  ].join("\n");
+}
+
+/**
+ * Decide how to spawn agy. Pure (platform/paths injected) so it is unit-testable.
+ * On darwin with sandbox-exec available and a read-only run, wrap in a Seatbelt
+ * profile that denies workspace writes. Otherwise spawn unwrapped (workspace-write
+ * runs, the kill-switch, non-darwin, or a missing sandbox-exec). Linux has no OS
+ * wrapper in v1 - it relies on the prompt guard + mutation detection; bwrap is a
+ * documented future seam.
+ * @param {{bin:string, args:string[], readOnly:boolean, platform?:string,
+ *          home?:string, tmpdir?:string, sandboxExecPath?:string|null, disabled?:boolean}} o
+ * @returns {{cmd:string, argv:string[], osSandbox:boolean}}
+ */
+function buildSpawnCommand(o) {
+  const platform = o.platform || process.platform;
+  const unwrapped = { cmd: o.bin, argv: o.args, osSandbox: false };
+  if (!o.readOnly || o.disabled === true || platform !== "darwin" || !o.sandboxExecPath) {
+    return unwrapped;
+  }
+  const profile = buildSeatbeltProfile({ home: o.home, tmpdir: o.tmpdir });
+  return { cmd: o.sandboxExecPath, argv: ["-p", profile, o.bin, ...o.args], osSandbox: true };
+}
+
+// Probe for an executable sandbox-exec; null when absent (degrade to detection).
+function resolveSandboxExecPath() {
+  try {
+    fs.accessSync("/usr/bin/sandbox-exec", fs.constants.X_OK);
+    return "/usr/bin/sandbox-exec";
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Snapshot a git worktree's identity (HEAD + porcelain status). Returns null when
+ * the dir is not a git repo / git is unavailable / has no commits - detection is
+ * then unavailable for that root (we never imply "clean" from a failed capture).
+ * @param {string} cwd
+ * @returns {{head:string, status:string}|null}
+ */
+function captureGitState(cwd) {
+  const opts = { cwd, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] };
+  try {
+    const head = execFileSync("git", ["rev-parse", "HEAD"], opts).trim();
+    const status = execFileSync("git", ["status", "--porcelain"], opts);
+    return { head, status };
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Pure comparator for two git snapshots. Exported for tests.
+ * @param {{head:string,status:string}|null} pre
+ * @param {{head:string,status:string}|null} post
+ * @returns {boolean}
+ */
+function diffGitState(pre, post) {
+  if (!pre || !post) return false;
+  return pre.head !== post.head || pre.status !== post.status;
+}
+
+// Snapshot every root (consulted cwd + any --add-dir roots) before the run.
+function captureRoots(dirs) {
+  const seen = new Set();
+  const states = [];
+  for (const d of dirs) {
+    if (!d || seen.has(d)) continue;
+    seen.add(d);
+    states.push([d, captureGitState(d)]);
+  }
+  return states;
+}
+
+// Re-capture each root after the run; true if any git-tracked root changed.
+function rootsMutated(preStates) {
+  for (const [dir, pre] of preStates) {
+    if (diffGitState(pre, captureGitState(dir))) return true;
+  }
+  return false;
+}
+
+function workspaceMutationWarning(dir) {
+  return (
+    "WORKSPACE MUTATION DETECTED\n" +
+    "This advisory (read-only) run changed the workspace at " + dir + " " +
+    "(git HEAD and/or working-tree status changed during the run). Review " +
+    "`git status` / `git log` before continuing - nothing was auto-reverted, and " +
+    "the result below should be treated as tainted.\n---\n"
+  );
 }
 
 // --- MCP Protocol Helpers ---
@@ -133,11 +303,25 @@ function resolveConversationId(cwd) {
 
 // --- agy CLI Wrapper ---
 
-async function runGemini(args, cwd, timeoutMs, recoveryGraceMs) {
+/**
+ * @param {string[]} args
+ * @param {string} [cwd]
+ * @param {number} [timeoutMs]
+ * @param {number} [recoveryGraceMs]
+ * @param {{readOnly?:boolean, includeDirs?:string[]}} [opts] advisory-enforcement
+ *   knobs. readOnly is the EXPLICIT caller decision (never argv-inferred): when
+ *   true the run gets the OS sandbox wrapper, env scrub, and git mutation
+ *   detection. includeDirs widens detection to --add-dir roots.
+ */
+async function runGemini(args, cwd, timeoutMs, recoveryGraceMs, opts = {}) {
   return new Promise((resolve, reject) => {
     const t = (typeof timeoutMs === "number" && timeoutMs > 0) ? timeoutMs : DEFAULT_TIMEOUT_MS;
     const effCwd = cwd || process.cwd();
     const spawnStartMs = Date.now();
+    const readOnly = opts.readOnly === true;
+    // Snapshot every git root before the run so a post-run diff can flag writes
+    // the OS sandbox did not (and writes on Linux, which has no OS wrapper yet).
+    const preRoots = readOnly ? captureRoots([effCwd, ...(opts.includeDirs || [])]) : [];
     const disableRecovery = process.env.GEMINI_DISABLE_TIMEOUT_RECOVERY === "1";
     const grace = disableRecovery
       ? 0
@@ -159,8 +343,23 @@ async function runGemini(args, cwd, timeoutMs, recoveryGraceMs) {
     const head = ptIdx >= 0 ? args.slice(0, ptIdx) : args;
     const tail = ptIdx >= 0 ? args.slice(ptIdx) : [];
     const agyArgs = [...head, "--print-timeout", goDuration(t + grace + 30_000), ...tail];
-    const agyProcess = spawn(AGY_BIN, agyArgs, {
-      env: process.env,
+    // Wrap the FINAL argv (after the --print-timeout splice) in the OS sandbox
+    // when read-only, and scrub the child env. Both are no-ops for workspace-write.
+    const spawnPlan = buildSpawnCommand({
+      bin: AGY_BIN,
+      args: agyArgs,
+      readOnly,
+      platform: process.platform,
+      home: os.homedir(),
+      tmpdir: (() => { try { return fs.realpathSync(os.tmpdir()); } catch (_) { return os.tmpdir(); } })(),
+      sandboxExecPath: readOnly ? resolveSandboxExecPath() : null,
+      disabled: process.env.DELIBERATION_DISABLE_OS_SANDBOX === "1",
+    });
+    if (spawnPlan.osSandbox) {
+      process.stderr.write("[deliberation] agy read-only run wrapped in sandbox-exec (workspace writes denied)\n");
+    }
+    const agyProcess = spawn(spawnPlan.cmd, spawnPlan.argv, {
+      env: readOnly ? advisoryEnv(process.env) : process.env,
       shell: false,
       cwd: effCwd,
       // agy -p (print mode) waits for stdin EOF before returning; if the stdin
@@ -262,7 +461,9 @@ async function runGemini(args, cwd, timeoutMs, recoveryGraceMs) {
             "[deliberation] recovered agy answer via stdout drain after soft timeout (" +
             Math.round((Date.now() - spawnStartMs) / 1000) + "s)\n"
           );
-          return resolve({ response: out, threadId: resolveConversationId(effCwd) || "unknown", recovered: true });
+          const mutated = readOnly && rootsMutated(preRoots);
+          const text = mutated ? workspaceMutationWarning(effCwd) + out : out;
+          return resolve({ response: text, threadId: resolveConversationId(effCwd) || "unknown", recovered: true, ...(mutated ? { workspaceMutated: true } : {}) });
         }
         return finishTimeout();
       }
@@ -278,7 +479,9 @@ async function runGemini(args, cwd, timeoutMs, recoveryGraceMs) {
             "; returning threadId:\"unknown\" (resume will be unavailable)\n"
           );
         }
-        return resolve({ response: out, threadId: threadId || "unknown" });
+        const mutated = readOnly && rootsMutated(preRoots);
+        const text = mutated ? workspaceMutationWarning(effCwd) + out : out;
+        return resolve({ response: text, threadId: threadId || "unknown", ...(mutated ? { workspaceMutated: true } : {}) });
       }
 
       // Failure. Prefer stderr so it is not masked by an stdout banner; then an
@@ -467,7 +670,9 @@ const handlers = {
         }
 
         agyArgs.push("--conversation", threadId, ...sandboxFlags, ...addDirFlags);
-        agyArgs.push("-p", args.prompt);
+        // buildAgyArgs is not used on the reply path, so apply the advisory guard
+        // here explicitly (read-only is anything but workspace-write).
+        agyArgs.push("-p", applyReadOnlyGuard(args.prompt, args.sandbox !== "workspace-write"));
       } else {
         if (shouldRespond) sendError(id, -32601, `Tool not found: ${name}`);
         return;
@@ -477,7 +682,11 @@ const handlers = {
       const recoveryGraceMs = (typeof args["recovery-grace"] === "number" && args["recovery-grace"] >= 0)
         ? args["recovery-grace"]
         : DEFAULT_RECOVERY_GRACE_MS;
-      const { response, threadId, recovered } = await runGemini(agyArgs, args.cwd, timeoutMs, recoveryGraceMs);
+      const readOnly = args.sandbox !== "workspace-write";
+      const { response, threadId, recovered, workspaceMutated } = await runGemini(
+        agyArgs, args.cwd, timeoutMs, recoveryGraceMs,
+        { readOnly, includeDirs: args["include-directories"] || [] }
+      );
 
       // Return metadata (threadId) at the top level for orchestration rules,
       // and standard content array for the UI.
@@ -485,7 +694,8 @@ const handlers = {
         sendResponse(id, {
           content: [{ type: "text", text: response }],
           threadId: threadId,
-          ...(recovered ? { recovered: true } : {})
+          ...(recovered ? { recovered: true } : {}),
+          ...(workspaceMutated ? { workspaceMutated: true } : {})
         });
       }
     } catch (e) {
@@ -571,4 +781,12 @@ if (typeof module !== "undefined" && module.exports) {
   // Production exports (used by core adapters as well as tests)
   module.exports.runGemini = runGemini;
   module.exports.buildAgyArgs = buildAgyArgs;
+
+  // Advisory read-only enforcement (pure helpers; unit-tested)
+  module.exports.READ_ONLY_GUARD = READ_ONLY_GUARD;
+  module.exports.applyReadOnlyGuard = applyReadOnlyGuard;
+  module.exports.advisoryEnv = advisoryEnv;
+  module.exports.buildSeatbeltProfile = buildSeatbeltProfile;
+  module.exports.buildSpawnCommand = buildSpawnCommand;
+  module.exports.diffGitState = diffGitState;
 }
