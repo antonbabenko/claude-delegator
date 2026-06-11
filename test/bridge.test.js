@@ -399,3 +399,137 @@ test("C4: resolveConversationId reads cwd->id map, returns null on miss", () => 
     else process.env.AGY_LAST_CONVERSATIONS = prev;
   }
 });
+
+// --- advisory read-only enforcement (pure units; no spawn) ---
+
+test("S1: buildAgyArgs prepends the read-only guard on advisory runs, not on workspace-write", () => {
+  const { buildAgyArgs, READ_ONLY_GUARD } = require("../server/gemini/index.js");
+  const ro = buildAgyArgs({ prompt: "hi" });
+  const roPrompt = ro[ro.lastIndexOf("-p") + 1];
+  assert.ok(roPrompt.startsWith(READ_ONLY_GUARD), "read-only prompt leads with the guard");
+
+  const ww = buildAgyArgs({ prompt: "hi", sandbox: "workspace-write" });
+  const wwPrompt = ww[ww.lastIndexOf("-p") + 1];
+  assert.equal(wwPrompt, "hi", "workspace-write prompt is unguarded");
+  assert.ok(ww.includes("--dangerously-skip-permissions"), "workspace-write maps to skip-perms");
+});
+
+test("S2: the guard sits OUTSIDE developerInstructions (outermost)", () => {
+  const { buildAgyArgs, READ_ONLY_GUARD } = require("../server/gemini/index.js");
+  const a = buildAgyArgs({ prompt: "Q", developerInstructions: "SYS" });
+  const prompt = a[a.lastIndexOf("-p") + 1];
+  assert.ok(prompt.startsWith(`SYS\n\n${READ_ONLY_GUARD}`), "dev instructions wrap the guarded prompt");
+});
+
+test("S3: advisoryEnv drops the kill-switch and scrubs push/exfil credentials", () => {
+  const { advisoryEnv } = require("../server/gemini/index.js");
+  const out = advisoryEnv({
+    DELIBERATION_DISABLE_OS_SANDBOX: "1",
+    GITHUB_TOKEN: "ght", GH_TOKEN: "gh", GIT_ASKPASS: "x", SSH_AUTH_SOCK: "/sock",
+    GEMINI_API_KEY: "keep", PATH: "/usr/bin",
+  });
+  assert.equal("DELIBERATION_DISABLE_OS_SANDBOX" in out, false);
+  for (const k of ["GITHUB_TOKEN", "GH_TOKEN", "GIT_ASKPASS", "SSH_AUTH_SOCK"]) {
+    assert.equal(k in out, false, `${k} scrubbed`);
+  }
+  assert.equal(out.GEMINI_API_KEY, "keep", "Gemini auth preserved");
+  assert.equal(out.PATH, "/usr/bin", "unrelated env preserved");
+});
+
+test("S4: buildSpawnCommand wraps in sandbox-exec on darwin read-only with sandbox-exec present", () => {
+  const { buildSpawnCommand } = require("../server/gemini/index.js");
+  const r = buildSpawnCommand({
+    bin: "agy", args: ["--sandbox", "-p", "hi"], readOnly: true,
+    platform: "darwin", home: "/Users/x", tmpdir: "/private/var/folders/zz",
+    sandboxExecPath: "/usr/bin/sandbox-exec",
+  });
+  assert.equal(r.osSandbox, true);
+  assert.equal(r.cmd, "/usr/bin/sandbox-exec");
+  assert.equal(r.argv[0], "-p");
+  assert.ok(/\(deny file-write\*\)/.test(r.argv[1]), "profile denies file writes");
+  assert.ok(r.argv[1].includes('(subpath "/Users/x/.gemini")'), "profile allows ~/.gemini writes");
+  assert.ok(r.argv[1].includes('(subpath "/private/var/folders/zz")'), "profile allows tmpdir writes");
+  assert.deepEqual(r.argv.slice(2), ["agy", "--sandbox", "-p", "hi"], "agy argv preserved as tail");
+});
+
+test("S5: buildSpawnCommand stays unwrapped when not eligible (not read-only / linux / disabled / no sandbox-exec)", () => {
+  const { buildSpawnCommand } = require("../server/gemini/index.js");
+  const base = { bin: "agy", args: ["-p", "hi"], home: "/Users/x", tmpdir: "/tmp", platform: "darwin", sandboxExecPath: "/usr/bin/sandbox-exec" };
+  assert.equal(buildSpawnCommand({ ...base, readOnly: false }).osSandbox, false);
+  assert.equal(buildSpawnCommand({ ...base, readOnly: true, platform: "linux" }).osSandbox, false);
+  assert.equal(buildSpawnCommand({ ...base, readOnly: true, disabled: true }).osSandbox, false);
+  assert.equal(buildSpawnCommand({ ...base, readOnly: true, sandboxExecPath: null }).osSandbox, false);
+  const u = buildSpawnCommand({ ...base, readOnly: false });
+  assert.equal(u.cmd, "agy");
+  assert.deepEqual(u.argv, ["-p", "hi"]);
+});
+
+test("S6: a home path with a quote is escaped into the seatbelt literal", () => {
+  const { buildSeatbeltProfile } = require("../server/gemini/index.js");
+  const prof = buildSeatbeltProfile({ home: '/Users/a"b', tmpdir: "/tmp" });
+  assert.ok(prof.includes('(subpath "/Users/a\\"b/.gemini")'), "quote in path is backslash-escaped");
+});
+
+test("S7: diffGitState flags HEAD or status changes, ignores null snapshots", () => {
+  const { diffGitState } = require("../server/gemini/index.js");
+  assert.equal(diffGitState({ head: "a", status: "" }, { head: "a", status: "" }), false);
+  assert.equal(diffGitState({ head: "a", status: "" }, { head: "b", status: "" }), true);
+  assert.equal(diffGitState({ head: "a", status: "" }, { head: "a", status: " M f\n" }), true);
+  assert.equal(diffGitState(null, { head: "a", status: "" }), false, "unavailable pre -> no detection");
+  assert.equal(diffGitState({ head: "a", status: "" }, null), false, "unavailable post -> no detection");
+});
+
+// --- git mutation detection (integration; OS sandbox disabled via helper default) ---
+
+test("S8: an advisory run that writes into the consulted repo is flagged workspaceMutated + warned", { skip: !hasGit() }, async () => {
+  const repo = makeGitRepo();
+  const child = startBridge({ fakeBin: "fake-agy-mutates.sh" });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "advise", cwd: repo } },
+  });
+  setTimeout(() => child.stdin.end(), 1500);
+  const responses = await responsesP;
+
+  const r = responses.find((x) => x.id === 2);
+  assert.ok(r && r.result, "got a result");
+  assert.equal(r.result.workspaceMutated, true, "mutation surfaced on the result");
+  assert.ok(/WORKSPACE MUTATION DETECTED/.test(r.result.content[0].text), "warning prepended to text");
+});
+
+test("S9: a clean advisory run carries no workspaceMutated flag", { skip: !hasGit() }, async () => {
+  const repo = makeGitRepo();
+  const child = startBridge({ fakeBin: "fake-agy.sh" });
+  const responsesP = collectResponses(child);
+  send(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  send(child, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "gemini", arguments: { prompt: "advise", cwd: repo } },
+  });
+  setTimeout(() => child.stdin.end(), 1500);
+  const responses = await responsesP;
+
+  const r = responses.find((x) => x.id === 2);
+  assert.ok(r && r.result, "got a result");
+  assert.equal("workspaceMutated" in r.result, false, "no mutation flag on a clean run");
+});
+
+function hasGit() {
+  try { require("node:child_process").execFileSync("git", ["--version"], { stdio: "ignore" }); return true; }
+  catch (_) { return false; }
+}
+
+function makeGitRepo() {
+  const { execFileSync } = require("node:child_process");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cdg-repo-"));
+  const opts = { cwd: dir, stdio: "ignore" };
+  execFileSync("git", ["init"], opts);
+  execFileSync("git", ["config", "user.email", "t@t.t"], opts);
+  execFileSync("git", ["config", "user.name", "t"], opts);
+  fs.writeFileSync(path.join(dir, "seed.txt"), "seed");
+  execFileSync("git", ["add", "."], opts);
+  execFileSync("git", ["commit", "-m", "seed"], opts);
+  return dir;
+}

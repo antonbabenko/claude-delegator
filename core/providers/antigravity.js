@@ -27,20 +27,24 @@ function makeAntigravityProvider(opts = {}) {
       // buildAgyArgs(req) real signature: { prompt, model, sandbox, includeDirs, developerInstructions }.
       // Pin sandbox:"read-only" so Core stays advisory; the bridge folds
       // developerInstructions into the prompt when present (no system channel in agy print mode).
+      const includeDirs = (req.files || []).filter((f) => f.dir).map((f) => f.dir);
       const args = bridge.buildAgyArgs({
         prompt: req.prompt,
         model,
         sandbox: "read-only",
         developerInstructions: req.developerInstructions,
-        includeDirs: (req.files || []).filter((f) => f.dir).map((f) => f.dir),
+        includeDirs,
       });
       try {
-        // runGemini(args, cwd, timeoutMs, recoveryGraceMs). recovered:true => normal success.
-        const out = await bridge.runGemini(args, req.cwd, req.timeoutMs, undefined);
+        // runGemini(args, cwd, timeoutMs, recoveryGraceMs, opts). recovered:true => normal
+        // success. opts.readOnly:true engages the OS sandbox + env scrub + mutation detection;
+        // includeDirs widens detection to --add-dir roots.
+        const out = await bridge.runGemini(args, req.cwd, req.timeoutMs, undefined, { readOnly: true, includeDirs });
         // out.response can be undefined on a degenerate clean run; coerce to ""
         // so the DelegationSuccess.text contract (string, not string|undefined) holds.
         // Gemini (agy CLI) has no per-call reasoning-effort knob -> null.
-        return { provider: "gemini", model, text: out.response || "", threadId: out.threadId, isError: false, ms: Date.now() - started, reasoningEffort: null };
+        // workspaceMutated (advisory taint signal) is surfaced when the run changed the workspace.
+        return { provider: "gemini", model, text: out.response || "", threadId: out.threadId, isError: false, ms: Date.now() - started, reasoningEffort: null, ...(out.workspaceMutated ? { workspaceMutated: true } : {}) };
       } catch (e) {
         // classifyGeminiError(errMsg, errCode): the missing-cli and upstream-abort
         // branches key off the message, so pass the real caught message - not "".
